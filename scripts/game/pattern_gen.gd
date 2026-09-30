@@ -10,7 +10,7 @@ extends RefCounted
 ##   2. score = 0.5 * 平均(N) + 0.5 * 上位5%点(N)                                    ← 密度
 ##   3. adj   = score * (弾速 / BASE_SPEED)^SPEED_EXP * (危険半径 / DANGER_REF)^SIZE_EXP  ← 弾速・弾サイズの補正
 ##   4. adj に長さ(持久力)の補正 length_factor(最初のノーツ〜最後の発射の時間 T)を掛ける(LENGTH_*)
-##   5. Lv    = TARGET_TABLE の逆引き(adj → ★換算)                                   ← 本家の星と同じ目盛り
+##   5. Lv    = TARGET_TABLE の逆引き(adj → ★換算)- LEVEL_SHIFT(1.0)                 ← 本家の星と同じ目盛り(ただし 1 だけ厳しい: 同じ Lv なら、弾が多い)
 ##
 ## 生成の側は、本家 osu! の星評価(基準: star_rating.gd の推定値)に近づけるために、
 ##   - 目標の Lv は推定★そのもの。TARGET_TABLE(★→弾数)で目標の adj を決め、
@@ -58,6 +58,10 @@ const STAR_MAX := 6.6
 ## 基準の長さ(標準的な 1 曲 = 2 分)で 1。5 分なら約 1.15 倍、30 秒なら約 0.81 倍。密度が同じなら、長い譜面ほど難しい。
 ## 弾の生成(目標の弾数の調整)には入れない: 生成は密度だけで目標に合わせ、長さは Lv の計算でだけ足す。
 const LENGTH_REF := 120.0
+
+## 表示する Lv の厳しさ。同じ弾幕の Lv を、TARGET_TABLE から読んだ値より LEVEL_SHIFT だけ小さく表示する(= 同じ Lv なら、以前より弾が多く、難しい)。
+## 生成の目標も、その分だけ上の★の弾数に合わせる(Lv = 推定★ のまま。表示の目盛りだけが厳しくなる)。
+const LEVEL_SHIFT := 1.0
 const LENGTH_EXP := 0.15
 const LENGTH_MIN := 0.8
 const LENGTH_MAX := 1.3
@@ -92,8 +96,8 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	var speed := BASE_SPEED * lerpf(1.0 - SPEED_VAR, 1.0 + SPEED_VAR, k)
 	var size := base_size(k) * float(opts.get("size_mul", 1.0))
 	# 目標の adj(弾速・弾サイズの補正後スコア)。density_mul が 1 なら目標 Lv = 推定★
-	var target_adj := target_score_for(stars) * float(opts.get("density_mul", 1.0))
-	var target_level := stars_for_score(target_adj)
+	var target_adj := target_score_for(stars + LEVEL_SHIFT) * float(opts.get("density_mul", 1.0))
+	var target_level := maxf(stars_for_score(target_adj) - LEVEL_SHIFT, 0.0)
 	# 1) 弾数の倍率 mul を自動調整して、adj を目標に合わせる
 	var mul := 1.0
 	var out := {}
@@ -165,9 +169,9 @@ static func length_factor(duration: float) -> float:
 	return clampf(pow(duration / LENGTH_REF, LENGTH_EXP), LENGTH_MIN, LENGTH_MAX)
 
 
-## Lv(本家の星と同じ目盛り)= adj(× 長さの補正)を TARGET_TABLE で逆引きした★換算値。
+## Lv(本家の星と同じ目盛り)= adj(× 長さの補正)を TARGET_TABLE で逆引きした★換算値から、LEVEL_SHIFT を引いたもの。
 static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF) -> float:
-	return stars_for_score(adjusted_score(score, speed, size, player_r) * length_factor(duration))
+	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r) * length_factor(duration)) - LEVEL_SHIFT, 0.0)
 
 
 ## TARGET_TABLE(★→スコア)の逆引き。表の外は端の傾きで延長する(下側は原点へ向かう)。

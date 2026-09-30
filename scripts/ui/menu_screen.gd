@@ -6,6 +6,8 @@ extends Control
 
 signal play_requested(loader, bm, settings: Dictionary)
 signal back_requested
+## 設定を開く(パネルは main が持つ。どの画面でも開ける)。section: 0=MOD 1=操作 2=音 3=ゲーム
+signal settings_requested(section: int)
 ## マルチプレイの部屋の曲を選ぶモード(pick_mode = true): 「決定」で、開始せずに選んだ内容を返す(level は MOD 適用後の Lv)
 signal song_picked(loader, bm, settings: Dictionary, level: float)
 
@@ -15,8 +17,8 @@ const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
-const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
+const SmoothScroll = preload("res://scripts/ui/smooth_scroll.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 
 const BG_TINT := Color(0.34, 0.34, 0.4)
@@ -47,6 +49,13 @@ var _song_box: VBoxContainer
 var _diff_box: VBoxContainer
 var _diff_scroll: ScrollContainer
 var _song_scroll: ScrollContainer
+var _diff_smooth: Node            # スクロールをなめらかにする(smooth_scroll.gd)
+var _song_smooth: Node
+var _last_error := ""
+var _cards_gen := 0               # 難易度カードを作り直すたびに増える(分けて作っている途中の古いものを止める)
+var _job := 0                    # 曲の読み込み(別スレッド)の通し番号。最新のものだけ使う
+var _job_pending := false         # 読み込み中か
+var _prev_sel := -1               # 読み込み中の曲を選ぶ前に選んでいた曲(読めなかったときに戻す)
 var _title_l: Label
 var _artist_l: Label
 var _meta_l: Label
@@ -55,7 +64,7 @@ var _mod_bar: HBoxContainer
 var _status: Label
 var _audio: AudioStreamPlayer
 var _dialog: FileDialog
-var _options: Control
+var _options: Control            # 開いている設定パネル(main が持つ。開いている間だけ設定される)
 
 
 func _ready() -> void:
@@ -94,6 +103,7 @@ func _ready() -> void:
 	_song_scroll = ScrollContainer.new()
 	_song_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_place(_song_scroll, 32, 118, 404, 494)
+	_song_smooth = SmoothScroll.attach(_song_scroll)
 	_song_box = VBoxContainer.new()
 	_song_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_song_box.add_theme_constant_override("separation", 6)
@@ -118,6 +128,7 @@ func _ready() -> void:
 	_diff_scroll = ScrollContainer.new()
 	_diff_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_place(_diff_scroll, 468, 168, 780, 384)
+	_diff_smooth = SmoothScroll.attach(_diff_scroll)
 	_diff_box = VBoxContainer.new()
 	_diff_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_diff_box.add_theme_constant_override("separation", 6)
@@ -234,11 +245,28 @@ func _search_dirs() -> Array:
 func _scan() -> void:
 	_songs.clear()
 	var failed: Array = []
-	for p in SongLibrary.find_all():   # 同じファイルは 1 つにまとめて返る
+	var paths := SongLibrary.find_all()   # 同じファイルは 1 つにまとめて返る
+	for p in paths:
 		if _add_song(p) < 0:
 			failed.append(str(p).get_file())
+	SongLibrary.save_index(paths)
 	if not failed.is_empty():   # 読めなかった曲は、黙って飛ばさず、名前を出す
 		_status.text = "読み込めなかった曲: " + ", ".join(failed.slice(0, 3)) + (" ほか %d 件" % (failed.size() - 3) if failed.size() > 3 else "")
+
+
+## songs フォルダの中身が変わったとき(main が知らせる): 一覧を作り直す。選んでいる曲はそのまま(読み込み直さない)。
+func refresh_songs() -> void:
+	var cur := ""
+	if _song_sel >= 0 and _song_sel < _songs.size():
+		cur = str(_songs[_song_sel].key)
+	_scan()
+	_song_sel = -1
+	for i in range(_songs.size()):
+		if _songs[i].key == cur:
+			_song_sel = i
+	_rebuild_song_cards(false)
+	if _song_sel < 0 and not _songs.is_empty() and _loader == null:
+		_select_song(0)
 
 
 ## 追加して一覧の index を返す(重複は既存の index、読めなければ -1)。カードは _rebuild_song_cards で作る。
@@ -254,16 +282,14 @@ func _add_song(path: String) -> int:
 	for i in range(_songs.size()):   # すでに一覧にある(パスが同じ、または名前と大きさが同じ)
 		if _songs[i].key == key or (size >= 0 and _songs[i].key2 == key2):
 			return i
-	var l = OszLoader.new()
-	if not l.open(path):
+	var info := SongLibrary.info(path)   # 曲を全部は開かずに、題名などを得る(結果は保存されて、次からは開き直さない)
+	if not info.ok:
+		_last_error = str(info.error)
 		return -1
-	var bm = l.difficulties[0]
 	for i in range(_songs.size()):   # 別の名前で同じ曲が入っている(譜面の中身が同じ)ときも、1 つにする
-		if _songs[i].md5 == bm.md5:
-			l.close()
+		if _songs[i].md5 == info.md5:
 			return i
-	_songs.append({"path": path, "title": bm.title, "artist": bm.artist, "key": key, "key2": key2, "md5": bm.md5})
-	l.close()
+	_songs.append({"path": path, "title": info.title, "artist": info.artist, "key": key, "key2": key2, "md5": info.md5})
 	return _songs.size() - 1
 
 
@@ -286,7 +312,7 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 
 # --- 曲リスト ---
 
-func _rebuild_song_cards() -> void:
+func _rebuild_song_cards(animate := true) -> void:
 	for c in _song_box.get_children():
 		c.queue_free()
 	_song_cards.clear()
@@ -307,7 +333,8 @@ func _rebuild_song_cards() -> void:
 		_song_box.add_child(UiStyle.wrap_card(card, 56))
 		_song_cards.append(card)
 		_restyle_song(i)
-		UiStyle.enter_card(card, 0.08 + i * 0.06, -40.0)   # 左から順に滑り込む
+		if animate:
+			UiStyle.enter_card(card, 0.08 + i * 0.06, -40.0)   # 左から順に滑り込む
 
 
 func _restyle_song(i: int) -> void:
@@ -320,43 +347,122 @@ func _restyle_song(i: int) -> void:
 	UiStyle.shift_card(c, (10.0 if not _focus_diff else 6.0) if sel else (4.0 if hover else 0.0))   # 選択中・ホバー中は少し右へ
 
 
+## 曲を選ぶ。選んだ表示はすぐ切り替わり、重い読み込み(.osz を開く・弾幕の生成・画像/音声の読み込み)は別スレッドで行う。
+## 終わったら _on_song_loaded で難易度カードなどを入れ替える(そのあいだに別の曲を選び直したら、前の結果は捨てる)。
 func _select_song(i: int) -> void:
 	if _songs.is_empty():
 		return
 	i = clampi(i, 0, _songs.size() - 1)
-	if i == _song_sel and _loader != null:
+	if i == _song_sel and (_loader != null or _job_pending):
 		_restyle_all()
 		return
-	var l = OszLoader.new()
-	if not l.open(_songs[i].path):
-		_status.text = l.error
-		return
-	if _loader != null:
-		_loader.close()
-	_loader = l
+	_prev_sel = _song_sel if not _job_pending else _prev_sel
 	var old := _song_sel
 	_song_sel = i
 	_restyle_song(old)
 	_restyle_song(i)
-	_song_scroll.ensure_control_visible(_song_cards[i])
+	_song_smooth.scroll_to_control(_song_cards[i])
+	# 曲名などは、一覧に持っている値をすぐ出す
+	_title_l.text = _songs[i].title
+	_artist_l.text = _songs[i].artist
+	_meta_l.text = ""
+	_job += 1
+	_job_pending = true
+	var job := _job
+	var path: String = _songs[i].path
+	var p := Mods.params(settings.mods)
+	var me: WeakRef = weakref(self)   # 読み込み中に画面が閉じられても、届け先がなければ捨てる
+	WorkerThreadPool.add_task(func():
+		var res := _load_song(path, p)
+		res["job"] = job
+		var target: Object = me.get_ref()
+		if target != null:
+			target._on_song_loaded.call_deferred(res)
+		elif res.get("loader") != null:
+			res.loader.close())
 
+
+## 前の曲の OszLoader と弾幕の一覧を、別スレッドで中身ごと手放す(主スレッドで手放すと、大量の辞書の解放で止まる)。
+func _release_later(old_loader, old_gens: Array) -> void:
+	if old_loader == null and old_gens.is_empty():
+		return
+	WorkerThreadPool.add_task(func():
+		if old_loader != null:
+			old_loader.close()
+			old_loader.difficulties.clear()
+		old_gens.clear())
+
+
+## (別スレッドで動く)曲を開いて、難易度ごとの弾幕・難易度(MOD 適用後)・背景画像・試聴用の音声まで作る。画面には触らない。
+static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
+	var l = OszLoader.new()
+	if not l.open(path):
+		return {"ok": false, "error": l.error}
+	var first = l.difficulties[0]
+	var image: Image = l.load_image_data(first.background) if first.background != "" else null
+	if image != null and image.get_width() > 1280:   # 背景は 1280×720 の画面に出すだけ。大きい画像は、ここ(別スレッド)で縮めて、テクスチャにする負担を減らす
+		image.resize(1280, maxi(int(round(1280.0 * image.get_height() / image.get_width())), 1), Image.INTERPOLATE_BILINEAR)
+	# DDA 難易度(画面内の弾数。MOD なしの状態)の低い順に並べ替える
+	var pairs: Array = []
+	for bm in l.difficulties:
+		pairs.append({"bm": bm, "g": PatternGen.generate(bm, {})})
+	pairs.sort_custom(func(a, b): return a.g.rating.score < b.g.rating.score)
+	l.difficulties = pairs.map(func(q): return q.bm)
+	var gens: Array = pairs.map(func(q): return q.g)
+	var ratings: Array = gens.map(func(g): return PatternGen.summary(Mods.apply(g, mod_params)))
+	var audio: AudioStream = l.load_audio(first.audio_filename)
+	var from := maxf(first.preview_time / 1000.0, 0.0)
+	var cropped := _crop_mp3(audio, from)
+	if cropped != null:   # MP3 の途中から流すと、探す処理で数十 ms 止まる。あらかじめ、その位置から始まる音声にしておく
+		audio = cropped
+		from = 0.0
+	return {"ok": true, "loader": l, "gens": gens, "ratings": ratings, "image": image, "audio": audio, "audio_from": from}
+
+
+## MP3 の、from 秒あたりから始まる音声(データの途中から切り出す。MP3 は、途中からでも読み始められる)。MP3 でない・先頭のとき・長さが分からないときは null。
+static func _crop_mp3(audio: AudioStream, from: float) -> AudioStream:
+	if not audio is AudioStreamMP3 or from < 1.0:
+		return null
+	var total: float = audio.get_length()
+	var bytes: PackedByteArray = audio.data
+	if total <= from + 1.0 or bytes.is_empty():
+		return null
+	var out := AudioStreamMP3.new()
+	out.data = bytes.slice(int(float(bytes.size()) * from / total))
+	return out
+
+
+func _on_song_loaded(res: Dictionary) -> void:
+	if not is_inside_tree() or int(res.job) != _job:   # 画面を離れた / 別の曲を選び直した
+		if res.get("loader") != null:
+			res.loader.close()
+		return
+	_job_pending = false
+	if not res.ok:
+		_status.text = str(res.error)
+		var bad := _song_sel
+		_song_sel = _prev_sel   # 選べなかったので、元の曲の選択に戻す
+		_restyle_song(bad)
+		_restyle_song(_song_sel)
+		if _loader != null and _song_sel >= 0 and _song_sel < _songs.size():
+			_title_l.text = _songs[_song_sel].title
+			_artist_l.text = _songs[_song_sel].artist
+		return
+	_release_later(_loader, _gens)   # 前の曲の弾幕・譜面は、量が多く、ここで手放すと解放だけで十数 ms かかる
+	_loader = res.loader
+	var i := _song_sel
 	var first = _loader.difficulties[0]
-	_title_l.text = first.title
-	_artist_l.text = first.artist
 	_meta_l.text = "BPM %.0f     Creator  %s" % [60000.0 / first.beat_length_at(first.first_time()), first.creator]
 	var k := 0
 	for lab in [_title_l, _artist_l, _meta_l]:   # 曲情報は順に滑り込む
 		UiStyle.pop_in(lab, k * 0.07, Vector2(30, 0), 0.45)
 		k += 1
-	_set_background(_loader.load_image(first.background) if first.background != "" else null)
-	# DDA 難易度(画面内の弾数。MOD なしの状態)の低い順に並べ替える
-	var pairs: Array = []
-	for bm in _loader.difficulties:
-		pairs.append({"bm": bm, "g": PatternGen.generate(bm, {"density_mul": settings.density_mul})})
-	pairs.sort_custom(func(a, b): return a.g.rating.score < b.g.rating.score)
-	_loader.difficulties = pairs.map(func(p): return p.bm)
-	_gens = pairs.map(func(p): return p.g)
-	_rate_all()
+	var tex: Texture2D = null
+	if res.image != null:
+		tex = ImageTexture.create_from_image(res.image)
+	_set_background(tex)
+	_gens = res.gens
+	_ratings = res.ratings
 	_diff_sel = mini(2, _gens.size() - 1)
 	# 直前にプレイした曲に戻ったときは、そのとき選んだ難易度を選んだ状態にする
 	if _songs[i].key == SongLibrary.norm(str(settings.last_song)) and settings.last_diff != "":
@@ -365,16 +471,12 @@ func _select_song(i: int) -> void:
 				_diff_sel = k2
 	_lv_shown.clear()
 	_rebuild_diff_cards(true)
-	_play_preview(first)
-
-
-func _play_preview(bm) -> void:
 	_audio.stop()
-	var s: AudioStream = _loader.load_audio(bm.audio_filename)
-	if s == null:
-		return
-	_audio.stream = s
-	_audio.play(maxf(bm.preview_time / 1000.0, 0.0))
+	if res.audio != null:
+		await get_tree().process_frame   # カードを作る処理と、同じフレームにしない(音の開始も、少し時間がかかる)
+		if int(res.job) == _job and is_inside_tree():
+			_audio.stream = res.audio
+			_audio.play(float(res.audio_from))
 
 
 # --- 難易度カード ---
@@ -386,11 +488,20 @@ func _rate_all() -> void:
 
 
 ## animate_in = true(曲を選び直したとき)は、カードが右から滑り込み、Lv が 0 から数え上がる。MOD などで作り直すときは、前の Lv から数え直す。
+## 曲を選び直したとき(animate_in)は、カードを 3 枚ずつ、数フレームに分けて作る(1 フレームで全部作ると、一瞬止まって見えるため)。
 func _rebuild_diff_cards(animate_in := false) -> void:
 	for c in _diff_box.get_children():
 		c.queue_free()
 	_diff_cards.clear()
+	_cards_gen += 1
+	var gen := _cards_gen
+	_update_detail()
+	_refresh_mod_bar()
 	for i in range(_ratings.size()):
+		if animate_in and i > 0 and i % 3 == 0:
+			await get_tree().process_frame
+			if gen != _cards_gen or not is_inside_tree():   # 作っている間に、作り直された・画面が閉じられた
+				return
 		var bm = _loader.difficulties[i]
 		var r: Dictionary = _ratings[i]
 		var col := UiStyle.level_color(r.level)
@@ -453,11 +564,9 @@ func _rebuild_diff_cards(animate_in := false) -> void:
 			state.p = v
 			bars.queue_redraw()
 		UiStyle.tween_value(bars, 0.0, 1.0, 0.7, grow, delay + 0.15)
-	_update_detail()
-	_refresh_mod_bar()
 	if _diff_sel >= 0 and _diff_sel < _diff_cards.size():
 		# カードのレイアウト確定後にスクロール位置を合わせる
-		_diff_scroll.ensure_control_visible.call_deferred(_diff_cards[_diff_sel])
+		_diff_smooth.scroll_to_control.call_deferred(_diff_cards[_diff_sel])
 
 
 ## 平均・最大の弾数を、2 本の細いバーで表す。
@@ -501,7 +610,7 @@ func _select_diff(i: int) -> void:
 	var old := _diff_sel
 	_diff_sel = i
 	_restyle_all()
-	_diff_scroll.ensure_control_visible(_diff_cards[i])
+	_diff_smooth.scroll_to_control(_diff_cards[i])
 	_update_detail()
 	if _options != null and old != i:
 		_options.refresh_mod_info()
@@ -538,36 +647,16 @@ func _refresh_mod_bar() -> void:
 # --- 設定パネル ---
 
 func open_options(section := 0) -> void:
-	if _options != null:
-		return
-	_options = OptionsPanel.new()
-	_options.setup(settings, _mod_preview_text)
-	_options.changed.connect(_on_option_changed)
-	_options.closed.connect(_close_options)
-	add_child(_options)
-	_options.show_section(section)
+	settings_requested.emit(section)
 
 
-func _close_options() -> void:
-	if _options == null:
-		return
-	Settings.save_all(settings)
-	_options.queue_free()
-	_options = null
-
-
-func _on_option_changed(kind: String) -> void:
+## 設定パネル(main が持つ)で、設定が変わった。MOD が変わったら、難易度を測り直す。
+func on_settings_changed(kind: String) -> void:
 	if _loader == null:
 		return
-	match kind:
-		"mods":
-			_rate_all()
-			_rebuild_diff_cards()
-		"density":
-			for i in range(_gens.size()):
-				_gens[i] = PatternGen.generate(_loader.difficulties[i], {"density_mul": settings.density_mul})
-			_rate_all()
-			_rebuild_diff_cards()
+	if kind == "mods":
+		_rate_all()
+		_rebuild_diff_cards()
 
 
 ## 設定パネルの MOD 欄に出す、選択中の難易度の MOD 適用後 Lv。
@@ -585,7 +674,7 @@ func _mod_preview_text() -> String:
 # --- 開始 ---
 
 func _start() -> void:
-	if _loader == null or _diff_sel < 0:
+	if _loader == null or _diff_sel < 0 or _job_pending:   # 曲を読み込み中は、まだ始められない(選び直した曲の難易度が出るまで)
 		return
 	if _song_sel >= 0:
 		settings.last_song = _songs[_song_sel].path

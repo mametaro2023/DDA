@@ -25,7 +25,11 @@ func open(p: String) -> bool:
 			var bytes := _reader.read_file(f)
 			var text := bytes.get_string_from_utf8()
 			var bm := OsuParser.parse(text, f)
-			bm.md5 = text.md5_text()
+			bm.md5 = OsuParser.play_key(text)
+			if bm.beatmapset_id <= 0:   # 古い譜面は BeatmapSetID を持たない。osu! の .osz は「曲ID 曲名.osz」なので、名前の先頭の数字を使う
+				var head := p.get_file().split(" ")[0]
+				if head.is_valid_int():
+					bm.beatmapset_id = int(head)
 			if bm.mode == 0 and not bm.hit_objects.is_empty():
 				difficulties.append(bm)
 	if difficulties.is_empty():
@@ -71,6 +75,12 @@ func load_audio(name: String) -> AudioStream:
 
 
 func load_image(name: String) -> Texture2D:
+	var img := load_image_data(name)
+	return ImageTexture.create_from_image(img) if img != null else null
+
+
+## 画像の読み込み(デコードまで)。別スレッドで動かせる(テクスチャにするのは、呼び出し側で)。
+func load_image_data(name: String) -> Image:
 	var bytes := read_file(name)
 	if bytes.is_empty():
 		return null
@@ -83,7 +93,7 @@ func load_image(name: String) -> Texture2D:
 		err = img.load_png_from_buffer(bytes)
 	if err != OK:
 		return null
-	return ImageTexture.create_from_image(img)
+	return img
 
 
 ## 大文字小文字を無視して zip 内のパスを探す。

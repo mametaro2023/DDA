@@ -8,12 +8,12 @@ extends Control
 signal play_requested
 signal multi_requested
 signal update_requested
+signal settings_requested(section: int)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
-const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
 const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
@@ -247,9 +247,7 @@ func _activate(i: int) -> void:
 		2:
 			_open(HowToPanel.new())
 		3:
-			var p := OptionsPanel.new()
-			p.setup(settings, Callable())
-			_open(p)
+			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
 
 
 func _open(panel: Control) -> void:
@@ -263,7 +261,6 @@ func _open(panel: Control) -> void:
 func _close_overlay() -> void:
 	if _overlay == null:
 		return
-	Settings.save_all(settings)   # 設定パネルで変えた内容を保存(遊び方パネルでも害はない)
 	_overlay.queue_free()
 	_overlay = null
 

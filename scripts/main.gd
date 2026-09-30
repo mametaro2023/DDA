@@ -18,8 +18,22 @@ const Updater = preload("res://scripts/updater.gd")
 const UpdatePanel = preload("res://scripts/ui/update_panel.gd")
 const OszImport = preload("res://scripts/osz_import.gd")
 const SingleInstance = preload("res://scripts/single_instance.gd")
+const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
+const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
+const OpenChoicePanel = preload("res://scripts/ui/open_choice_panel.gd")
+const FileAssoc = preload("res://scripts/file_assoc.gd")
 
 var _current: Node
+var _ui_layer: CanvasLayer         # 設定・選択のパネルを、画面の上に重ねる層
+var _settings_panel: Control       # 開いている設定パネル(どの画面からでも開ける。プレイ中は除く)
+var _settings_dict: Dictionary = {}
+var _settings_btn: Button          # 画面の右上の「設定」(タイトル・選曲画面は、自分で設定を開く入口を持つので出さない)
+var _choice_panel: Control         # .osz を開くアプリの選択
+var _cold_osz := false             # .osz を開くために起動した(まだ最初のファイルの途中)
+var _watch_known := {}             # songs フォルダに、いま見えている .osz(名前|大きさ → パス)
+var _watch_pending := {}           # 見つけたが、コピーの途中かもしれないもの(大きさが落ち着くまで待つ)
+var _watch_ready := false
+var _watch_t := 0.0
 var net                    # 通信層(マルチプレイを開くときに作る。部屋を出ても使い回す)
 var _last_play := {}
 var overlay                # 音量メーター・通知(全画面の上)
@@ -52,6 +66,9 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-update"):
 		_smoke_update()
+		return
+	if args.has("--smoke-new"):
+		_smoke_new()
 		return
 	if args.has("--smoke-volume"):
 		_smoke_volume()
@@ -112,6 +129,9 @@ func _ready() -> void:
 	_setup_fade()
 	overlay = HudOverlay.new()
 	add_child(overlay)
+	add_child(CursorOverlay.new())   # アプリ独自のマウスカーソル(OS のカーソルは、ウィンドウの中では隠す)
+	_setup_ui_layer()
+	_watch_sync()
 	_instance = SingleInstance.new()
 	add_child(_instance)
 	_instance.start()
@@ -124,7 +144,8 @@ func _ready() -> void:
 		updater.check()
 	get_window().files_dropped.connect(_on_files_dropped)
 	if osz != "":
-		_on_open_osz(osz)   # 起動したので、取り込んで選曲画面へ
+		_cold_osz = true
+		_on_open_osz(osz)   # 起動したので、取り込んで選曲画面へ(または、選んだアプリで開く)
 	else:
 		show_title()
 
@@ -181,6 +202,70 @@ func _on_open_osz(path: String) -> void:
 	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_MINIMIZED:
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
 	DisplayServer.window_move_to_foreground()
+	if _choice_panel != null:   # 選択の途中に、別の .osz が来た: 新しいほうを聞き直す
+		_choice_panel.queue_free()
+		_choice_panel = null
+	# osu! も入っているなら、どちらで開くかを選べる(設定の「.osz ファイルを開いたとき」。標準は毎回聞く)
+	var mode := str(Settings.load_all().osz_open)
+	if mode != "dda" and FileAssoc.osu_exe() == "":
+		mode = "dda"   # osu! が見つからなければ、選ぶものがない
+	if mode == "ask" and _current != null and _current.get_script() == GameScreen:
+		mode = "dda"   # プレイ中は、聞かない(取り込みだけして、通知を出す)
+	if mode == "osu":
+		_open_in_osu(path)
+	elif mode == "ask":
+		_ask_open(path)
+	else:
+		_open_in_dda(path)
+
+
+## 開くアプリを聞く。起動したばかりで画面がなければ、タイトル画面を背景に出す。
+func _ask_open(path: String) -> void:
+	if _current == null:
+		show_title()
+	close_settings()
+	var p := OpenChoicePanel.new()
+	p.setup(path.get_file())
+	p.chosen.connect(_on_open_chosen.bind(path, p))
+	_setup_ui_layer()
+	_ui_layer.add_child(p)
+	_choice_panel = p
+	_update_settings_button()
+
+
+func _on_open_chosen(kind: String, remember: bool, path: String, panel: Control) -> void:
+	_choice_panel = null
+	panel.queue_free()
+	_update_settings_button()
+	if remember and kind != "cancel":
+		var st := Settings.load_all()
+		st.osz_open = kind
+		Settings.save_all(st)
+	match kind:
+		"osu":
+			_open_in_osu(path)
+		"dda":
+			_open_in_dda(path)
+		_:
+			_cold_osz = false   # やめた(起動して開いたときは、タイトル画面のまま使える)
+
+
+## osu! で開く。起動できなければ、このアプリで開く。.osz を開くためだけに起動したアプリは、渡したら終わる。
+func _open_in_osu(path: String) -> void:
+	if FileAssoc.open_in_osu(path):
+		if overlay != null:
+			overlay.toast("osu! で開きます")
+		if _cold_osz:
+			get_tree().quit()
+		return
+	if overlay != null:
+		overlay.toast("osu! を起動できませんでした。このアプリで開きます")
+	_open_in_dda(path)
+
+
+## このアプリで開く(取り込んで、選曲画面でその曲を選んだ状態にする)。
+func _open_in_dda(path: String) -> void:
+	_cold_osz = false
 	var r := OszImport.import_file(path)
 	if not r.ok:
 		if overlay != null:
@@ -188,6 +273,7 @@ func _on_open_osz(path: String) -> void:
 		if _current == null:
 			show_title()
 		return
+	_watch_sync()   # 取り込んだ曲は、フォルダの監視には「新しい曲」として知らせない
 	if overlay != null:
 		overlay.toast(("%s を開きます" if r.existed else "%s を取り込みました") % (str(r.title) if str(r.title) != "" else str(r.path).get_file()))
 	if _current != null and (_current.get_script() == GameScreen or _current.get_script() == MultiScreen):
@@ -205,7 +291,7 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 		return
 	for f in files:
 		if f.to_lower().ends_with(".osz"):
-			_on_open_osz(f)
+			_open_in_dda(f.replace("\\", "/"))   # このアプリにドロップした = このアプリで開く(聞かない)
 			return
 
 
@@ -222,10 +308,74 @@ func _swap(n: Node, instant := false) -> void:
 
 
 func _swap_now(n: Node) -> void:
+	close_settings()   # 画面が変わるときは、開いている設定は閉じる
 	if _current != null:
 		_current.queue_free()
 	_current = n
 	add_child(n)
+	_update_settings_button()
+
+
+# --- 設定(プレイ中以外の、どの画面からでも開ける) ---
+
+## 設定・選択のパネルを重ねる層と、右上の「設定」ボタンを用意する(1 度だけ)。
+func _setup_ui_layer() -> void:
+	if _ui_layer != null:
+		return
+	_ui_layer = CanvasLayer.new()
+	_ui_layer.layer = 80   # 画面より上、音量メーター(90)・カーソル(127)・暗転(100)より下
+	add_child(_ui_layer)
+	_settings_btn = Button.new()
+	_settings_btn.theme = UiStyle.make_theme()
+	_settings_btn.text = "設定"
+	_settings_btn.focus_mode = Control.FOCUS_NONE
+	_settings_btn.position = Vector2(1174, 14)
+	_settings_btn.size = Vector2(90, 34)
+	_settings_btn.pressed.connect(func(): open_settings(0))
+	_settings_btn.visible = false
+	_ui_layer.add_child(_settings_btn)
+
+
+## 右上の「設定」ボタンを出すか。プレイ中は出さない。タイトル・選曲画面は自分の入口があるので出さない。パネルが開いている間も出さない。
+func _update_settings_button() -> void:
+	if _settings_btn == null:
+		return
+	var s = _current.get_script() if _current != null else null
+	_settings_btn.visible = _current != null and s != GameScreen and s != TitleScreen and s != MenuScreen and _settings_panel == null and _choice_panel == null
+
+
+## 設定パネルを開く(section: 0=MOD 1=操作 2=音 3=ゲーム)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+func open_settings(section := 0) -> void:
+	if _settings_panel != null or _current == null or _current.get_script() == GameScreen:
+		return
+	_setup_ui_layer()
+	var st = _current.get("settings")
+	_settings_dict = st if st is Dictionary else Settings.load_all()
+	var p := OptionsPanel.new()
+	p.theme = UiStyle.make_theme()
+	p.setup(_settings_dict, _current._mod_preview_text if _current.has_method("_mod_preview_text") else Callable())
+	p.changed.connect(func(kind: String):
+		if _current != null and _current.has_method("on_settings_changed"):
+			_current.on_settings_changed(kind))
+	p.closed.connect(close_settings)
+	_ui_layer.add_child(p)
+	p.show_section(section)
+	_settings_panel = p
+	if "_options" in _current:
+		_current._options = p
+	_update_settings_button()
+
+
+func close_settings() -> void:
+	if _settings_panel == null:
+		return
+	Settings.save_all(_settings_dict)
+	var p := _settings_panel
+	_settings_panel = null
+	if _current != null and "_options" in _current:
+		_current._options = null
+	p.queue_free()
+	_update_settings_button()
 
 
 func _setup_fade() -> void:
@@ -260,6 +410,7 @@ func show_title() -> void:
 	var t := TitleScreen.new()
 	t.play_requested.connect(show_menu)
 	t.multi_requested.connect(show_multi)
+	t.settings_requested.connect(open_settings)
 	t.update_requested.connect(func():
 		var p := UpdatePanel.new()
 		p.setup(updater)
@@ -273,6 +424,7 @@ func show_title() -> void:
 func show_menu(pick := false) -> void:
 	var m := MenuScreen.new()
 	m.pick_mode = pick   # マルチプレイの部屋の曲を選ぶとき(決定でロビーへ戻る)
+	m.settings_requested.connect(open_settings)
 	if pick:
 		m.song_picked.connect(_on_song_picked)
 		m.back_requested.connect(func(): show_multi())
@@ -308,7 +460,7 @@ func _on_song_picked(loader, bm, settings: Dictionary, level: float) -> void:
 	var n = _get_net()
 	if n.is_host():
 		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": level, "set_id": bm.beatmapset_id, "map_id": bm.beatmap_id},
-			settings.mods, float(settings.density_mul), loader, bm)
+			settings.mods, 1.0, loader, bm)
 	show_multi()
 
 
@@ -372,6 +524,73 @@ func show_result(stats: Dictionary, music: AudioStreamPlayer = null) -> void:
 	_swap(r, music != null)
 
 
+# --- songs フォルダの見張り(.osz を置いたら、アプリの中で知らせる) ---
+
+## いま見えている曲を「すでにあるもの」として覚える(取り込んだあと・起動したときに呼ぶ)。
+func _watch_sync() -> void:
+	_watch_known = SongLibrary.snapshot()
+	_watch_pending.clear()
+	_watch_ready = true
+
+
+func _process(delta: float) -> void:
+	_watch_t += delta
+	if _watch_t < 2.0:
+		return
+	_watch_t = 0.0
+	if overlay == null or _current == null or _current.get_script() == GameScreen:
+		return   # 通常の起動でだけ、プレイ中以外に見張る
+	_watch_poll()
+
+
+## 新しく置かれた .osz を見つけて知らせる。コピーの途中かもしれないので、大きさが 2 回続けて同じになってから(読めたら)知らせる。
+func _watch_poll() -> void:
+	if not _watch_ready:
+		_watch_sync()   # まだ覚えていない(初めて): いまあるものを「すでにあるもの」にして、知らせずに始める
+		return
+	var now := SongLibrary.snapshot()
+	var added: Array = []
+	for k in now:
+		if _watch_known.has(k):
+			continue
+		var sz := int(str(k).get_slice("|", 1))
+		if sz > 0 and _watch_pending.get(k, -2) == sz:
+			_watch_known[k] = now[k]
+			_watch_pending.erase(k)
+			added.append(now[k])
+		else:
+			_watch_pending[k] = sz
+	for k in _watch_known.keys():   # 消えたものは、忘れる(同じ曲をもう一度置いたら、また知らせる)
+		if not now.has(k):
+			_watch_known.erase(k)
+	for k in _watch_pending.keys():
+		if not now.has(k):
+			_watch_pending.erase(k)
+	if added.is_empty():
+		return
+	var ok := 0
+	var last_title := ""
+	var failed := ""
+	for p in added:
+		var info := SongLibrary.info(p)
+		if info.ok:
+			ok += 1
+			last_title = "%s - %s" % [info.artist, info.title]
+		else:
+			failed = str(p).get_file()
+	SongLibrary.save_index()
+	var msg := ""
+	if ok == 1:
+		msg = "曲が追加されました: " + last_title
+	elif ok > 1:
+		msg = "曲が %d 件追加されました" % ok
+	if failed != "":
+		msg += ("    " if msg != "" else "") + "読み込めませんでした: " + failed
+	overlay.toast(msg)
+	if ok > 0 and _current != null and _current.has_method("refresh_songs"):
+		_current.refresh_songs()
+
+
 ## 引き継いだ曲を止める(fade 秒でなめらかに小さくして消す)。
 func _stop_music(fade := 0.4) -> void:
 	if _music == null:
@@ -400,6 +619,19 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
+		"choice":
+			show_title()   # .osz を開くアプリの選択。例: --shot choice out.png
+			_ask_open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+		"cursor":
+			show_menu()   # 独自カーソル(押せるもの・ふつうの場所)。例: --shot cursor out.png hover|idle
+			var cu := CursorOverlay.new()
+			add_child(cu)
+			cu._inside = true
+			cu._focused = true
+			var at := Vector2(700, 262) if extra.has("hover") else Vector2(700, 600)
+			cu.debug_pos = at
+			for n in range(30):
+				await get_tree().process_frame
 		"options":
 			show_menu()   # 例: --shot options out.png 0 rush storm(先頭の数字はセクション 0=MOD 1=操作 2=音 3=ゲーム)
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
@@ -516,6 +748,8 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				"bg": rl.load_image(rbm.background) if rbm.background != "" else null})
 			if not (extra.size() > 0 and extra[0] == "failed"):
 				_current._score_disp = _current._score_target   # スクリーンショットではカウントアップを待たない
+	_setup_ui_layer()   # 右上の「設定」ボタンも撮る
+	_update_settings_button()
 	if animated:
 		var t0 := Time.get_ticks_msec()
 		var k := 0
@@ -529,6 +763,10 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		get_tree().quit()
 		return
 	for n in range(6):
+		await get_tree().process_frame
+	while _current != null and "_job_pending" in _current and _current._job_pending:   # 選曲画面は、曲の読み込み(別スレッド)を待つ
+		await get_tree().process_frame
+	for n in range(4):
 		await get_tree().process_frame
 	get_viewport().get_texture().get_image().save_png(out)
 	print("saved ", out)
@@ -627,6 +865,8 @@ func _smoke_ui() -> void:
 	for i in range(4):
 		await get_tree().process_frame
 	var m = _current
+	while m._job_pending:   # 曲の読み込み(別スレッド)を待つ
+		await get_tree().process_frame
 	print("menu: songs=%d diffs=%d diff_sel=%d focus_diff=%s" % [m._song_cards.size(), m._diff_cards.size(), m._diff_sel, str(m._focus_diff)])
 	await _key(KEY_DOWN)
 	print("Down       -> diff_sel=%d" % m._diff_sel)
@@ -1487,9 +1727,183 @@ func _smoke_volume() -> void:
 	get_tree().quit()
 
 
+## 開発用: 音量バーのドラッグ / 選曲の別スレッド読み込み / なめらかスクロール / 独自カーソル / どの画面でも設定 / フォルダの見張りを確認する。-- --smoke-new
+func _smoke_new() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	overlay = HudOverlay.new()
+	add_child(overlay)
+	var cur := CursorOverlay.new()
+	add_child(cur)
+	_setup_ui_layer()
+	_watch_sync()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	chk.call(Input.mouse_mode == Input.MOUSE_MODE_HIDDEN, "OS のカーソルは隠れている(独自カーソルを描く)")
+	# 音量バーをマウスで動かす
+	Volume.set_master(50)
+	Volume.set_music(50)
+	show_title()
+	await get_tree().create_timer(0.5).timeout
+	overlay._sel = 0
+	overlay._show_panel()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var row: Control = overlay._rows[1]
+	var bx: float = overlay._bar_x()
+	var bw: float = overlay._bar_w(row)
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = Vector2(bx + bw * 0.8, 15)
+	row.gui_input.emit(press)
+	chk.call(overlay._sel == 1 and Volume.music == 80, "バーをクリックすると、その位置の音量になる: 音楽 %d" % Volume.music)
+	var move := InputEventMouseMotion.new()
+	move.position = Vector2(bx + bw * 0.25, 15)
+	row.gui_input.emit(move)
+	chk.call(Volume.music == 25 and Volume.master == 50, "押したまま動かすと追従する: 音楽 %d(全体 %d は変わらない)" % [Volume.music, Volume.master])
+	move.position = Vector2(bx + bw * 1.5, 15)
+	row.gui_input.emit(move)
+	chk.call(Volume.music == 100, "バーの外まで動かしても 100 で止まる")
+	var rel := InputEventMouseButton.new()
+	rel.button_index = MOUSE_BUTTON_LEFT
+	rel.pressed = false
+	row.gui_input.emit(rel)
+	move.position = Vector2(bx + bw * 0.1, 15)
+	row.gui_input.emit(move)
+	chk.call(Volume.music == 100, "離したあとは追従しない")
+	# 選曲画面: 曲を選ぶと別スレッドで読み込み、その間も画面は止まらない
+	show_menu()
+	await get_tree().create_timer(0.3).timeout
+	var m = _current
+	while m._job_pending:
+		await get_tree().process_frame
+	chk.call(m._loader != null and m._diff_cards.size() >= 1, "選曲画面が開き、最初の曲の難易度カードが出る(%d 枚)" % m._diff_cards.size())
+	var frames := {"n": 0, "max": 0.0}
+	m._select_song(3 if m._song_sel != 3 else 4)
+	var t0 := Time.get_ticks_usec()
+	var last := t0
+	while m._job_pending:
+		await get_tree().process_frame
+		var now := Time.get_ticks_usec()
+		frames.max = maxf(frames.max, (now - last) / 1000.0)
+		last = now
+		frames.n += 1
+	for k in range(45):   # 読み込みが終わってからの、カード・背景・音の切り替えのあいだも測る
+		await get_tree().process_frame
+		var now2 := Time.get_ticks_usec()
+		frames.max = maxf(frames.max, (now2 - last) / 1000.0)
+		last = now2
+		frames.n += 1
+	chk.call(frames.n >= 1 and frames.max < 40.0, "曲の読み込み中・切り替えの間も描画が続く(%d フレーム、最長 %.0f ms)" % [frames.n, frames.max])
+	var first_loader = m._loader
+	m._select_song(1)
+	m._select_song(2)   # 続けて選び直したら、前の読み込みは捨てられる
+	m._start()
+	chk.call(m._job_pending and _current == m, "読み込み中に決定しても始まらない")
+	while m._job_pending:
+		await get_tree().process_frame
+	chk.call(m._song_sel == 2 and m._loader != first_loader and m._title_l.text == m._songs[2].title, "最後に選んだ曲だけが反映される: %s" % m._title_l.text)
+	# なめらかなスクロール(音量メーターが出ている間は、ホイールは音量になる。消えてから)
+	overlay._hide_panel()
+	var sc: ScrollContainer = m._song_scroll
+	var wheel := InputEventMouseButton.new()
+	wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+	wheel.pressed = true
+	wheel.factor = 1.0
+	wheel.position = sc.global_position + Vector2(100, 100)
+	wheel.global_position = wheel.position
+	Input.warp_mouse(wheel.position)
+	await get_tree().process_frame
+	Input.parse_input_event(wheel)
+	await get_tree().process_frame
+	var s0 := sc.scroll_vertical
+	await get_tree().process_frame
+	var s1 := sc.scroll_vertical
+	await get_tree().create_timer(0.6).timeout
+	var s2 := sc.scroll_vertical
+	chk.call(s0 <= s1 and s1 < s2 and s2 > 40, "ホイールで、目標へ少しずつ近づく(%d → %d → %d)" % [s0, s1, s2])
+	var play_loader = m._loader
+	# どの画面でも設定を開ける(選曲画面のキー O)
+	var key := InputEventKey.new()
+	key.keycode = KEY_O
+	key.pressed = true
+	Input.parse_input_event(key)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	chk.call(_settings_panel != null and m._options == _settings_panel, "選曲画面で O キー: 設定パネルが開く")
+	var key2 := InputEventKey.new()
+	key2.keycode = KEY_DOWN
+	key2.pressed = true
+	var sel_before: int = m._song_sel
+	Input.parse_input_event(key2)
+	await get_tree().process_frame
+	chk.call(m._song_sel == sel_before, "設定を開いている間、下の画面はキーに反応しない")
+	close_settings()
+	await get_tree().process_frame
+	chk.call(_settings_panel == null and m._options == null, "閉じられる")
+	show_multi()
+	await get_tree().create_timer(0.4).timeout
+	chk.call(_settings_btn.visible, "マルチプレイ画面には、右上に「設定」ボタンが出る")
+	_settings_btn.pressed.emit()
+	await get_tree().process_frame
+	chk.call(_settings_panel != null, "ボタンで設定が開く")
+	close_settings()
+	show_title()
+	await get_tree().create_timer(0.4).timeout
+	chk.call(not _settings_btn.visible, "タイトル画面には出ない(自分の入口がある)")
+	start_game(play_loader, play_loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "control": "mouse", "sfx_volume": 0})
+	await get_tree().create_timer(0.4).timeout
+	open_settings(0)
+	chk.call(not _settings_btn.visible and _settings_panel == null, "プレイ中は、設定を開けない")
+	var cap0 := Input.mouse_mode
+	start_game(play_loader, play_loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "control": "mouse", "sfx_volume": 0})   # リトライ: 新しいプレイ画面が先にできて、古いほうがあとで消える
+	await get_tree().create_timer(0.5).timeout
+	chk.call(cap0 == Input.MOUSE_MODE_CAPTURED and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED, "リトライしても、マウスは捕まえたまま(独自カーソルは出ない)")
+	_current.queue_free()
+	_current = null
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	await get_tree().process_frame
+	await get_tree().process_frame
+	chk.call(Input.mouse_mode == Input.MOUSE_MODE_HIDDEN, "プレイから離れたとき、OS のカーソルは隠れたまま(独自カーソルに戻る)")
+	# フォルダの見張り: songs に .osz を置くと知らせる(コピーの途中でないことを、大きさで確かめてから)
+	show_menu()
+	await get_tree().create_timer(0.5).timeout
+	m = _current
+	var src := "C:/Desktop/my_apps/DDA/22699 Len - U.N. Owen was her.osz"
+	var dst := SongLibrary.ensure_user_dir().path_join("watch_test.osz")
+	if FileAccess.file_exists(dst):
+		DirAccess.remove_absolute(dst)
+	_watch_sync()
+	var songs_before: int = m._songs.size()
+	DirAccess.copy_absolute(src, dst)
+	_watch_poll()   # 1 回目: 見つけた(まだ知らせない)
+	chk.call(not overlay._toast.visible, "見つけた直後は知らせない(コピーの途中かもしれない)")
+	_watch_poll()   # 2 回目: 大きさが落ち着いたので知らせる
+	chk.call(overlay._toast.visible and overlay._toast_l.text.begins_with("曲が追加されました"), "少しあとに「%s」と知らせる" % overlay._toast_l.text)
+	chk.call(m._songs.size() == songs_before + 1 or m._songs.size() == songs_before, "選曲画面の一覧が更新される(%d → %d 曲)" % [songs_before, m._songs.size()])
+	overlay._toast.visible = false
+	_watch_poll()
+	chk.call(not overlay._toast.visible, "同じ曲は、もう知らせない")
+	DirAccess.remove_absolute(dst)
+	_watch_poll()
+	chk.call(not _watch_known.has("watch_test.osz|%d" % SongLibrary.file_size(src)), "消したら忘れる")
+	Settings.restore(original)
+	SongLibrary.save_index()
+	print("smoke-new: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
 ## 開発用: .osz を開いたときの流れ(取り込み → 選曲画面で選ぶ)と、別のプロセスから渡す動きを確認する。-- --smoke-open
 func _smoke_open() -> void:
 	var original := Settings.load_all()
+	var s0 := Settings.load_all()
+	s0.osz_open = "dda"   # 聞かずに開く(聞く動きは、最後に確かめる)
+	Settings.save_all(s0)
 	var st := {"fails": 0}
 	var chk := func(cond: bool, msg: String):
 		print(("  ok   " if cond else "  FAIL ") + msg)
@@ -1531,6 +1945,27 @@ func _smoke_open() -> void:
 	_on_open_osz("C:/Desktop/my_apps/DDA/README.md")
 	await get_tree().create_timer(0.5).timeout
 	chk.call(_current == g, "対応しないファイルでは、何も起きない")
+	# osu! も入っているとき: どちらで開くかを聞く(「今後もこの選択を使う」で固定できる)
+	if FileAssoc.osu_exe() != "":
+		var s1 := Settings.load_all()
+		s1.osz_open = "ask"
+		Settings.save_all(s1)
+		show_menu()
+		await get_tree().create_timer(0.6).timeout
+		var reol := "C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"
+		_on_open_osz(reol)
+		await get_tree().process_frame
+		chk.call(_choice_panel != null and not _settings_btn.visible, "osu! が入っていれば、開くアプリを聞く(%s)" % FileAssoc.osu_exe())
+		_choice_panel.chosen.emit("cancel", true)
+		await get_tree().process_frame
+		chk.call(_choice_panel == null and str(Settings.load_all().osz_open) == "ask", "「やめる」では、何も起きず、設定も変わらない")
+		_on_open_osz(reol)
+		await get_tree().process_frame
+		_choice_panel.chosen.emit("dda", true)
+		await get_tree().create_timer(1.0).timeout
+		chk.call(_choice_panel == null and str(Settings.load_all().osz_open) == "dda" and _current.get_script() == MenuScreen and _current._songs[_current._song_sel].path.contains("Reol"), "「このアプリで開く」+ 固定: 選曲画面でその曲が選ばれ、次からは聞かない")
+		_on_open_osz(reol)
+		chk.call(_choice_panel == null, "固定したあとは、聞かずに開く")
 	Settings.restore(original)
 	print("smoke-open: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()

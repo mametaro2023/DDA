@@ -108,6 +108,41 @@ func _init() -> void:
 	Volume.write_into(d)
 	_check(d.volume == 0 and d.sfx_volume == 100 and d.music_volume == 40, "保存する辞書へ、今の音量を書き込む(古い値で上書きしない)")
 
+	# 譜面の識別子(マルチプレイで、曲を持っているかの照合): 版・配布元が違って、メタデータだけ違うファイルは、同じ譜面と扱う
+	var Parser = load("res://scripts/osu/osu_parser.gd")
+	var zr := ZIPReader.new()
+	if zr.open("C:/Desktop/my_apps/DDA/22699 Len - U.N. Owen was her.osz") == OK:
+		var osu_name := ""
+		for fn in zr.get_files():
+			if fn.to_lower().ends_with(".osu") and osu_name == "":
+				osu_name = fn
+		var text := zr.read_file(osu_name).get_string_from_utf8()
+		zr.close()
+		var k0: String = Parser.play_key(text)
+		var variant := text.replace("Title:", "Title: (edited) ").replace("\r\n", "\n")
+		variant = variant.replace("[Metadata]", "[Metadata]\nBeatmapID:78171\nBeatmapSetID:22699\nTags:a b c")
+		if not variant.contains("ApproachRate"):   # 古い形式に AR を足した版(OD と同じ値)
+			var od := ""
+			for line in variant.split("\n"):
+				if line.begins_with("OverallDifficulty:"):
+					od = line.substr(18).strip_edges()
+			variant = variant.replace("[Difficulty]", "[Difficulty]\nApproachRate:" + od)
+		_check(Parser.play_key(variant) == k0, "題名・ID・タグ・AR の書き足し・改行の違いがあっても、同じ譜面の識別子(%s)" % k0.left(8))
+		var lines := text.split("\n")
+		var idx := 0
+		for li in range(lines.size()):
+			if str(lines[li]).strip_edges() == "[HitObjects]":
+				idx = li + 1
+		var ho := str(lines[idx]).split(",")
+		ho[2] = str(int(ho[2]) + 1)
+		lines[idx] = ",".join(ho)
+		_check(Parser.play_key("\n".join(lines)) != k0, "ノーツの時刻が違えば、別の譜面の識別子")
+		_check(SL.find_by_md5(k0).size() > 0 and SL.find_by_md5("0".repeat(32)).is_empty(), "識別子から、その譜面を含む .osz を探せる(なければ空)")
+		var inf: Dictionary = SL.info("C:/Desktop/my_apps/DDA/22699 Len - U.N. Owen was her.osz")
+		_check(inf.ok and inf.title != "" and inf.ids.size() >= 3 and inf.md5 != "", "曲の索引: 題名・識別子を、曲を全部開かずに得る(%s / %d 譜面)" % [inf.title, inf.ids.size()])
+	var FA = load("res://scripts/file_assoc.gd")
+	_check(FA.parse_command_exe("\"C:\\Users\\A B\\AppData\\Local\\osu!\\osu!.exe\" \"%1\"") == "C:\\Users\\A B\\AppData\\Local\\osu!\\osu!.exe" and FA.parse_command_exe("C:\\osu\\osu!.exe %1") == "C:\\osu\\osu!.exe" and FA.parse_command_exe("") == "", "起動コマンドから exe を取り出す")
+
 	# アプリのバージョン比較(アプリ内アップデート)
 	var Up = load("res://scripts/updater.gd")
 	_check(Up.is_newer("0.3.0-beta", "0.2.0-beta") and Up.is_newer("v0.2.1", "0.2.0-beta") and Up.is_newer("1.0.0", "0.9.9"), "新しい版を新しいと判定する")

@@ -33,6 +33,82 @@ static func parse(text: String, source_file := "") -> Beatmap:
 	return bm
 
 
+## 譜面の「中身」の識別子(MD5 の形の文字列)。プレイに関わる部分(難易度の数値・タイミング・ノーツ・休憩)だけから作り、
+## 曲名・作者・ID・タグ・背景・ヒットサンプルなどは含めない。配布元や版が違って、ファイルが少し違っても、同じ譜面なら同じ値になる
+## (マルチプレイで、参加者が同じ譜面を持っているかの照合に使う)。パースはせず、文字だけを見るので軽い。
+static func play_key(text: String) -> String:
+	var section := ""
+	var parts := PackedStringArray()
+	var d := {"AudioLeadIn": "0", "Mode": "0", "HPDrainRate": "5", "CircleSize": "5", "OverallDifficulty": "5", "SliderMultiplier": "1.4", "SliderTickRate": "1"}
+	var ar := ""
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if line.is_empty() or line.begins_with("//"):
+			continue
+		if line.begins_with("[") and line.ends_with("]"):
+			section = line.substr(1, line.length() - 2)
+			continue
+		match section:
+			"General", "Difficulty":
+				var i := line.find(":")
+				if i > 0:
+					var k := line.substr(0, i).strip_edges()
+					var v := line.substr(i + 1).strip_edges()
+					if k == "ApproachRate":
+						ar = v
+					elif d.has(k):
+						d[k] = v
+			"Events":
+				var p := line.split(",")
+				if p.size() >= 3 and (p[0].strip_edges() == "2" or p[0].strip_edges() == "Break"):
+					parts.append("E%d,%d" % [int(float(p[1])), int(float(p[2]))])
+			"TimingPoints":
+				parts.append("T" + ",".join(line.split(",").slice(0, 8)))
+			"HitObjects":
+				var p := line.split(",")
+				# 円は 5 項目(x,y,時刻,種類,ヒットサウンド)、スピナーは 6、スライダーは 9(端ごとのサウンドまで)。その先はヒットサンプル(プレイに関係しない)
+				var n := 5
+				if p.size() > 3:
+					var type := int(p[3])
+					n = 9 if (type & 2) != 0 else (6 if (type & 8) != 0 else 5)
+				parts.append("H" + ",".join(p.slice(0, n)))
+	# 古い形式では AR が無く OD が AR を兼ねる(あとから AR が足された版と同じ扱いにする)
+	var head := "%s|%s|%s|%s|%s|%s|%s|%s" % [d.Mode, d.AudioLeadIn, d.HPDrainRate.to_float(), d.CircleSize.to_float(), d.OverallDifficulty.to_float(),
+		(ar if ar != "" else d.OverallDifficulty).to_float(), d.SliderMultiplier.to_float(), d.SliderTickRate.to_float()]
+	return (head + "\n" + "\n".join(parts)).md5_text()
+
+
+## 一覧に出すための簡単な読み取り(解析はしない): {mode, title, artist, objects(ノーツがあるか。0 か 1)}。
+static func quick_info(text: String) -> Dictionary:
+	var out := {"mode": 0, "title": "", "artist": "", "objects": 0}
+	var section := ""
+	for raw_line in text.split("\n"):
+		var line := raw_line.strip_edges()
+		if line.is_empty() or line.begins_with("//"):
+			continue
+		if line.begins_with("[") and line.ends_with("]"):
+			section = line.substr(1, line.length() - 2)
+			continue
+		if section == "HitObjects":
+			if line.split(",").size() >= 5:
+				out.objects = 1
+				break
+			continue
+		var i := line.find(":")
+		if i < 0:
+			continue
+		var k := line.substr(0, i).strip_edges()
+		var v := line.substr(i + 1).strip_edges()
+		if section == "General" and k == "Mode":
+			out.mode = int(v)
+		elif section == "Metadata":
+			if k == "Title":
+				out.title = v
+			elif k == "Artist":
+				out.artist = v
+	return out
+
+
 static func _parse_kv(bm: Beatmap, line: String) -> void:
 	var i := line.find(":")
 	if i < 0:

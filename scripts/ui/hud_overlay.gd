@@ -2,7 +2,8 @@ extends CanvasLayer
 ## 全画面の上に重なる、小さな表示(どの画面でも同じ)。
 ##   ・音量メーター … マウスホイールで音量を変える。回すと、画面上部に「全体 / 音楽 / 効果音」のメーターが一定時間出て、全体音量が変わる。
 ##     メーターをクリックして選んでからホイールを回すと、その音量(音楽 / 効果音)が変わる。表示が消えると選択は戻り、
-##     次に回したときは、また全体音量が変わる。
+##     次に回したときは、また全体音量が変わる。バーはマウスでも動かせる(クリックでその位置へ、押したまま左右へ)。
+##     マウスがメーターの上にある間・ドラッグ中は、消えない。
 ##     スクロールできる一覧(選曲の曲リストなど)やスライダーの上では、ホイールは本来の動き(スクロール・値の変更)に使う
 ##     (メーターが出ている間と、Ctrl を押しながらのときは、どこでも音量)。
 ##   ・トースト … 「曲を取り込みました」などの短い通知。
@@ -19,7 +20,11 @@ const TOAST_TIME := 3.2
 
 var _panel: PanelContainer
 var _rows: Array = []
+## 音量メーターが出ているか(出ている間は、ホイールは、どこでも音量に使う)
+static var meter_visible := false
+
 var _sel := 0
+var _drag := -1            # バーをドラッグ中の行(なければ -1)
 var _t := 0.0
 var _shown := false
 var _tween: Tween
@@ -46,11 +51,8 @@ func _ready() -> void:
 		var row := Control.new()
 		row.custom_minimum_size = Vector2(280, 30)
 		row.mouse_filter = Control.MOUSE_FILTER_STOP
-		row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 		row.draw.connect(_draw_row.bind(row, i))
-		row.gui_input.connect(func(ev: InputEvent):
-			if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
-				_select(i))
+		row.gui_input.connect(_on_row_input.bind(row, i))
 		v.add_child(row)
 		_rows.append(row)
 	# トースト
@@ -63,6 +65,35 @@ func _ready() -> void:
 	_toast.add_child(_toast_l)
 
 
+## バーの左端・幅(行の中の座標)。
+func _bar_x() -> float:
+	return 78.0
+
+
+func _bar_w(row: Control) -> float:
+	return row.size.x - _bar_x() - 56.0
+
+
+## 行への操作: 左クリックでその音量を選び、バーの上なら、そこへ合わせる。押したまま左右に動かして調整できる。
+func _on_row_input(ev: InputEvent, row: Control, i: int) -> void:
+	if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
+		if ev.pressed:
+			_select(i)
+			if ev.position.x >= _bar_x() - 8.0 and ev.position.x <= _bar_x() + _bar_w(row) + 8.0:
+				_drag = i
+				_set_from_x(row, i, ev.position.x)
+		elif _drag == i:
+			_drag = -1
+	elif ev is InputEventMouseMotion and _drag == i:
+		_set_from_x(row, i, ev.position.x)
+
+
+func _set_from_x(row: Control, i: int, x: float) -> void:
+	Volume.set_value(i, int(round(clampf((x - _bar_x()) / _bar_w(row), 0.0, 1.0) * 100.0)))
+	_t = SHOW_TIME
+	_redraw()
+
+
 func _draw_row(row: Control, i: int) -> void:
 	var sel := i == _sel
 	var v := Volume.get_value(i)
@@ -73,8 +104,8 @@ func _draw_row(row: Control, i: int) -> void:
 		row.draw_rect(Rect2(0, 0, 2, row.size.y), UiStyle.ACCENT)
 	var c := UiStyle.ACCENT if sel else UiStyle.TEXT_DIM
 	row.draw_string(font, Vector2(10, 20), NAMES[i], HORIZONTAL_ALIGNMENT_LEFT, 60.0, 14, c)
-	var bx := 78.0
-	var bw := w - bx - 56.0
+	var bx := _bar_x()
+	var bw := _bar_w(row)
 	row.draw_rect(Rect2(bx, 12, bw, 6), Color(1, 1, 1, 0.14))
 	row.draw_rect(Rect2(bx, 12, bw * v / 100.0, 6), c)
 	row.draw_circle(Vector2(bx + bw * v / 100.0, 15), 5.0 if sel else 4.0, Color.WHITE if sel else Color(1, 1, 1, 0.7))
@@ -99,11 +130,14 @@ func _show_panel() -> void:
 	_panel.visible = true
 	_panel.modulate.a = 1.0
 	_shown = true
+	meter_visible = true
 	_redraw()
 
 
 func _hide_panel() -> void:
 	_shown = false
+	meter_visible = false
+	_drag = -1
 	_sel = 0   # 消えたら選択は戻る(次に回したときは、全体音量)
 	Settings.save_all(Settings.load_all())   # 音量を保存
 	if not UiStyle.animate:
@@ -116,6 +150,8 @@ func _hide_panel() -> void:
 
 func _process(delta: float) -> void:
 	if _shown:
+		if _drag >= 0 or _panel.get_global_rect().has_point(_panel.get_global_mouse_position()):
+			_t = SHOW_TIME   # バーを動かしているとき・マウスがメーターの上にあるときは、消えない
 		_t -= delta
 		if _t <= 0.0:
 			_hide_panel()

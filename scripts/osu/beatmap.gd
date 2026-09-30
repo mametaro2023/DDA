@@ -10,7 +10,8 @@ const HS_FINISH := 4
 const HS_CLAP := 8
 
 var source_file := ""
-## .osu の内容の MD5(マルチプレイで、参加者が同じ譜面を持っているかの照合に使う。配布元が違っても同じ譜面なら同じ値)
+## 譜面の中身の識別子(OsuParser.play_key。マルチプレイで、参加者が同じ譜面を持っているかの照合に使う。
+## プレイに関わる部分だけから作るので、配布元・版が違っても、同じ譜面なら同じ値)
 var md5 := ""
 ## osu! の譜面ID(BeatmapID: 難易度ごと / BeatmapSetID: 曲全体)。ダウンロードページのリンクに使う。無ければ 0
 var beatmap_id := 0

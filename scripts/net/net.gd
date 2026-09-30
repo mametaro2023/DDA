@@ -75,6 +75,8 @@ var _ping_t := 0.0
 var _samples: Array = []          # [往復 µs, 時計の差 µs]
 var _upnp: UPNP
 var _thread: Thread
+var _gen := 0                     # 部屋を立て直すたびに増える(古い UPnP の結果を取り違えない)
+var _zombies: Array = []          # 終わるのを待たずに手放したスレッド(終わってから回収する)
 var _http: HTTPRequest
 var _pub_ip := ""
 var _loc_ip := ""
@@ -87,6 +89,7 @@ var _out_last := 0.0
 
 
 func _process(delta: float) -> void:
+	_reap()
 	if not _out_q.is_empty():
 		var now_ms := Time.get_ticks_usec() / 1000.0
 		while not _out_q.is_empty() and _out_q[0][0] <= now_ms:
@@ -131,6 +134,29 @@ func _process(delta: float) -> void:
 
 func _exit_tree() -> void:
 	close()
+	_reap(2500)   # UPnP の探索・ポートを閉じる処理が終わるのを待つ(どちらも数秒以内に終わる)
+	if not _zombies.is_empty():
+		OS.kill(OS.get_process_id())   # それでも終わらないスレッドが残ると、アプリの終了処理が止まる(貸し出したポートは 2 時間で閉じる)
+
+
+## 手放したスレッドのうち、終わったものを回収する。wait_ms > 0 なら、その間は終わるのを待つ。
+func _reap(wait_ms := 0) -> void:
+	var t0 := Time.get_ticks_msec()
+	while not _zombies.is_empty():
+		for th in _zombies.duplicate():
+			if not th.is_alive():
+				th.wait_to_finish()
+				_zombies.erase(th)
+		if _zombies.is_empty() or Time.get_ticks_msec() - t0 >= wait_ms:
+			return
+		OS.delay_msec(10)
+
+
+## UPnP のポートを閉じる(ルーターへの問い合わせで数秒止まることがあるので、別スレッドで)。
+func _unmap(upnp: UPNP, p: int) -> void:
+	var th := Thread.new()
+	th.start(func(): upnp.delete_port_mapping(p, "UDP"))
+	_zombies.append(th)
 
 
 # --- 共通の時計 ---
@@ -172,7 +198,7 @@ func host_room(mode: String, p_name: String) -> bool:
 	_pub_ip = ""
 	if use_upnp:
 		_thread = Thread.new()
-		_thread.start(_upnp_worker.bind(port))
+		_thread.start(_upnp_worker.bind(port, _gen))
 	else:
 		_finish_code("", "")
 	return true
@@ -183,7 +209,7 @@ func _new_player(id: int, p_name: String, slot: int) -> Dictionary:
 
 
 ## UPnP でポートを開けて、ルーターが知っているグローバル IP を得る(別スレッド。数秒かかることがある)。
-func _upnp_worker(p: int) -> void:
+func _upnp_worker(p: int, gen: int) -> void:
 	var res := {"ok": false, "ip": "", "note": ""}
 	var upnp := UPNP.new()
 	var err := upnp.discover(2000, 2, "InternetGatewayDevice")
@@ -199,15 +225,18 @@ func _upnp_worker(p: int) -> void:
 	else:
 		res.note = "UPnP に対応したルーターが見つかりません"
 	res["upnp"] = upnp if res.ok else null
-	_on_upnp_done.call_deferred(res)
+	res["port"] = p
+	_on_upnp_done.call_deferred(res, gen)
 
 
-func _on_upnp_done(res: Dictionary) -> void:
-	if _thread != null:
-		_thread.wait_to_finish()
-		_thread = null
-	if role != "host":
+func _on_upnp_done(res: Dictionary, gen: int) -> void:
+	if gen != _gen or role != "host":   # 探している間に部屋を閉じた(または立て直した): 開けたポートは、すぐ閉じる(同じポートの部屋が今あるなら、そのまま使う)
+		if res.get("upnp") != null and not (role == "host" and port == int(res.port)):
+			_unmap(res.upnp, int(res.port))
 		return
+	if _thread != null:
+		_thread.wait_to_finish()   # 結果を送ったあと、すぐ終わる
+		_thread = null
 	_upnp = res.get("upnp")
 	var ip := str(res.ip)
 	if res.ok and InviteCode.is_ipv4(ip) and not InviteCode.is_non_routable(ip):
@@ -349,11 +378,12 @@ func close() -> void:
 	if _http != null:
 		_http.queue_free()
 		_http = null
+	_gen += 1
 	if _thread != null:
-		_thread.wait_to_finish()
+		_zombies.append(_thread)   # UPnP の探索は数秒かかることがある。終わるのを待たない(あとで回収する)
 		_thread = null
 	if _upnp != null:
-		_upnp.delete_port_mapping(port, "UDP")
+		_unmap(_upnp, port)
 		_upnp = null
 	role = ""
 	my_id = 0

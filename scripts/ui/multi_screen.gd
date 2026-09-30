@@ -15,6 +15,7 @@ const Volume = preload("res://scripts/volume.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
+const SongDownload = preload("res://scripts/song_download.gd")
 
 const BG_TINT := Color(0.3, 0.3, 0.36)
 const MODES := [["versus", "対戦"], ["coop", "協力"]]
@@ -36,6 +37,12 @@ var _t := 0.0
 var _resolve_t := 0.0
 var _ping_labels: Dictionary = {}
 var _preview_md5 := ""
+var _dl: Node                       # 曲のダウンロード(必要になったときに作る)
+var _dl_frac := 0.0
+var _dl_text := ""
+var _dl_error := ""
+var _dl_bar: ProgressBar
+var _dl_label: Label
 
 
 func setup(p_net, p_notice := "") -> void:
@@ -122,7 +129,7 @@ func _header(back_text: String, on_back: Callable) -> void:
 	back.text = back_text
 	back.focus_mode = Control.FOCUS_NONE
 	back.pressed.connect(on_back)
-	_place(back, 1124, 24, 124, 32)
+	_place(back, 1044, 24, 124, 34)   # 右上の「設定」(main のボタン)と並べる
 
 
 func _panel(x: float, y: float, w: float, h: float, alpha := 0.04) -> PanelContainer:
@@ -385,20 +392,7 @@ func _refresh_lobby() -> void:
 			mods.add_child(UiStyle.chip(md.name, md.color))
 		sv.add_child(mods)
 		if not is_host and not (net.players.has(net.my_id) and net.players[net.my_id].has_song):
-			sv.add_child(UiStyle.label("この曲を持っていません", 15, UiStyle.DANGER, true))
-			var url := osu_url(int(song.get("set_id", 0)), int(song.get("map_id", 0)))
-			if url != "":   # osu! の公式のダウンロードページ(ここでダウンロードして、曲フォルダに入れる。またはこのアプリで開く)
-				var link := LinkButton.new()
-				link.text = url
-				link.uri = url
-				link.underline = LinkButton.UNDERLINE_MODE_ALWAYS
-				link.focus_mode = Control.FOCUS_NONE
-				link.add_theme_color_override("font_color", UiStyle.ACCENT)
-				link.add_theme_color_override("font_hover_color", Color.WHITE)
-				link.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-				link.tooltip_text = "ブラウザで開きます"
-				sv.add_child(link)
-			sv.add_child(_button("曲フォルダを開く", _open_songs_dir))
+			_build_missing(sv, song)
 	if is_host:
 		var pick := _button("曲・MOD を選ぶ" if song.is_empty() else "曲・MOD を変更", func(): pick_song_requested.emit())
 		pick.custom_minimum_size = Vector2(0, 40)
@@ -412,6 +406,72 @@ func _refresh_lobby() -> void:
 		_status = UiStyle.label(reason, 13, UiStyle.TEXT_DIM)
 		_place(_status, 668, 638, 400, 20)
 	_update_bg()
+
+
+## 部屋の曲を持っていないとき(参加者): ダウンロードして取り込むボタン。ダウンロード中は進み具合。
+## 補助として、osu! の譜面ページ(ブラウザで開く)と、曲フォルダを開くボタンも出す。
+func _build_missing(sv: VBoxContainer, song: Dictionary) -> void:
+	sv.add_child(UiStyle.label("この曲を持っていません", 15, UiStyle.DANGER, true))
+	var set_id := int(song.get("set_id", 0))
+	var downloading: bool = _dl != null and _dl.busy
+	if set_id > 0 and not downloading:
+		var dl := _button("ダウンロードして取り込む", func(): _start_download(song), true)
+		dl.custom_minimum_size = Vector2(0, 40)
+		sv.add_child(dl)
+	if downloading:
+		_dl_bar = ProgressBar.new()
+		_dl_bar.min_value = 0.0
+		_dl_bar.max_value = 1.0
+		_dl_bar.value = _dl_frac
+		_dl_bar.show_percentage = false
+		_dl_bar.custom_minimum_size = Vector2(0, 10)
+		_dl_bar.add_theme_stylebox_override("background", UiStyle.box(Color(1, 1, 1, 0.12), Color(0, 0, 0, 0), 0, 3))
+		_dl_bar.add_theme_stylebox_override("fill", UiStyle.box(UiStyle.ACCENT, Color(0, 0, 0, 0), 0, 3))
+		sv.add_child(_dl_bar)
+		_dl_label = UiStyle.label(_dl_text, 13, UiStyle.TEXT_DIM)
+		sv.add_child(_dl_label)
+	elif _dl_error != "":
+		var err := UiStyle.label(_dl_error, 12, UiStyle.DANGER)
+		err.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		err.custom_minimum_size = Vector2(536, 0)
+		sv.add_child(err)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var url := osu_url(set_id, int(song.get("map_id", 0)))
+	if url != "":   # osu! の公式のページ(自分で入れたいとき)
+		row.add_child(_button("ブラウザで開く", func(): OS.shell_open(url)))
+	row.add_child(_button("曲フォルダを開く", _open_songs_dir))
+	sv.add_child(row)
+
+
+func _start_download(song: Dictionary) -> void:
+	if _dl == null:
+		_dl = SongDownload.new()
+		add_child(_dl)
+		_dl.progress.connect(_on_dl_progress)
+		_dl.finished.connect(_on_dl_finished)
+	_dl_error = ""
+	_dl_frac = 0.0
+	_dl_text = "接続しています…"
+	_dl.start(int(song.get("set_id", 0)), str(song.get("md5", "")), "%d %s - %s" % [int(song.get("set_id", 0)), str(song.get("artist", "")), str(song.get("title", ""))])
+	_refresh_lobby()
+
+
+func _on_dl_progress(frac: float, text: String) -> void:
+	_dl_frac = frac
+	_dl_text = text
+	if is_instance_valid(_dl_bar):
+		_dl_bar.value = frac
+	if is_instance_valid(_dl_label):
+		_dl_label.text = text
+
+
+func _on_dl_finished(r: Dictionary) -> void:
+	_dl_error = "" if r.ok else str(r.error)
+	if r.ok:
+		_resolve_song()   # 取り込んだ曲を見つけて、持っている印を net に伝える
+	if _page == "lobby":
+		_refresh_lobby()
 
 
 ## 開始できない理由(できるなら空文字)。

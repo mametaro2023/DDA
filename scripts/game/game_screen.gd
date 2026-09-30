@@ -94,6 +94,8 @@ var _paused := false
 var _end_timer := -1.0
 var _end_time := 0.0
 var _mouse_mode := false
+## いま木の中にあるプレイ画面の数(リトライでは、新しい画面が先に作られ、古い画面があとで消える)
+static var _alive := 0
 var _mouse_accum := Vector2.ZERO  # 未処理のカーソル移動量(相対)
 var _mouse_capture_ms := 0
 var _dead := false
@@ -168,7 +170,8 @@ func setup_multi(p_net, info: Dictionary, p_loader, p_bm, p_settings: Dictionary
 
 
 func _ready() -> void:
-	_mouse_mode = settings.get("control", "keyboard") == "mouse"
+	_alive += 1
+	_mouse_mode = settings.get("control", "mouse") == "mouse"
 	# 背景(譜面の画像を暗く)
 	var bg := ColorRect.new()
 	bg.color = Color(0.03, 0.03, 0.06)
@@ -267,7 +270,9 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_alive -= 1
+	if _alive <= 0:   # リトライで次のプレイ画面がすでに始まっているときは、触らない(マウスの捕まえを外してしまい、自機と独自カーソルが両方出る)
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN   # OS のカーソルは、どの画面でも隠したまま(アプリ独自のカーソルを出す。cursor_overlay.gd)
 	if net != null and _mp != null:
 		if net.game_message.is_connected(_mp.handle):
 			net.game_message.disconnect(_mp.handle)
@@ -592,7 +597,7 @@ func _begin_death(with_sound: bool) -> void:
 	if with_sound:
 		_sfx.play("explosion")  # ゲームオーバー時はこの爆発音だけ
 	if _mouse_mode:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 	_view_over.dead = true
 	_view_under.dead = true   # 機体(弾の下の層)も描かなくする
 	_view_over.death_pos = sim.death_pos
@@ -1074,7 +1079,7 @@ func _set_paused(p: bool) -> void:
 			UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
 		if _mouse_mode:
 			if p:
-				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+				Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 			else:
 				_capture_mouse()
 		return
@@ -1090,7 +1095,7 @@ func _set_paused(p: bool) -> void:
 		_audio.stream_paused = p
 	if _mouse_mode:
 		if p:
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		else:
 			_capture_mouse()
 

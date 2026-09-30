@@ -6,9 +6,8 @@ const Volume = preload("res://scripts/volume.gd")
 
 const DEFAULTS := {
 	"offset_ms": 0,       # 音と弾のタイミング校正(+で弾が遅れる)
-	"density_mul": 1.0,   # 弾密度倍率(目標の画面内弾数に掛ける)
 	"sfx_volume": 70,     # 効果音の音量 0..100(%)
-	"control": "keyboard", # 操作: keyboard / mouse
+	"control": "mouse",   # 操作: keyboard / mouse
 	"mouse_sens": 1.0,    # マウス感度(相対移動の倍率)
 	"mods": [],           # 付ける MOD の id(scripts/mods.gd)
 	"last_song": "",
@@ -17,6 +16,7 @@ const DEFAULTS := {
 	"music_volume": 100, # 音楽の音量 0..100(%)
 	"check_update": true, # 起動時に、新しいバージョンがないか確認する
 	"player_name": "",    # マルチプレイでの表示名(空なら初回に自動で決める)
+	"osz_open": "ask",    # .osz をアプリで開いたとき: ask(毎回聞く) / dda(このアプリで開く) / osu(osu! で開く)
 }
 
 

@@ -1,7 +1,7 @@
 extends Control
 ## 設定パネル(選曲画面の上に重ねる)。MOD / 操作 / 音 / ゲーム の 4 セクション。
 ## settings(Settings.load_all の辞書)を直接書き換え、変えたら changed(kind) を出す。保存は閉じるときに呼び出し側が行う。
-##   kind: "mods" | "density" | "volume" | "control" | "misc"
+##   kind: "mods" | "volume" | "control" | "misc"
 
 signal changed(kind: String)
 signal closed
@@ -23,7 +23,6 @@ var _nav: Array = []
 var _mod_cards := {}
 var _mod_summary: Label
 var _mod_preview: Label
-var _density_timer: Timer
 var _dim: ColorRect
 var _panel: PanelContainer
 var _closing := false
@@ -104,11 +103,6 @@ func _ready() -> void:
 		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		stack.add_child(p)
 
-	_density_timer = Timer.new()
-	_density_timer.one_shot = true
-	_density_timer.wait_time = 0.35
-	_density_timer.timeout.connect(func(): changed.emit("density"))
-	add_child(_density_timer)
 	_show(0)
 	# 開く動き: 背景が暗くなり、パネルが下からふわっと上がる
 	UiStyle.tween(_dim, "color:a", 0.0, 0.66, 0.22)
@@ -150,19 +144,20 @@ func close_panel() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo):
+	if not event is InputEventKey:
+		return
+	get_viewport().set_input_as_handled()   # 開いている間、キー操作は、下の画面へ渡さない
+	if not event.pressed or event.echo:
 		return
 	match event.keycode:
 		KEY_ESCAPE, KEY_O:
 			close_panel()
-			get_viewport().set_input_as_handled()
 		KEY_TAB:
 			var cur := 0
 			for k in range(_pages.size()):
 				if _pages[k].visible:
 					cur = k
 			_show((cur + (-1 if event.shift_pressed else 1) + _pages.size()) % _pages.size())
-			get_viewport().set_input_as_handled()
 
 
 # --- 共通の部品 ---
@@ -371,42 +366,57 @@ func _build_game() -> Control:
 	o.value_changed.connect(func(x: float):
 		settings.offset_ms = int(x)
 		changed.emit("misc"))
-	var d := _slider_row(v, "弾密度", 0.5, 1.5, 0.1, float(settings.density_mul), func(x): return "×%.1f" % x)
-	d.value_changed.connect(func(x: float):
-		settings.density_mul = x
-		_density_timer.start())   # 難易度の再計算は重いので、動かし終えてから
 	# 更新の確認
 	var gap_u := Control.new()
 	gap_u.custom_minimum_size = Vector2(0, 8)
 	v.add_child(gap_u)
 	v.add_child(_toggle_card("起動時に更新を確認する", "新しいバージョンがあれば、タイトル画面でお知らせします(GitHub に問い合わせます)", UiStyle.ACCENT,
 		bool(settings.check_update), "", func(on: bool): settings.check_update = on))
-	# .osz の関連付け(Windows の書き出した版のみ。既定のアプリは、Windows の設定で選ぶ)
-	if FileAssoc.supported() and OS.has_feature("template"):
+	# .osz を開くとき(Windows)。開いたときの動き + このアプリの関連付け(書き出した版のみ。既定のアプリは、Windows の設定で選ぶ)
+	if FileAssoc.supported():
 		var gap_a := Control.new()
 		gap_a.custom_minimum_size = Vector2(0, 8)
 		v.add_child(gap_a)
-		v.add_child(UiStyle.label(".osz ファイルを開く", 16, UiStyle.TEXT, true))
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 12)
-		var st := UiStyle.label("", 13, UiStyle.TEXT_DIM)
-		var reg := Button.new()
-		reg.focus_mode = Control.FOCUS_NONE
-		var refresh := func():
-			var on := FileAssoc.is_registered(OS.get_executable_path())
-			reg.text = "「プログラムから開く」に追加済み" if on else "「プログラムから開く」に追加"
-			reg.disabled = on
-		refresh.call()
-		reg.pressed.connect(func():
-			var ok := FileAssoc.register(OS.get_executable_path())
+		v.add_child(UiStyle.label(".osz ファイルを開いたとき", 16, UiStyle.TEXT, true))
+		var seg := HBoxContainer.new()
+		seg.add_theme_constant_override("separation", 8)
+		var group := ButtonGroup.new()
+		for m in [["ask", "毎回選ぶ"], ["dda", "このアプリで開く"], ["osu", "osu! で開く"]]:
+			var b := Button.new()
+			b.text = m[1]
+			b.toggle_mode = true
+			b.button_group = group
+			b.focus_mode = Control.FOCUS_NONE
+			b.custom_minimum_size = Vector2(150, 34)
+			b.button_pressed = str(settings.osz_open) == m[0]
+			var mode: String = m[0]
+			b.pressed.connect(func(): settings.osz_open = mode)
+			seg.add_child(b)
+		v.add_child(seg)
+		if OS.has_feature("template"):
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 12)
+			var st := UiStyle.label("", 13, UiStyle.TEXT_DIM)
+			var reg := Button.new()
+			reg.focus_mode = Control.FOCUS_NONE
+			var refresh := func():
+				var on := FileAssoc.is_registered(OS.get_executable_path())
+				reg.text = "「プログラムから開く」に追加済み" if on else "「プログラムから開く」に追加"
+				reg.disabled = on
 			refresh.call()
-			st.text = "" if ok else "登録できませんでした")
-		row.add_child(reg)
-		var dflt := Button.new()
-		dflt.text = "既定のアプリの設定を開く"
-		dflt.focus_mode = Control.FOCUS_NONE
-		dflt.pressed.connect(FileAssoc.open_default_apps)
-		row.add_child(dflt)
-		v.add_child(row)
-		v.add_child(st)
+			reg.pressed.connect(func():
+				var ok := FileAssoc.register(OS.get_executable_path())
+				refresh.call()
+				st.text = "" if ok else "登録できませんでした")
+			row.add_child(reg)
+			var dflt := Button.new()
+			dflt.text = "既定のアプリの設定を開く"
+			dflt.focus_mode = Control.FOCUS_NONE
+			dflt.pressed.connect(FileAssoc.open_default_apps)
+			row.add_child(dflt)
+			v.add_child(row)
+			var hint := UiStyle.label("Windows は、アプリが勝手に既定のアプリを変えることを認めていません。追加したあと「既定のアプリの設定を開く」で、「.osz」を検索して DDA を選んでください(または .osz を右クリック →「プログラムから開く」→ DDA →「常に使う」)。", 12, UiStyle.TEXT_FAINT)
+			hint.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+			v.add_child(hint)
+			v.add_child(st)
 	return v

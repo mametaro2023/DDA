@@ -1,0 +1,334 @@
+extends Node2D
+## アリーナ内の描画。layer 0 = 弾の下(予兆/軌道)、layer 1 = 弾の上(自機/発射エフェクト)。
+
+const GameSim = preload("res://scripts/game/game_sim.gd")
+const BulletField = preload("res://scripts/game/bullet_field.gd")
+const UiStyle = preload("res://scripts/ui/ui_style.gd")
+
+var sim
+var layer := 0
+var now := 0.0
+## ゲームオーバー演出(dead=true の間、自機の代わりに爆散エフェクトを描く)
+var dead := false
+var death_t := 0.0
+var death_pos := Vector2.ZERO
+## 被弾中の赤み(0..1)。game_screen が被弾で 1 に上げ、なめらかに減衰させる(点滅させない)
+var hit_glow := 0.0
+## 自機の軌跡(尾)。{p, t} を古い順に持つ。TRAIL_LIFE 秒で消える
+const TRAIL_LIFE := 0.2
+var _trail: Array = []
+var _trail_now := -1.0
+var _speed_vis := 0.0   # 自機の動きの速さ(0..1。尾の炎の長さ)
+var _slider_nodes := {}   # スライダーの軌道の描画ノード(key → {body, core})
+
+
+func _draw() -> void:
+	if sim == null:
+		return
+	if layer == 0:
+		_draw_under()
+	else:
+		_draw_over()
+
+
+func _color(idx: int) -> Color:
+	return BulletField.PALETTE[idx % BulletField.PALETTE.size()]
+
+
+func _draw_under() -> void:
+	var lead: float = sim.warn_lead
+	for g in sim.active_gizmos:
+		var c := _color(g.color)
+		var fade_in := clampf((now - (g.t - lead)) / lead, 0.0, 1.0)
+		var fade_out := clampf((g.end + 0.3 - now) / 0.3, 0.0, 1.0)
+		var a := fade_in * fade_out
+		if g.kind == "slider":
+			if now >= g.t - lead:
+				var ep := GameSim.slider_emitter(g, now)
+				draw_circle(ep, 9.0, Color(c.r, c.g, c.b, 0.9 * a))
+				draw_arc(ep, 13.0, 0.0, TAU, 24, Color(1, 1, 1, 0.8 * a), 2.0, true)
+		else:
+			draw_arc(g.pos, 42.0, 0.0, TAU, 48, Color(c.r, c.g, c.b, 0.8 * a), 3.0, true)
+			draw_circle(g.pos, 8.0, Color(1, 1, 1, 0.7 * a))
+	# 発射地点の印(暗闇 MOD: 弾が見えなくても、どこから撃ったかが分かる。撃った瞬間に立ち上がり、ゆっくり広がって消える)
+	for f in sim.recent_fires:
+		var k := clampf((now - f.t) / GameSim.FIRE_MARK_TIME, 0.0, 1.0)
+		var fc := _color(f.color)
+		var a := pow(1.0 - k, 1.6)
+		draw_arc(f.pos, 10.0 + 34.0 * (1.0 - pow(1.0 - k, 2.0)), 0.0, TAU, 40, Color(fc.r, fc.g, fc.b, 0.8 * a), 2.5, true)
+		draw_circle(f.pos, 6.0 * (1.0 - 0.5 * k), Color(1, 1, 1, 0.75 * a))
+	for e in sim.active_warns:
+		var p: float = clampf((e.t - now) / lead, 0.0, 1.0)  # 1→0
+		var c := Color.WHITE
+		if not e.shots.is_empty():
+			c = _color(e.shots[0].color)
+		var r := 12.0 + 56.0 * p
+		var a := 0.25 + 0.6 * (1.0 - p)
+		draw_arc(e.pos, r, 0.0, TAU, 40, Color(c.r, c.g, c.b, a), 2.5, true)
+		draw_circle(e.pos, 5.0, Color(1, 1, 1, a))
+	# 自機の機体は予兆・軌道の上、弾の下に描く(弾が機体の上に見える)
+	if not dead:
+		_draw_player_body()
+
+
+func _draw_over() -> void:
+	if dead:
+		_draw_death()
+		return
+	_draw_player_marks()
+
+
+## スライダーの軌道(帯 + 中心線)を、現在のギズモに合わせて作る・更新する・消す。game_screen が描画の前に呼ぶ。
+## 半透明の太線を draw_polyline で描くと、折れ線の関節ごとに重なって濃くなり、鋭い角ではトゲも出る。そこで、
+## 「不透明な 1 本の線(Line2D。角と端は丸い)」を CanvasGroup に入れ、グループ全体に 1 度だけ透明度をかける(重なりで濃くならない)。
+## 機体や予兆のリングより奥に描く(show_behind_parent)。
+func sync_sliders() -> void:
+	var live := {}
+	for g in sim.active_gizmos:
+		if g.kind != "slider":
+			continue
+		var key := "%s_%s" % [str(g.t), str(g.points[0])]
+		live[key] = true
+		if not _slider_nodes.has(key):
+			var c := _color(g.color)
+			_slider_nodes[key] = {
+				"body": _make_line_group(g.points, Color(c.r, c.g, c.b, 1.0), 10.0),
+				"core": _make_line_group(g.points, Color(1, 1, 1, 1.0), 2.0)}
+		var lead: float = sim.warn_lead
+		var a := clampf((now - (g.t - lead)) / lead, 0.0, 1.0) * clampf((g.end + 0.3 - now) / 0.3, 0.0, 1.0)
+		_slider_nodes[key].body.modulate.a = 0.28 * a
+		_slider_nodes[key].core.modulate.a = 0.35 * a
+	for key in _slider_nodes.keys():
+		if not live.has(key):
+			_slider_nodes[key].body.queue_free()
+			_slider_nodes[key].core.queue_free()
+			_slider_nodes.erase(key)
+
+
+func _make_line_group(points: PackedVector2Array, color: Color, width: float) -> CanvasGroup:
+	var grp := CanvasGroup.new()
+	grp.show_behind_parent = true
+	var ln := Line2D.new()
+	ln.points = points
+	ln.width = width
+	ln.default_color = color
+	ln.joint_mode = Line2D.LINE_JOINT_ROUND
+	ln.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	ln.end_cap_mode = Line2D.LINE_CAP_ROUND
+	ln.antialiased = true
+	grp.add_child(ln)
+	add_child(grp)
+	return grp
+
+
+## 自機の軌跡を更新する(時間ベース。フレームレートによらず、動いた分だけ約 TRAIL_LIFE 秒で消える尾になる)。
+func _update_trail() -> void:
+	if now == _trail_now:
+		return
+	var dt := clampf(now - _trail_now, 0.0, 0.1) if _trail_now >= 0.0 else 0.0
+	_trail_now = now
+	var p: Vector2 = sim.player_pos
+	var moved := 0.0
+	if not _trail.is_empty():
+		moved = p.distance_to(_trail[_trail.size() - 1].p)
+	if _trail.is_empty() or moved > 1.0:
+		_trail.append({"p": p, "t": now})
+	while not _trail.is_empty() and (now - _trail[0].t > TRAIL_LIFE or _trail.size() > 80):
+		_trail.remove_at(0)
+	# 動きの速さ(0..1)。尾の炎の長さに使う。なめらかに追従する
+	var target := clampf(moved / maxf(dt, 0.001) / 380.0, 0.0, 1.0) if dt > 0.0 else 0.0
+	_speed_vis += (target - _speed_vis) * (1.0 - exp(-maxf(dt, 0.0) * 10.0))
+
+
+## 自機の機体: 鋭い矢じり型(2 トーンの塗り分け + 中央の明るい背骨 + 淡い光)と、動くと伸びる尾。
+## **弾の下の層(layer 0)に描く**: 巨大化 MOD などで自機が大きくても、機体の下にある弾が隠れず、弾が機体の上に見える。
+func _draw_player_body() -> void:
+	_update_trail()
+	var p: Vector2 = sim.player_pos
+	var sc: float = sim.player_scale   # MOD で自機が大きくなる(当たり判定の点も同じ倍率)
+	var base := Color(0.32, 0.80, 1.0)
+	var body := base.lerp(Color(1.0, 0.32, 0.34), hit_glow)
+	var wing := Color(body.r * 0.52, body.g * 0.6, body.b * 0.92).lerp(Color(0.85, 0.2, 0.25), hit_glow * 0.5)
+	var spine := body.lerp(Color.WHITE, 0.82)
+
+	# 尾(軌跡): 1 本の帯。古いほど細く薄い(線分の重なりによる縞が出ないよう、頂点ごとに幅と透明度を変えた四角形でつなぐ)
+	if _trail.size() >= 2:
+		var left: Array = []
+		var right: Array = []
+		var cols: Array = []
+		for i in range(_trail.size()):
+			var q: Vector2 = _trail[i].p
+			var dir: Vector2 = (_trail[mini(i + 1, _trail.size() - 1)].p - _trail[maxi(i - 1, 0)].p)
+			if dir.length() < 0.001:
+				dir = Vector2.UP
+			var nrm := dir.normalized().orthogonal()
+			var k := 1.0 - clampf((now - float(_trail[i].t)) / TRAIL_LIFE, 0.0, 1.0)
+			var half := (0.4 + 3.4 * k) * sc
+			left.append(q + nrm * half)
+			right.append(q - nrm * half)
+			cols.append(Color(body.r, body.g, body.b, 0.5 * k))
+		for i in range(1, _trail.size()):
+			draw_polygon(PackedVector2Array([left[i - 1], left[i], right[i], right[i - 1]]), PackedColorArray([cols[i - 1], cols[i], cols[i], cols[i - 1]]))
+	# 淡い光
+	draw_circle(p + Vector2(0, 1) * sc, 21.0 * sc, Color(body.r, body.g, body.b, 0.06))
+	draw_circle(p + Vector2(0, 1) * sc, 13.0 * sc, Color(body.r, body.g, body.b, 0.10))
+	# 後ろの炎(動くほど長く伸びる)
+	var fl := (4.0 + 7.0 * _speed_vis) * sc
+	draw_colored_polygon(PackedVector2Array([p + Vector2(-2.6, 7.0) * sc, p + Vector2(2.6, 7.0) * sc, p + Vector2(0, 7.0 + fl / sc) * sc]),
+		Color(body.r, body.g, body.b, 0.5))
+	draw_colored_polygon(PackedVector2Array([p + Vector2(-1.3, 7.0) * sc, p + Vector2(1.3, 7.0) * sc, p + Vector2(0, 7.0 + fl * 0.6 / sc) * sc]),
+		Color(1, 1, 1, 0.75))
+
+	# 機体: 外形 → 翼の暗い面 → 中央の明るい背骨 → 縁
+	var hull := PackedVector2Array([
+		Vector2(0, -15), Vector2(5.5, -5), Vector2(11, 8), Vector2(6, 6.5), Vector2(3, 9),
+		Vector2(0, 6), Vector2(-3, 9), Vector2(-6, 6.5), Vector2(-11, 8), Vector2(-5.5, -5)])
+	var pts := PackedVector2Array()
+	for v in hull:
+		pts.append(p + v * sc)
+	draw_colored_polygon(pts, body)
+	for s in [1.0, -1.0]:
+		var w := PackedVector2Array([Vector2(2.4 * s, 0), Vector2(5.5 * s, -5), Vector2(11 * s, 8), Vector2(6 * s, 6.5), Vector2(3.4 * s, 3.5)])
+		var wp := PackedVector2Array()
+		for v in w:
+			wp.append(p + v * sc)
+		draw_colored_polygon(wp, wing)
+	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -12) * sc, p + Vector2(2.4, 2) * sc, p + Vector2(0, 6) * sc, p + Vector2(-2.4, 2) * sc]), spine)
+	pts.append(pts[0])
+	draw_polyline(pts, Color(1, 1, 1, 0.92), 1.2, true)
+
+
+
+## 自機の目印(弾の上の層 layer 1 に描く): 低速時に回る 4 本の弧、ゲージの残量リング、被弾リング、中心の当たり判定の点。
+## どれも細いので、弾を隠さない。当たり判定の点は、機体が大きくても位置が分かるように最前面に置く。
+func _draw_player_marks() -> void:
+	var p: Vector2 = sim.player_pos
+	var sc: float = sim.player_scale
+	# 低速: 周りを回る 4 本の短い弧
+	if sim.slow:
+		for i in range(4):
+			var a0 := now * 1.6 + TAU * float(i) / 4.0
+			draw_arc(p, 21.0 * sc, a0, a0 + 0.9, 10, Color(1, 1, 1, 0.5), 1.5, true)
+	# ゲージが減っているときだけ、自機の周りに残量のリングを出す(色は残量に応じて連続的に変わる。点滅なし)
+	if sim.gauge < 0.999:
+		var gc := UiStyle.hp_color(sim.gauge)
+		draw_arc(p, 27.0 * sc, -PI * 0.5, -PI * 0.5 + TAU * sim.gauge, 48, Color(gc.r, gc.g, gc.b, 0.85), 3.0, true)
+	if hit_glow > 0.01:
+		draw_arc(p, 17.0 * sc, 0.0, TAU, 32, Color(1.0, 0.35, 0.35, 0.7 * hit_glow), 2.5, true)
+	# 当たり判定の点(白い縁 + 赤い芯)
+	draw_circle(p, 4.5 * sc, Color(1, 1, 1, 1.0))
+	draw_circle(p, 2.5 * sc, Color(1.0, 0.25, 0.3, 1.0))
+
+
+## 決まった疑似乱数(0..1)。i = 粒の番号、salt = 用途ごとにずらす値。毎回同じ配置になる。
+func _h(i: int, salt: float) -> float:
+	return fmod(absf(sin(float(i) * 12.9898 + salt * 78.233) * 43758.5453), 1.0)
+
+
+## ゲームオーバーの爆散演出。加算合成で光らせる(game_screen が dead にする時に material を設定する)。
+## 点滅・画面全体のフラッシュ・画面揺れはなし。すべて、立ち上がり → なめらかな減衰。
+## 時間軸(death_t 秒):
+##   0〜0.1   中心のコアが立ち上がる(小さな光。画面全体は光らせない)
+##   0〜1.9   衝撃波(3 重: 円 / 六角形 / 大きく薄い円)、放射状の光条(彗星のように伸びて縮む)
+##   0〜1.6   火花(尾を引いて減速)、自機の破片(回転しながら散る)
+##   0.4〜2.9 余韻の火の粉(ゆっくり漂って消える)
+func _draw_death() -> void:
+	var t := death_t
+	var c := death_pos
+
+	# 1) コア: 小さな光。0.1 秒で立ち上がり、減衰しながら少し広がる
+	var core_out := clampf(1.0 - (t - 0.1) / 0.75, 0.0, 1.0)
+	var core := smoothstep(0.0, 0.1, t) * core_out * core_out
+	if core > 0.01:
+		var spread := 1.0 + 1.6 * (1.0 - core_out)
+		for k in range(6):
+			draw_circle(c, (7.0 + k * 8.0) * spread, Color(1.0, 0.78 - k * 0.06, 0.5 - k * 0.05, 0.085 * core))
+		draw_circle(c, (5.0 + 8.0 * core), Color(1, 1, 1, 0.6 * core))
+
+	# 2) 衝撃波(3 重)
+	var ring_col := [Color(1.0, 0.86, 0.72), Color(1.0, 0.38, 0.32), Color(0.55, 0.78, 1.0)]
+	var ring_delay := [0.0, 0.07, 0.18]
+	var ring_dur := [1.0, 1.3, 1.9]
+	var ring_max := [480.0, 600.0, 720.0]
+	for i in range(3):
+		var tt: float = (t - ring_delay[i]) / ring_dur[i]
+		if tt <= 0.0 or tt >= 1.0:
+			continue
+		var e: float = 1.0 - pow(1.0 - tt, 3.0)          # 速く出て、減速する
+		var r: float = 12.0 + ring_max[i] * e
+		var a: float = pow(1.0 - tt, 2.0)
+		var w: float = lerpf(7.0 - 2.0 * i, 0.8, tt)
+		var col: Color = ring_col[i]
+		if i == 1:
+			# 六角形の衝撃波(ゆっくり回る)
+			var pts := PackedVector2Array()
+			for k in range(7):
+				pts.append(c + Vector2.from_angle(TAU * float(k) / 6.0 + tt * 0.9) * r)
+			draw_polyline(pts, Color(col.r, col.g, col.b, a * 0.9), w, true)
+			draw_polyline(pts, Color(col.r, col.g, col.b, a * 0.2), w * 3.0, true)
+		else:
+			draw_arc(c, r, 0.0, TAU, 96, Color(col.r, col.g, col.b, a * 0.9), w, true)
+			draw_arc(c, r, 0.0, TAU, 96, Color(col.r, col.g, col.b, a * 0.2), w * 3.2, true)   # にじみ
+
+	# 3) 光条: 先頭が速く走り、後端が遅れて追いつく(彗星のように伸びて、縮んで消える)
+	for i in range(36):
+		var hh := _h(i, 1.0)
+		var life := 0.55 + 0.5 * hh
+		if t >= life:
+			continue
+		var k := t / life
+		var d := Vector2.from_angle(TAU * float(i) / 36.0 + hh * 0.12)
+		var head := (40.0 + 330.0 * (0.4 + hh)) * (1.0 - pow(1.0 - k, 3.0))
+		var tail := head * clampf(k * 1.6 - 0.15, 0.0, 1.0)
+		var col := Color(1.0, 0.9, 0.75) if i % 3 == 0 else (Color(1.0, 0.42, 0.36) if i % 3 == 1 else Color(0.62, 0.86, 1.0))
+		draw_line(c + d * tail, c + d * head, Color(col.r, col.g, col.b, (1.0 - k) * 0.85), 1.5 + (1.0 - k) * 1.5, true)
+
+	# 4) 火花: 尾を引いて減速し、白 → 橙 → 赤に変わりながら消える
+	for i in range(64):
+		var hh := _h(i, 2.0)
+		var h2 := _h(i, 3.0)
+		var life := 0.5 + 0.9 * h2
+		if t >= life:
+			continue
+		var kk := t / life
+		var d := Vector2.from_angle(h2 * TAU + hh)
+		var spd := 220.0 + 900.0 * hh * hh
+		var p1 := c + d * (spd * (1.0 - exp(-3.0 * t)) / 3.0)
+		var p0 := c + d * (spd * (1.0 - exp(-3.0 * maxf(t - 0.07, 0.0))) / 3.0)
+		var col := Color(1.0, 1.0 - 0.6 * kk, 0.8 - 0.7 * kk)
+		draw_line(p0, p1, Color(col.r, col.g, col.b, 1.0 - kk), 2.0, true)
+		draw_circle(p1, 1.8 * (1.0 - kk) + 0.6, Color(1, 1, 1, 1.0 - kk))
+
+	# 5) 自機の破片: 三角形が回りながら散り、薄れる
+	for i in range(10):
+		var hh := _h(i, 4.0)
+		var life := 1.5 + 0.4 * hh
+		if t >= life:
+			continue
+		var k := t / life
+		var ang := TAU * float(i) / 10.0 + hh * 0.5
+		var pos := c + Vector2.from_angle(ang) * ((90.0 + 260.0 * hh) * (1.0 - exp(-2.2 * t)) / 2.2)
+		var rot := ang + (hh - 0.5) * 14.0 * t
+		var sz := 5.0 + 7.0 * hh
+		var tri := PackedVector2Array([
+			pos + Vector2(sz, 0.0).rotated(rot),
+			pos + Vector2(-sz * 0.6, sz * 0.7).rotated(rot),
+			pos + Vector2(-sz * 0.6, -sz * 0.7).rotated(rot)])
+		var a := clampf((1.0 - k) * 1.6, 0.0, 1.0)
+		draw_colored_polygon(tri, Color(0.5, 0.92, 1.0, a * 0.55))
+		draw_polyline(PackedVector2Array([tri[0], tri[1], tri[2], tri[0]]), Color(1, 1, 1, a * 0.85), 1.4, true)
+
+	# 6) 余韻の火の粉: ゆっくり漂いながら現れ、なめらかに消える
+	for i in range(22):
+		var hh := _h(i, 5.0)
+		var h2 := _h(i, 6.0)
+		var born := 0.35 + 0.7 * hh
+		var life := 1.6 + 0.8 * h2
+		var k := (t - born) / life
+		if k <= 0.0 or k >= 1.0:
+			continue
+		var start := c + Vector2.from_angle(h2 * TAU) * (20.0 + 90.0 * hh)
+		var pos := start + Vector2(sin(t * 1.3 + hh * 6.0) * 14.0, -26.0 * (t - born) * (0.6 + hh))
+		var env := pow(sin(PI * k), 1.2)
+		var col := Color(1.0, 0.7 - 0.3 * hh, 0.4)
+		draw_circle(pos, 1.6 + 1.4 * hh, Color(col.r, col.g, col.b, 0.55 * env))

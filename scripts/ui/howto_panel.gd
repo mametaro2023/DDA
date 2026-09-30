@@ -1,0 +1,274 @@
+extends Control
+## 遊び方パネル(タイトル画面の上に重ねる)。ゲーム中の画面には説明文を出さない代わりに、説明はすべてここに集める。
+## 左に見出し(はじめに / 操作 / ゲージとスコア / MOD / 曲の追加)、右に内容。Esc / 閉じる で閉じる。
+
+signal closed
+
+const Mods = preload("res://scripts/mods.gd")
+const UiStyle = preload("res://scripts/ui/ui_style.gd")
+
+const SECTIONS := ["はじめに", "操作", "ゲージとスコア", "MOD", "曲の追加"]
+
+var _pages: Array = []
+var _nav: Array = []
+var _dim: ColorRect
+var _panel: PanelContainer
+var _closing := false
+
+
+func _ready() -> void:
+	theme = UiStyle.make_theme()
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	_dim = ColorRect.new()
+	_dim.color = Color(0, 0, 0, 0.7)
+	_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_dim)
+
+	var panel := PanelContainer.new()
+	_panel = panel
+	panel.position = Vector2(150, 36)
+	panel.size = Vector2(980, 648)
+	panel.add_theme_stylebox_override("panel", UiStyle.box(UiStyle.PANEL, UiStyle.LINE, 1, 8, 0, 0))
+	add_child(panel)
+	var root := HBoxContainer.new()
+	root.add_theme_constant_override("separation", 0)
+	panel.add_child(root)
+
+	# 左: 見出し
+	var nav_box := VBoxContainer.new()
+	nav_box.custom_minimum_size = Vector2(210, 0)
+	nav_box.add_theme_constant_override("separation", 6)
+	var nav_margin := MarginContainer.new()
+	for side in ["left", "right", "top", "bottom"]:
+		nav_margin.add_theme_constant_override("margin_" + side, 22)
+	nav_margin.add_child(nav_box)
+	root.add_child(nav_margin)
+	nav_box.add_child(UiStyle.label("HOW TO PLAY", 22, UiStyle.TEXT, true))
+	nav_box.add_child(UiStyle.caption("遊び方"))
+	var sp := Control.new()
+	sp.custom_minimum_size = Vector2(0, 14)
+	nav_box.add_child(sp)
+	var group := ButtonGroup.new()
+	for i in range(SECTIONS.size()):
+		var b := Button.new()
+		b.text = SECTIONS[i]
+		b.toggle_mode = true
+		b.button_group = group
+		b.focus_mode = Control.FOCUS_NONE
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.pressed.connect(func(): _show(i))
+		nav_box.add_child(b)
+		_nav.append(b)
+	var fill := Control.new()
+	fill.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	nav_box.add_child(fill)
+	var close := Button.new()
+	close.text = "閉じる"
+	close.focus_mode = Control.FOCUS_NONE
+	close.pressed.connect(close_panel)
+	nav_box.add_child(close)
+	var vline := ColorRect.new()
+	vline.color = UiStyle.LINE
+	vline.custom_minimum_size = Vector2(1, 0)
+	root.add_child(vline)
+
+	# 右: 内容(各セクションはスクロールできる)
+	var content_margin := MarginContainer.new()
+	content_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for side in ["left", "right", "top", "bottom"]:
+		content_margin.add_theme_constant_override("margin_" + side, 28)
+	root.add_child(content_margin)
+	var stack := Control.new()
+	content_margin.add_child(stack)
+	_pages = [_page_intro(), _page_controls(), _page_score(), _page_mods(), _page_songs()]
+	for p in _pages:
+		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		stack.add_child(p)
+	_show(0)
+	UiStyle.tween(_dim, "color:a", 0.0, 0.7, 0.22)
+	UiStyle.pop_in(panel, 0.0, Vector2(0, 28), 0.32)
+
+
+func _show(i: int) -> void:
+	var changed_page: bool = not _pages[i].visible
+	for k in range(_pages.size()):
+		_pages[k].visible = (k == i)
+		_nav[k].set_pressed_no_signal(k == i)
+	if changed_page and _panel != null and _panel.is_inside_tree():
+		UiStyle.tween(_pages[i], "modulate:a", 0.0, 1.0, 0.25)
+
+
+func close_panel() -> void:
+	if _closing:
+		return
+	_closing = true
+	if not UiStyle.animate:
+		closed.emit()
+		return
+	var t := create_tween().set_parallel(true)
+	t.tween_property(_dim, "color:a", 0.0, 0.16)
+	t.tween_property(_panel, "modulate:a", 0.0, 0.16)
+	t.tween_property(_panel, "position:y", _panel.position.y + 18.0, 0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	t.chain().tween_callback(func(): closed.emit())
+
+
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	match event.keycode:
+		KEY_ESCAPE:
+			close_panel()
+			get_viewport().set_input_as_handled()
+		KEY_TAB:
+			var cur := 0
+			for k in range(_pages.size()):
+				if _pages[k].visible:
+					cur = k
+			_show((cur + (-1 if event.shift_pressed else 1) + _pages.size()) % _pages.size())
+			get_viewport().set_input_as_handled()
+		KEY_UP, KEY_DOWN:
+			var cur2 := 0
+			for k in range(_pages.size()):
+				if _pages[k].visible:
+					cur2 = k
+			_show(clampi(cur2 + (-1 if event.keycode == KEY_UP else 1), 0, _pages.size() - 1))
+			get_viewport().set_input_as_handled()
+
+
+# --- 部品 ---
+
+## スクロールできるセクションの器。中身を入れる VBox を返す([スクロール, VBox])。
+func _section(title: String) -> Array:
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var v := VBoxContainer.new()
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v.add_theme_constant_override("separation", 12)
+	scroll.add_child(v)
+	v.add_child(UiStyle.label(title, 24, UiStyle.TEXT, true))
+	v.add_child(UiStyle.hline())
+	return [scroll, v]
+
+
+func _para(v: VBoxContainer, text: String, color := UiStyle.TEXT_DIM, size := 15) -> void:
+	var l := UiStyle.label(text, size, color)
+	l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v.add_child(l)
+
+
+func _head(v: VBoxContainer, text: String) -> void:
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 4)
+	v.add_child(gap)
+	v.add_child(UiStyle.label(text, 17, UiStyle.ACCENT, true))
+
+
+## 「キー … 内容」の 1 行。
+func _row(v: VBoxContainer, key: String, text: String) -> void:
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 14)
+	var k := UiStyle.label(key, 15, UiStyle.TEXT, true)
+	k.custom_minimum_size = Vector2(190, 0)
+	h.add_child(k)
+	var t := UiStyle.label(text, 15, UiStyle.TEXT_DIM)
+	t.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	h.add_child(t)
+	v.add_child(h)
+
+
+# --- 各セクション ---
+
+func _page_intro() -> Control:
+	var s := _section("はじめに")
+	var v: VBoxContainer = s[1]
+	_para(v, "曲の譜面(.osz)のノーツに合わせて、画面に弾が発射されます。自機を動かして弾をよけ、曲の最後まで生き残るのが目的です。", UiStyle.TEXT)
+	_para(v, "弾に当たっているあいだだけゲージが減り、ゲージが 0 になるとゲームオーバーです。弾のすぐそばを通り抜ける(グレイズ)と、ボーナス点が入ります。")
+	_head(v, "難易度(Lv)")
+	_para(v, "Lv は、画面に出る弾の量・弾の速さ・大きさ・曲の長さから、このゲーム独自の方法で計算した値です。本家 osu! の★と同じ目盛りで、MOD を付けると、付けた状態の値に変わります。")
+	_head(v, "キアイ")
+	_para(v, "譜面のキアイ(盛り上がり)の区間では、テンポに合わせて背景と弾が少し光ります。")
+	return s[0]
+
+
+func _page_controls() -> Control:
+	var s := _section("操作")
+	var v: VBoxContainer = s[1]
+	_head(v, "プレイ中")
+	_row(v, "移動(キーボード)", "矢印キー または WASD")
+	_row(v, "移動(マウス)", "マウスを動かす(カーソルは隠れて、動いた分だけ自機が動きます)")
+	_row(v, "低速", "Shift(マウスなら右クリックでも可)。ゆっくり細かく動けます")
+	_row(v, "イントロをスキップ", "Space。最初のノーツの少し前まで飛ばします")
+	_row(v, "ポーズ", "Esc。再開 / リトライ / メニューへ と、音量の調整ができます")
+	_head(v, "選曲画面")
+	_row(v, "↑ ↓", "曲または難易度を選ぶ")
+	_row(v, "← → / Tab", "操作の対象を「曲」と「難易度」で切り替える")
+	_row(v, "Enter", "開始(難易度をダブルクリックでも開始)")
+	_row(v, "O", "設定を開く")
+	_row(v, "Esc", "タイトルへ戻る")
+	_head(v, "設定")
+	_para(v, "操作方式(キーボード / マウス)、マウス感度、音量、効果音、音と弾のズレの校正(オフセット)、弾密度、MOD を、タイトルの「設定」か選曲画面から変えられます。")
+	return s[0]
+
+
+func _page_score() -> Control:
+	var s := _section("ゲージとスコア")
+	var v: VBoxContainer = s[1]
+	_head(v, "ゲージ")
+	_para(v, "弾に当たっているあいだだけ減ります。満タンは 250 ミリ秒ぶんの被弾で、残りが 20% 以下になると被ダメージは半分になります。当たっていないときは、少しずつ自然に回復します。")
+	_head(v, "休憩(BREAK)")
+	_para(v, "譜面の休憩区間です。得点も回復もありません。自機の周りの弾がなくなると、弾が消えて、休憩が終わるまでの残り時間が表示されます。")
+	_head(v, "スコア")
+	_para(v, "基本の 1,000,000 点に、グレイズのボーナス(最大 30,000 点)を足し、被ダメージ係数を掛けたものが最終スコアです。被弾するほど係数が下がり、ゲームオーバーは 0 点です。スコアは、弾が発射されるたびに少しずつ積み上がり、クリアで最終スコアになります。")
+	_head(v, "ランク")
+	_row(v, "SS", "ノーミス(被弾 0 回)でクリア")
+	_row(v, "S / A / B / C / D / F", "被弾の少なさに応じて決まります(S が最高、F が最低)。MOD の倍率には影響されません")
+	return s[0]
+
+
+func _page_mods() -> Control:
+	var s := _section("MOD")
+	var v: VBoxContainer = s[1]
+	_para(v, "プレイ前に付ける修飾です。複数付けると、効果もベーススコアの倍率も掛け算で重なります。「設定」の MOD で選びます。")
+	for m in Mods.ALL:
+		var pct := int(round((float(m.get("score_mul", 1.0)) - 1.0) * 100.0))
+		var head := HBoxContainer.new()
+		head.add_theme_constant_override("separation", 12)
+		head.add_child(UiStyle.label(m.name, 17, m.color, true))
+		head.add_child(UiStyle.chip("ベーススコア %+d%%" % pct, m.color))
+		v.add_child(head)
+		var effects: Array = []
+		for p in (m.desc as String).split(" / "):
+			if not p.begins_with("ベーススコア"):
+				effects.append(p)
+		_para(v, "  /  ".join(effects))
+	return s[0]
+
+
+func _page_songs() -> Control:
+	var s := _section("曲の追加")
+	var v: VBoxContainer = s[1]
+	_para(v, "曲は .osz(osu! の譜面パッケージ)を追加して増やせます。次のどちらでも追加できます。", UiStyle.TEXT)
+	_row(v, "songs フォルダ", "ゲームの隣の songs フォルダに .osz を入れて、ゲームを起動(または選曲画面を開き直す)")
+	_row(v, "ドラッグ&ドロップ", "選曲画面に .osz をドロップ、または「.osz を開く…」から選ぶ")
+	var btn := Button.new()
+	btn.text = "songs フォルダを開く"
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(220, 40)
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	btn.pressed.connect(_open_songs_dir)
+	v.add_child(btn)
+	_para(v, "曲が 1 つもないと、タイトルの曲は流れず、選曲画面は空になります。", UiStyle.TEXT_FAINT, 13)
+	return s[0]
+
+
+## 曲を入れるフォルダを開く。ゲームの隣に songs を作れなければ、ユーザーデータ内の songs を開く。
+func _open_songs_dir() -> void:
+	var d := OS.get_executable_path().get_base_dir().path_join("songs")
+	if DirAccess.make_dir_recursive_absolute(d) != OK:
+		d = ProjectSettings.globalize_path("user://songs")
+		DirAccess.make_dir_recursive_absolute(d)
+	OS.shell_open(d)

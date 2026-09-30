@@ -1,0 +1,6 @@
+# ソースは LF、Windows のバッチは CRLF のまま保つ
+* text=auto eol=lf
+*.bat text eol=crlf
+*.svg text eol=lf
+*.png binary
+*.import text eol=lf

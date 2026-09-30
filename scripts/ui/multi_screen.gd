@@ -11,6 +11,7 @@ const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const Volume = preload("res://scripts/volume.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
@@ -68,6 +69,7 @@ func _ready() -> void:
 	add_child(shade)
 	add_child(Ambient.new())
 	_audio = AudioStreamPlayer.new()
+	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.volume_db = -6.0
 	add_child(_audio)
 	_content = Control.new()
@@ -384,6 +386,18 @@ func _refresh_lobby() -> void:
 		sv.add_child(mods)
 		if not is_host and not (net.players.has(net.my_id) and net.players[net.my_id].has_song):
 			sv.add_child(UiStyle.label("この曲を持っていません", 15, UiStyle.DANGER, true))
+			var url := osu_url(int(song.get("set_id", 0)), int(song.get("map_id", 0)))
+			if url != "":   # osu! の公式のダウンロードページ(ここでダウンロードして、曲フォルダに入れる。またはこのアプリで開く)
+				var link := LinkButton.new()
+				link.text = url
+				link.uri = url
+				link.underline = LinkButton.UNDERLINE_MODE_ALWAYS
+				link.focus_mode = Control.FOCUS_NONE
+				link.add_theme_color_override("font_color", UiStyle.ACCENT)
+				link.add_theme_color_override("font_hover_color", Color.WHITE)
+				link.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+				link.tooltip_text = "ブラウザで開きます"
+				sv.add_child(link)
 			sv.add_child(_button("曲フォルダを開く", _open_songs_dir))
 	if is_host:
 		var pick := _button("曲・MOD を選ぶ" if song.is_empty() else "曲・MOD を変更", func(): pick_song_requested.emit())
@@ -513,3 +527,14 @@ func _input(event: InputEvent) -> void:
 		elif _page == "entry":
 			back_requested.emit()
 		get_viewport().set_input_as_handled()
+
+
+## osu! の譜面ページの URL(例: https://osu.ppy.sh/beatmapsets/320118#osu/738063)。set_id は曲全体、map_id は難易度の ID(#osu/ は osu!standard)。
+## 数字だけから作るので、他所から届いた文字列は URL に入らない。set_id が無ければ空文字。
+static func osu_url(set_id: int, map_id: int) -> String:
+	if set_id <= 0:
+		return ""
+	var url := "https://osu.ppy.sh/beatmapsets/%d" % set_id
+	if map_id > 0:
+		url += "#osu/%d" % map_id
+	return url

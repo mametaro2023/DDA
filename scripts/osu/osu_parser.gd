@@ -49,6 +49,8 @@ static func _parse_kv(bm: Beatmap, line: String) -> void:
 		"Artist": bm.artist = v
 		"Version": bm.version = v
 		"Creator": bm.creator = v
+		"BeatmapID": bm.beatmap_id = int(v)
+		"BeatmapSetID": bm.beatmapset_id = int(v)
 		"HPDrainRate": bm.hp = float(v)
 		"CircleSize": bm.cs = float(v)
 		"OverallDifficulty":

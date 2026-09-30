@@ -14,6 +14,7 @@ const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const Volume = preload("res://scripts/volume.gd")
 const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
@@ -154,6 +155,7 @@ func _ready() -> void:
 	_place(_status, 470, 680, 780, 18)
 
 	_audio = AudioStreamPlayer.new()
+	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.volume_db = -6.0
 	add_child(_audio)
 	_dialog = FileDialog.new()
@@ -172,7 +174,7 @@ func _ready() -> void:
 	if not _songs.is_empty():
 		var pick := 0
 		for i in range(_songs.size()):
-			if _songs[i].path == settings.last_song:
+			if _songs[i].key == SongLibrary.norm(str(settings.last_song)):
 				pick = i
 		_select_song(pick)
 
@@ -231,25 +233,36 @@ func _search_dirs() -> Array:
 
 func _scan() -> void:
 	_songs.clear()
-	for d in _search_dirs():
-		if not DirAccess.dir_exists_absolute(d):
-			continue
-		for f in DirAccess.get_files_at(d):
-			if f.to_lower().ends_with(".osz"):
-				_add_song(d.path_join(f))
+	var failed: Array = []
+	for p in SongLibrary.find_all():   # 同じファイルは 1 つにまとめて返る
+		if _add_song(p) < 0:
+			failed.append(str(p).get_file())
+	if not failed.is_empty():   # 読めなかった曲は、黙って飛ばさず、名前を出す
+		_status.text = "読み込めなかった曲: " + ", ".join(failed.slice(0, 3)) + (" ほか %d 件" % (failed.size() - 3) if failed.size() > 3 else "")
 
 
 ## 追加して一覧の index を返す(重複は既存の index、読めなければ -1)。カードは _rebuild_song_cards で作る。
 func _add_song(path: String) -> int:
 	path = path.replace("\\", "/")
-	for i in range(_songs.size()):
-		if _songs[i].path == path:
+	var key := SongLibrary.norm(path)
+	var size := -1
+	var fh := FileAccess.open(path, FileAccess.READ)
+	if fh != null:
+		size = fh.get_length()
+		fh.close()
+	var key2 := "%s|%d" % [path.get_file().to_lower(), size]
+	for i in range(_songs.size()):   # すでに一覧にある(パスが同じ、または名前と大きさが同じ)
+		if _songs[i].key == key or (size >= 0 and _songs[i].key2 == key2):
 			return i
 	var l = OszLoader.new()
 	if not l.open(path):
 		return -1
 	var bm = l.difficulties[0]
-	_songs.append({"path": path, "title": bm.title, "artist": bm.artist})
+	for i in range(_songs.size()):   # 別の名前で同じ曲が入っている(譜面の中身が同じ)ときも、1 つにする
+		if _songs[i].md5 == bm.md5:
+			l.close()
+			return i
+	_songs.append({"path": path, "title": bm.title, "artist": bm.artist, "key": key, "key2": key2, "md5": bm.md5})
 	l.close()
 	return _songs.size() - 1
 
@@ -346,7 +359,7 @@ func _select_song(i: int) -> void:
 	_rate_all()
 	_diff_sel = mini(2, _gens.size() - 1)
 	# 直前にプレイした曲に戻ったときは、そのとき選んだ難易度を選んだ状態にする
-	if _songs[i].path == settings.last_song and settings.last_diff != "":
+	if _songs[i].key == SongLibrary.norm(str(settings.last_song)) and settings.last_diff != "":
 		for k2 in range(_loader.difficulties.size()):
 			if _loader.difficulties[k2].version == settings.last_diff:
 				_diff_sel = k2

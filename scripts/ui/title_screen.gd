@@ -7,10 +7,12 @@ extends Control
 
 signal play_requested
 signal multi_requested
+signal update_requested
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const Volume = preload("res://scripts/volume.gd")
 const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
 const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
@@ -21,6 +23,8 @@ const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["
 const MUSIC_DB := -4.0
 
 var settings: Dictionary = {}
+var update_info: Dictionary = {}   # 新しいバージョンがあるとき、main が渡す(あとから見つかった場合は show_update)
+var _update_btn: Button
 
 var _sel := 0
 var _cards: Array = []
@@ -108,10 +112,32 @@ func _ready() -> void:
 
 	# 背景と曲は、最初の画面を出してから読み込む(読み込みで最初のフレームが遅れないように)
 	_audio = AudioStreamPlayer.new()
+	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.volume_db = -40.0
 	_audio.finished.connect(_play_random)
 	add_child(_audio)
 	_play_random.call_deferred()
+	if bool(update_info.get("newer", false)):
+		show_update(update_info)
+
+
+## 新しいバージョンの案内(版の表示の下)。押すと、アップデートのパネルが開く。
+func show_update(info: Dictionary) -> void:
+	if _update_btn != null:
+		return
+	_update_btn = Button.new()
+	_update_btn.text = "新しいバージョン v%s があります  ▶" % str(info.get("version", "?"))
+	_update_btn.focus_mode = Control.FOCUS_NONE
+	_update_btn.add_theme_stylebox_override("normal", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.14), UiStyle.ACCENT, 1, 4, 14, 6))
+	_update_btn.add_theme_stylebox_override("hover", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.26), UiStyle.ACCENT, 1, 4, 14, 6))
+	_update_btn.add_theme_color_override("font_color", UiStyle.ACCENT)
+	_update_btn.add_theme_color_override("font_hover_color", Color.WHITE)
+	_update_btn.position = Vector2(112, 328)
+	_update_btn.pressed.connect(func():
+		if _overlay == null and not _leaving:
+			update_requested.emit())
+	add_child(_update_btn)
+	UiStyle.pop_in(_update_btn, 0.35, Vector2(-30, 0), 0.5)
 
 
 func _version() -> String:

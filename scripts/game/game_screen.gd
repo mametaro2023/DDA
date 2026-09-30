@@ -14,6 +14,7 @@ const Settings = preload("res://scripts/settings.gd")
 const Sfx = preload("res://scripts/game/sfx.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const Volume = preload("res://scripts/volume.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
 
 const ARENA_POS := Vector2(160, 0)
@@ -68,6 +69,7 @@ var debug_death_t := -1.0
 var net
 var mp_info: Dictionary = {}
 var _mp
+var _vol_rev := 0              # Volume.rev の見た目(変わったら効果音の音量を反映し直す)
 var _mp_menu := false          # マルチプレイ中のメニュー(ゲームは止めずに重ねるだけ)
 var _mp_box: VBoxContainer     # 左パネルの参加者一覧
 var _mp_ids: Array = []
@@ -206,10 +208,12 @@ func _ready() -> void:
 
 	# 音声
 	_audio = AudioStreamPlayer.new()
+	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.stream = loader.load_audio(bm.audio_filename)
 	add_child(_audio)
 	_sfx = Sfx.new()
 	_sfx.volume = int(settings.get("sfx_volume", 70)) / 100.0
+	_vol_rev = Volume.rev
 	add_child(_sfx)
 
 	# 弾幕生成 + シミュ
@@ -439,6 +443,9 @@ func _label(text: String, pos: Vector2, font_size: int, width: float) -> Label:
 
 
 func _process(delta: float) -> void:
+	if Volume.rev != _vol_rev and _sfx != null:   # ホイールなどで効果音の音量が変わった
+		_vol_rev = Volume.rev
+		_sfx.volume = Volume.sfx / 100.0
 	if debug_seek >= 0.0 or _done:
 		return
 	if _paused:
@@ -1117,6 +1124,8 @@ func _set_master_volume(v: int) -> void:
 
 func _set_sfx_volume(v: int) -> void:
 	settings.sfx_volume = clampi(v, 0, 100)
+	Volume.set_sfx(settings.sfx_volume)
+	_vol_rev = Volume.rev
 	_sfx.volume = settings.sfx_volume / 100.0
 	_sfx.play("pop")
 	Settings.save_all(settings)
@@ -1125,6 +1134,9 @@ func _set_sfx_volume(v: int) -> void:
 
 ## ポーズ画面の表示を、今の設定・選択に合わせる。
 func _refresh_pause() -> void:
+	if Volume.loaded:   # ホイールで変えた値も出す
+		settings.volume = Volume.master
+		settings.sfx_volume = Volume.sfx
 	for i in range(_pause_btns.size()):
 		var sel := (i == _pause_sel)
 		_pause_btns[i].add_theme_stylebox_override("normal", UiStyle.box(

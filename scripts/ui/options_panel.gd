@@ -9,6 +9,8 @@ signal closed
 const Mods = preload("res://scripts/mods.gd")
 const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const Volume = preload("res://scripts/volume.gd")
+const FileAssoc = preload("res://scripts/file_assoc.gd")
 
 const SECTIONS := ["MOD", "操作", "音", "ゲーム"]
 
@@ -353,6 +355,12 @@ func _build_audio() -> Control:
 	var b := _slider_row(v, "効果音", 0, 100, 5, float(settings.sfx_volume), func(x): return "%d%%" % int(x))
 	b.value_changed.connect(func(x: float):
 		settings.sfx_volume = int(x)
+		Volume.set_sfx(x)
+		changed.emit("volume"))
+	var m := _slider_row(v, "音楽", 0, 100, 5, float(settings.music_volume), func(x): return "%d%%" % int(x))
+	m.value_changed.connect(func(x: float):
+		settings.music_volume = int(x)
+		Volume.set_music(x)
 		changed.emit("volume"))
 	return v
 
@@ -367,4 +375,38 @@ func _build_game() -> Control:
 	d.value_changed.connect(func(x: float):
 		settings.density_mul = x
 		_density_timer.start())   # 難易度の再計算は重いので、動かし終えてから
+	# 更新の確認
+	var gap_u := Control.new()
+	gap_u.custom_minimum_size = Vector2(0, 8)
+	v.add_child(gap_u)
+	v.add_child(_toggle_card("起動時に更新を確認する", "新しいバージョンがあれば、タイトル画面でお知らせします(GitHub に問い合わせます)", UiStyle.ACCENT,
+		bool(settings.check_update), "", func(on: bool): settings.check_update = on))
+	# .osz の関連付け(Windows の書き出した版のみ。既定のアプリは、Windows の設定で選ぶ)
+	if FileAssoc.supported() and OS.has_feature("template"):
+		var gap_a := Control.new()
+		gap_a.custom_minimum_size = Vector2(0, 8)
+		v.add_child(gap_a)
+		v.add_child(UiStyle.label(".osz ファイルを開く", 16, UiStyle.TEXT, true))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		var st := UiStyle.label("", 13, UiStyle.TEXT_DIM)
+		var reg := Button.new()
+		reg.focus_mode = Control.FOCUS_NONE
+		var refresh := func():
+			var on := FileAssoc.is_registered(OS.get_executable_path())
+			reg.text = "「プログラムから開く」に追加済み" if on else "「プログラムから開く」に追加"
+			reg.disabled = on
+		refresh.call()
+		reg.pressed.connect(func():
+			var ok := FileAssoc.register(OS.get_executable_path())
+			refresh.call()
+			st.text = "" if ok else "登録できませんでした")
+		row.add_child(reg)
+		var dflt := Button.new()
+		dflt.text = "既定のアプリの設定を開く"
+		dflt.focus_mode = Control.FOCUS_NONE
+		dflt.pressed.connect(FileAssoc.open_default_apps)
+		row.add_child(dflt)
+		v.add_child(row)
+		v.add_child(st)
 	return v

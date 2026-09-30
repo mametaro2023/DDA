@@ -6,30 +6,55 @@ extends RefCounted
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 
 
+## パスを比べるための形(区切りを / にそろえ、余分な / ・ . を除き、大文字小文字を区別しない)。
+## 同じ場所が、実行ファイルの位置と res:// から別の書き方で得られても(ドライブ文字の大小など)、同じと分かるようにする。
+static func norm(p: String) -> String:
+	return p.replace("\\", "/").simplify_path().trim_suffix("/").to_lower()
+
+
 static func search_dirs() -> Array:
 	var dirs: Array = []
+	var seen := {}
 	var proj := ProjectSettings.globalize_path("res://")
 	var exe := OS.get_executable_path().get_base_dir()
 	for d in [proj, proj.path_join("songs"), exe, exe.path_join("songs"),
 			ProjectSettings.globalize_path("user://songs")]:
 		d = str(d).replace("\\", "/")
-		if not dirs.has(d):
+		var key := norm(d)
+		if not seen.has(key):
+			seen[key] = true
 			dirs.append(d)
 	return dirs
 
 
-## 見つかった .osz のパス(重複なし)。
+## 見つかった .osz のパス。同じファイルは 1 つにする(場所の書き方が違うものも、同じ名前・同じ大きさのものも)。
 static func find_all() -> Array:
 	var out: Array = []
+	var seen := {}
 	for d in search_dirs():
 		if not DirAccess.dir_exists_absolute(d):
 			continue
 		for f in DirAccess.get_files_at(d):
 			if f.to_lower().ends_with(".osz"):
 				var p: String = str(d).path_join(f).replace("\\", "/")
-				if not out.has(p):
+				if _is_new(seen, p):
 					out.append(p)
 	return out
+
+
+## 追加してよいファイルか(すでに数えたものと同じなら false)。同じと見なすのは、パスが同じ、または名前と大きさが同じ。
+static func _is_new(seen: Dictionary, p: String) -> bool:
+	var k1 := norm(p)
+	var f := FileAccess.open(p, FileAccess.READ)
+	var size := f.get_length() if f != null else -1
+	if f != null:
+		f.close()
+	var k2 := "%s|%d" % [p.get_file().to_lower(), size]
+	if seen.has(k1) or (size >= 0 and seen.has(k2)):
+		return false
+	seen[k1] = true
+	seen[k2] = true
+	return true
 
 
 ## ユーザーデータ内の songs フォルダ(なければ作る)。ここにも .osz を置ける。

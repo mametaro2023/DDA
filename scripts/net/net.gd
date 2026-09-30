@@ -751,7 +751,8 @@ func _clean_room(d: Dictionary) -> Dictionary:
 	var sg = d.get("song", {})
 	if sg is Dictionary and not sg.is_empty():
 		song = {"md5": str(sg.get("md5", "")).substr(0, 32), "title": str(sg.get("title", "")).substr(0, 120), "artist": str(sg.get("artist", "")).substr(0, 120),
-			"version": str(sg.get("version", "")).substr(0, 120), "level": _num(sg.get("level", 0.0), 0.0, 0.0, 100.0)}
+			"version": str(sg.get("version", "")).substr(0, 120), "level": _num(sg.get("level", 0.0), 0.0, 0.0, 100.0),
+			"set_id": int(_num(sg.get("set_id", 0), 0.0, 0.0, 1e9)), "map_id": int(_num(sg.get("map_id", 0), 0.0, 0.0, 1e9))}
 	var mods: Array = []
 	var ms = d.get("mods", [])
 	if ms is Array:

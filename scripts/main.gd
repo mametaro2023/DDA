@@ -12,10 +12,19 @@ const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const Volume = preload("res://scripts/volume.gd")
+const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
+const Updater = preload("res://scripts/updater.gd")
+const UpdatePanel = preload("res://scripts/ui/update_panel.gd")
+const OszImport = preload("res://scripts/osz_import.gd")
+const SingleInstance = preload("res://scripts/single_instance.gd")
 
 var _current: Node
 var net                    # 通信層(マルチプレイを開くときに作る。部屋を出ても使い回す)
 var _last_play := {}
+var overlay                # 音量メーター・通知(全画面の上)
+var updater                # アプリ内アップデート(GitHub のリリースを確認する)
+var _instance            # 1 つだけ動かして、あとから開いた .osz を受け取る
 var _music: AudioStreamPlayer = null   # クリアで引き継いだ曲(リザルト中に流れ続ける)
 
 ## 画面切替の暗転フェード(通常起動のときだけ。開発用フックは即時に切り替える)
@@ -26,7 +35,7 @@ var _pending: Node = null
 
 
 func _ready() -> void:
-	Settings.apply_volume(Settings.load_all().volume)
+	Volume.init_from(Settings.load_all())
 	var args := OS.get_cmdline_user_args()
 	var i := args.find("--shot")
 	if i >= 0 and args.size() > i + 2:
@@ -40,6 +49,15 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-upnp"):
 		_smoke_upnp()
+		return
+	if args.has("--smoke-update"):
+		_smoke_update()
+		return
+	if args.has("--smoke-volume"):
+		_smoke_volume()
+		return
+	if args.has("--smoke-open"):
+		_smoke_open()
 		return
 	if args.has("--smoke-mp-ui"):
 		_smoke_mp_ui()
@@ -86,8 +104,29 @@ func _ready() -> void:
 	if args.has("--smoke"):
 		_smoke()
 		return
+	# .osz をつけて起動された(ファイルを開いた)とき: すでに動いているアプリがあれば、そちらへ渡して終わる
+	var osz := _osz_arg()
+	if osz != "" and SingleInstance.forward(osz):
+		get_tree().quit()
+		return
 	_setup_fade()
-	show_title()
+	overlay = HudOverlay.new()
+	add_child(overlay)
+	_instance = SingleInstance.new()
+	add_child(_instance)
+	_instance.start()
+	_instance.file_received.connect(_on_open_osz)
+	Updater.cleanup_after_update()
+	updater = Updater.new()
+	add_child(updater)
+	updater.check_finished.connect(_on_update_checked)
+	if bool(Settings.load_all().check_update):
+		updater.check()
+	get_window().files_dropped.connect(_on_files_dropped)
+	if osz != "":
+		_on_open_osz(osz)   # 起動したので、取り込んで選曲画面へ
+	else:
+		show_title()
 
 
 ## 開発用: 実時間で数秒プレイ(音声クロック/入力の確認)。-- --smoke
@@ -117,6 +156,57 @@ func _smoke() -> void:
 		print("real=%.2fs song_now=%.2f audio_playing=%s player=(%.0f,%.0f) bullets=%d sfx_played=%s" % [
 			(Time.get_ticks_msec() - t0) / 1000.0, g._now, str(g._audio.playing), g.sim.player_pos.x, g.sim.player_pos.y, g.field.count, str(g._sfx._last.keys())])
 	get_tree().quit()
+
+
+## 更新の確認が終わった。新しいバージョンがあれば、タイトル画面に案内を出す。
+func _on_update_checked(info: Dictionary) -> void:
+	if bool(info.get("newer", false)) and _current != null and _current.get_script() == TitleScreen:
+		_current.show_update(info)
+
+
+## 起動時の引数から、開く .osz を探す(ファイルの関連付けからは `-- "パス"` で届く。単に引数として渡されても拾う)。
+func _osz_arg() -> String:
+	for list in [OS.get_cmdline_user_args(), OS.get_cmdline_args()]:
+		for a in list:
+			var s := str(a)
+			if s.to_lower().ends_with(".osz") and FileAccess.file_exists(s):
+				return s.replace("\\", "/")
+	return ""
+
+
+## .osz を開いた(関連付け・ドロップ・別のアプリから)。取り込んで、選曲画面でその曲を選んだ状態にする。
+## プレイ中は邪魔をしない(取り込みだけして、通知を出す)。マルチプレイのロビーでは取り込みだけ(部屋の曲があれば、自動で見つかる)。
+func _on_open_osz(path: String) -> void:
+	print("[open] ", path)
+	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_MINIMIZED:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	DisplayServer.window_move_to_foreground()
+	var r := OszImport.import_file(path)
+	if not r.ok:
+		if overlay != null:
+			overlay.toast(str(r.error))
+		if _current == null:
+			show_title()
+		return
+	if overlay != null:
+		overlay.toast(("%s を開きます" if r.existed else "%s を取り込みました") % (str(r.title) if str(r.title) != "" else str(r.path).get_file()))
+	if _current != null and (_current.get_script() == GameScreen or _current.get_script() == MultiScreen):
+		return
+	var st := Settings.load_all()
+	st.last_song = r.path
+	st.last_diff = ""
+	Settings.save_all(st)
+	show_menu()
+
+
+## ウィンドウに .osz をドロップした(選曲画面では、選曲画面が自分で受け取る)。
+func _on_files_dropped(files: PackedStringArray) -> void:
+	if _current != null and _current.get_script() == MenuScreen:
+		return
+	for f in files:
+		if f.to_lower().ends_with(".osz"):
+			_on_open_osz(f)
+			return
 
 
 ## 画面を切り替える。通常起動では、短い暗転(フェードアウト → 入れ替え → フェードイン。点滅・フラッシュなし)を挟む。
@@ -170,6 +260,12 @@ func show_title() -> void:
 	var t := TitleScreen.new()
 	t.play_requested.connect(show_menu)
 	t.multi_requested.connect(show_multi)
+	t.update_requested.connect(func():
+		var p := UpdatePanel.new()
+		p.setup(updater)
+		t._open(p))
+	if updater != null:
+		t.update_info = updater.info
 	_stop_music()
 	_swap(t)
 
@@ -211,7 +307,7 @@ func show_multi(notice := "") -> void:
 func _on_song_picked(loader, bm, settings: Dictionary, level: float) -> void:
 	var n = _get_net()
 	if n.is_host():
-		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": level},
+		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": level, "set_id": bm.beatmapset_id, "map_id": bm.beatmap_id},
 			settings.mods, float(settings.density_mul), loader, bm)
 	show_multi()
 
@@ -362,6 +458,27 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 						_current._animate_hud(1.0 / 60.0)
 					_current._low_vis = _current._low_target()
 					_current._refresh()
+		"update":
+			show_title()   # 新しいバージョンの案内とパネル。例: --shot update out.png [panel]
+			updater = Updater.new()
+			add_child(updater)
+			updater.info = {"ok": true, "newer": true, "version": "0.3.0-beta", "notes": "## v0.3.0 beta\n- 新機能 A を追加\n- **修正** B\n- `songs` フォルダの扱いを改善", "page": Updater.PAGE_URL}
+			_current.show_update(updater.info)
+			if extra.has("panel"):
+				var up := UpdatePanel.new()
+				up.setup(updater)
+				_current._open(up)
+		"volume":
+			show_title()   # 音量メーター(音楽を選択中)と通知。例: --shot volume out.png
+			overlay = HudOverlay.new()
+			add_child(overlay)
+			await get_tree().process_frame
+			Volume.set_master(60)
+			Volume.set_music(35)
+			Volume.set_sfx(85)
+			overlay._sel = 1
+			overlay._show_panel()
+			overlay.toast("320118 Reol - No title.osz を取り込みました")
 		"multi":
 			show_multi()   # 入口
 		"lobby":
@@ -551,7 +668,7 @@ func _smoke_ui() -> void:
 	for i in range(3):
 		await get_tree().process_frame
 	print("Q          -> screen=%s" % _current.get_script().resource_path.get_file())
-	Settings.save_all(orig)   # ユーザーの設定ファイルを元に戻す
+	Settings.restore(orig)   # ユーザーの設定ファイルを元に戻す
 	print("settings restored")
 	get_tree().quit()
 
@@ -755,7 +872,7 @@ func _smoke_back() -> void:
 	var m2 = _current
 	var got: String = m2._loader.difficulties[m2._diff_sel].version if m2._diff_sel >= 0 else "-"
 	print("back in menu: song=%s idx=%d '%s'  -> %s" % [m2._songs[m2._song_sel].path.get_file(), m2._diff_sel, got, "OK" if got == want else "MISMATCH"])
-	Settings.save_all(original)   # ユーザーの設定を元に戻す
+	Settings.restore(original)   # ユーザーの設定を元に戻す
 	get_tree().quit()
 
 
@@ -851,7 +968,7 @@ func _smoke_title() -> void:
 	await _key(KEY_ESCAPE)
 	await get_tree().create_timer(0.8).timeout
 	print("after Esc:  %s" % _current.get_script().resource_path.get_file())
-	Settings.save_all(original)
+	Settings.restore(original)
 	get_tree().quit()
 
 
@@ -1100,6 +1217,7 @@ func _smoke_mp() -> void:
 		chk.call(worst < 12.0, "弾の位置がほぼ一致(a の各弾から、b の最も近い弾までの最大 %.1fpx)" % worst)
 	else:
 		chk.call(gb.sim.gauge > ga.sim.gauge + 0.05 or ga.sim.gauge < 0.999, "対戦: ゲージは各自(a は被弾で減る、b は避けて減らない): a=%.3f b=%.3f" % [ga.sim.gauge, gb.sim.gauge])
+		chk.call(gb.sim.score > ga.sim.score, "対戦: プレイ中は、避けた b のスコアが、動かない a より高い(a=%.0f、b=%.0f)" % [ga.sim.score, gb.sim.score])
 		chk.call(ga._mp.remotes[b.my_id].score > 0.0 and absf(ga._mp.remotes[b.my_id].score - gb.sim.score) < 0.05 * maxf(gb.sim.score, 1.0) + 2000.0, "相手のスコアが届く: %.0f / %.0f" % [ga._mp.remotes[b.my_id].score, gb.sim.score])
 	# 終盤へ飛んで、クリアまでの流れ
 	var last: float = ga.sim.events[ga.sim.events.size() - 1].t
@@ -1114,7 +1232,7 @@ func _smoke_mp() -> void:
 		if mode == "coop":
 			chk.call(not done.a.failed and not done.b.failed and absf(done.a.score - done.b.score) < 1.0 and done.a.hits == done.b.hits, "協力: 同じチームの結果(スコア・被弾)になる")
 		else:
-			chk.call(not done.a.failed and not done.b.failed and done.b.score > done.a.score, "対戦: 動かない a より、避けた b のスコアが高い")
+			chk.call(not done.a.failed and not done.b.failed and absf(done.a.score - done.b.score) > 1.0, "対戦: 各自が自分のスコアで終わる(a=%.0f、b=%.0f)" % [done.a.score, done.b.score])
 	await get_tree().create_timer(0.6).timeout
 	chk.call(a.results.size() == 2 and b.results.size() == 2, "最終成績が全員に配られる: %s" % str(a.results.keys()))
 	if a.results.size() == 2:
@@ -1262,7 +1380,7 @@ func _smoke_mp_ui() -> void:
 	while ok.left == "-" and Time.get_ticks_msec() - t0 < 6000:
 		await get_tree().process_frame
 	chk.call(ok.left != "-" and ok.left != "", "ホストが抜けると、参加者に「%s」と届く" % ok.left)
-	Settings.save_all(original)
+	Settings.restore(original)
 	print("smoke-mp-ui: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()
 
@@ -1277,7 +1395,7 @@ func _mp_guest_room(nosong: bool) -> void:
 	var loader := OszLoader.new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[3]
-	h.set_song({"md5": "0".repeat(32) if nosong else bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": 4.62}, ["dark"], 1.0, loader, bm)   # nosong: 参加者の手元にない曲(MD5 が見つからない)
+	h.set_song({"md5": "0".repeat(32) if nosong else bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": 4.62, "set_id": bm.beatmapset_id, "map_id": bm.beatmap_id}, ["dark"], 1.0, loader, bm)   # nosong: 参加者の手元にない曲(MD5 が見つからない)
 	var n = _get_net()
 	n.use_upnp = false
 	var ok := {"v": false}
@@ -1305,4 +1423,158 @@ func _smoke_upnp() -> void:
 	print("decoded: ", InviteCode.decode(n.code))
 	n.leave()   # ポートを閉じる
 	print("closed")
+	get_tree().quit()
+
+
+## 開発用: ホイールで音量が変わること(メーターの表示・選択・消えたら戻る)を、実際の入力で確認する。-- --smoke-volume
+func _smoke_volume() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	overlay = HudOverlay.new()
+	add_child(overlay)
+	Volume.set_master(50)
+	Volume.set_music(60)
+	Volume.set_sfx(70)
+	show_title()
+	await get_tree().create_timer(0.8).timeout
+	var wheel := func(up: bool):
+		var e := InputEventMouseButton.new()
+		e.button_index = MOUSE_BUTTON_WHEEL_UP if up else MOUSE_BUTTON_WHEEL_DOWN
+		e.pressed = true
+		e.position = Vector2(900, 400)
+		e.global_position = e.position
+		Input.parse_input_event(e)
+		await get_tree().process_frame
+		await get_tree().process_frame
+	await wheel.call(true)
+	await wheel.call(true)
+	chk.call(Volume.master == 60 and Volume.music == 60 and overlay._shown and overlay._panel.visible, "ホイールを 2 回: 全体音量 50 → %d、メーターが出る" % Volume.master)
+	await wheel.call(false)
+	chk.call(Volume.master == 55, "ホイール下で下がる: %d" % Volume.master)
+	# 音楽のメーターをクリックして選ぶ
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	overlay._rows[1].gui_input.emit(click)
+	await wheel.call(true)
+	chk.call(overlay._sel == 1 and Volume.music == 65 and Volume.master == 55, "「音楽」を選んで回すと音楽だけ変わる: 音楽 %d / 全体 %d" % [Volume.music, Volume.master])
+	overlay._rows[2].gui_input.emit(click)
+	await wheel.call(false)
+	chk.call(Volume.sfx == 65 and Volume.music == 65, "「効果音」を選んで回すと効果音だけ変わる: 効果音 %d" % Volume.sfx)
+	# 触れずにいると消えて、選択が戻る
+	await get_tree().create_timer(2.4).timeout
+	chk.call(not overlay._shown and not overlay._panel.visible and overlay._sel == 0, "しばらくすると消えて、選択は「全体」に戻る")
+	await wheel.call(true)
+	chk.call(Volume.master == 60 and Volume.sfx == 65 and overlay._sel == 0, "次に回すと、また全体音量が変わる: 全体 %d / 効果音 %d" % [Volume.master, Volume.sfx])
+	# 保存される
+	await get_tree().create_timer(2.4).timeout
+	var saved := ConfigFile.new()
+	saved.load(Settings.PATH)
+	chk.call(int(saved.get_value("game", "volume", -1)) == 60 and int(saved.get_value("game", "sfx_volume", -1)) == 65 and int(saved.get_value("game", "music_volume", -1)) == 65, "消えたときに保存される(全体 %s / 音楽 %s / 効果音 %s)" % [str(saved.get_value("game", "volume")), str(saved.get_value("game", "music_volume")), str(saved.get_value("game", "sfx_volume"))])
+	# 古い設定を持った画面が保存しても、変えた音量を戻さない
+	var stale := Settings.load_all()
+	stale.volume = 1
+	Settings.save_all(stale)
+	var saved2 := ConfigFile.new()
+	saved2.load(Settings.PATH)
+	chk.call(int(saved2.get_value("game", "volume", -1)) == 60, "古い値を持った画面が保存しても、音量は戻らない")
+	Settings.restore(original)
+	print("smoke-volume: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## 開発用: .osz を開いたときの流れ(取り込み → 選曲画面で選ぶ)と、別のプロセスから渡す動きを確認する。-- --smoke-open
+func _smoke_open() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	overlay = HudOverlay.new()
+	add_child(overlay)
+	_instance = SingleInstance.new()
+	add_child(_instance)
+	chk.call(_instance.start(), "待ち受けを始める(127.0.0.1:%d)" % SingleInstance.PORT)
+	_instance.file_received.connect(_on_open_osz)
+	get_window().files_dropped.connect(_on_files_dropped)
+	show_title()
+	await get_tree().create_timer(1.0).timeout
+	# 別のプロセスが、.osz をつけて起動する → こちらへ渡して、自分は終わる
+	var osz := "C:/Desktop/my_apps/DDA/241526 Soleily - Renatus.osz"
+	var pid := OS.create_process(OS.get_executable_path(), ["--path", ProjectSettings.globalize_path("res://"), "--", osz])
+	var t0 := Time.get_ticks_msec()
+	while OS.is_process_running(pid) and Time.get_ticks_msec() - t0 < 15000:
+		await get_tree().process_frame
+	chk.call(not OS.is_process_running(pid), "あとから起動したほうは、渡して終了する(%d ms)" % (Time.get_ticks_msec() - t0))
+	await get_tree().create_timer(1.5).timeout
+	chk.call(_current.get_script() == MenuScreen, "こちらは選曲画面へ移る: %s" % _current.get_script().resource_path.get_file())
+	var m = _current
+	chk.call(m._song_sel >= 0 and m._songs[m._song_sel].path.contains("Soleily"), "開いた曲が選ばれている: %s" % (m._songs[m._song_sel].path.get_file() if m._song_sel >= 0 else "-"))
+	# 別の曲を、ウィンドウへのドロップの代わりに直接開く(取り込み済みなので、そのまま使う)
+	_on_open_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+	await get_tree().create_timer(1.5).timeout
+	m = _current
+	chk.call(m.get_script() == MenuScreen and m._songs[m._song_sel].path.contains("Reol"), "続けて別の曲を開くと、その曲が選ばれる")
+	# プレイ中は、画面を変えない
+	start_game(m._loader, m._loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	await get_tree().create_timer(1.0).timeout
+	var g = _current
+	_on_open_osz("C:/Desktop/my_apps/DDA/241526 Soleily - Renatus.osz")
+	await get_tree().create_timer(0.8).timeout
+	chk.call(_current == g and g.get_script() == GameScreen, "プレイ中に開いても、画面は変わらない(通知だけ)")
+	# 壊れたファイルは通知を出すだけ
+	_on_open_osz("C:/Desktop/my_apps/DDA/README.md")
+	await get_tree().create_timer(0.5).timeout
+	chk.call(_current == g, "対応しないファイルでは、何も起きない")
+	Settings.restore(original)
+	print("smoke-open: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## 開発用: アプリ内アップデートの流れを、手元のサーバー(tests/fake_release_server.js)で確認する。-- --smoke-update <APIのURL> [apply]
+##   確認 → ダウンロード → 検証 → 取り出し(apply をつけると、そのあと入れ替えて再起動まで)
+func _smoke_update() -> void:
+	var args := OS.get_cmdline_user_args()
+	var url: String = args[args.find("--smoke-update") + 1]
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	updater = Updater.new()
+	add_child(updater)
+	updater.api_url = url
+	updater.allow_any_url = true
+	updater.force_apply = true
+	var ev := {"info": null, "staged": false, "failed": ""}
+	updater.check_finished.connect(func(i): ev.info = i)
+	updater.staged.connect(func(): ev.staged = true)
+	updater.failed.connect(func(m): ev.failed = m)
+	updater.check()
+	while ev.info == null:
+		await get_tree().process_frame
+	var info: Dictionary = ev.info
+	chk.call(info.ok and info.newer, "新しいバージョンを見つける: 現在 %s → %s (%s)" % [updater.current, str(info.get("version", "")), "newer" if info.get("newer", false) else "-"])
+	chk.call(str(info.get("digest", "")).begins_with("sha256:") and int(info.get("asset_size", 0)) > 0, "サイズとハッシュが分かる: %d bytes %s" % [int(info.get("asset_size", 0)), str(info.get("digest", "")).left(18)])
+	updater.start_download()
+	var t0 := Time.get_ticks_msec()
+	while not ev.staged and ev.failed == "" and Time.get_ticks_msec() - t0 < 120000:
+		await get_tree().process_frame
+	if args.has("expect-fail"):
+		chk.call(ev.failed != "" and not ev.staged, "壊れたダウンロードは断る: %s" % ev.failed)
+		print("smoke-update: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+		get_tree().quit()
+		return
+	chk.call(ev.staged, "ダウンロード・検証・取り出しができる(%d ms)%s" % [Time.get_ticks_msec() - t0, " " + ev.failed if ev.failed != "" else ""])
+	chk.call(FileAccess.file_exists(updater.stage_dir.path_join("DDA.exe")) and FileAccess.file_exists(updater.stage_dir.path_join("README.txt")), "DDA.exe と README.txt が取り出されている")
+	print("smoke-update: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	if args.has("apply") and st.fails == 0:
+		print("applying...")
+		updater.apply_and_quit()
+		return
 	get_tree().quit()

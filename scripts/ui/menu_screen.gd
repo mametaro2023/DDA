@@ -6,6 +6,8 @@ extends Control
 
 signal play_requested(loader, bm, settings: Dictionary)
 signal back_requested
+## マルチプレイの部屋の曲を選ぶモード(pick_mode = true): 「決定」で、開始せずに選んだ内容を返す(level は MOD 適用後の Lv)
+signal song_picked(loader, bm, settings: Dictionary, level: float)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
@@ -22,6 +24,7 @@ const BG_TINT := Color(0.34, 0.34, 0.4)
 const BAR_MAX := 500.0
 
 var settings: Dictionary = {}
+var pick_mode := false
 
 var _songs: Array = []          # [{path, title, artist}]
 var _loader                     # 選択中の OszLoader
@@ -81,7 +84,7 @@ func _ready() -> void:
 	_intro_nodes.append(_place(UiStyle.label("DDA", 30, UiStyle.ACCENT, true), 36, 20, 200, 40))
 	_intro_nodes.append(_place(UiStyle.caption("OSU! DANMAKU DODGER"), 38, 62, 300, 16))
 	var back_btn := Button.new()
-	back_btn.text = "◀  タイトル"
+	back_btn.text = "◀  ロビー" if pick_mode else "◀  タイトル"
 	back_btn.focus_mode = Control.FOCUS_NONE
 	back_btn.pressed.connect(func(): back_requested.emit())
 	_intro_nodes.append(_place(back_btn, 312, 24, 124, 32))
@@ -136,7 +139,7 @@ func _ready() -> void:
 	_intro_nodes.append(_place(opt_btn, 996, 626, 118, 40))
 	_buttons.append(opt_btn)
 	var play := Button.new()
-	play.text = "PLAY"
+	play.text = "決定" if pick_mode else "PLAY"
 	play.focus_mode = Control.FOCUS_NONE
 	play.add_theme_stylebox_override("normal", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.9), Color(0, 0, 0, 0), 0, 4, 16, 8))
 	play.add_theme_stylebox_override("hover", UiStyle.box(UiStyle.ACCENT, Color(0, 0, 0, 0), 0, 4, 16, 8))
@@ -576,6 +579,9 @@ func _start() -> void:
 		settings.last_diff = _loader.difficulties[_diff_sel].version
 	Settings.save_all(settings)
 	_audio.stop()
+	if pick_mode:
+		song_picked.emit(_loader, _loader.difficulties[_diff_sel], settings, float(_ratings[_diff_sel].level))
+		return
 	play_requested.emit(_loader, _loader.difficulties[_diff_sel], settings)
 
 

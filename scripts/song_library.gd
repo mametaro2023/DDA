@@ -37,3 +37,18 @@ static func ensure_user_dir() -> String:
 	var d := ProjectSettings.globalize_path("user://songs")
 	DirAccess.make_dir_recursive_absolute(d)
 	return d
+
+
+## 譜面の MD5(Beatmap.md5)から、その譜面を含む .osz を探す(マルチプレイで、部屋の曲を持っているかの確認)。
+## 見つかったら {path, version}、なければ空の辞書。.osz の中の .osu を読んで MD5 を数えるだけ(譜面の解析はしない)ので軽い。
+static func find_by_md5(md5: String) -> Dictionary:
+	for path in find_all():
+		var z := ZIPReader.new()
+		if z.open(path) != OK:
+			continue
+		for f in z.get_files():
+			if f.to_lower().ends_with(".osu") and z.read_file(f).get_string_from_utf8().md5_text() == md5:
+				z.close()
+				return {"path": path, "file": f}
+		z.close()
+	return {}

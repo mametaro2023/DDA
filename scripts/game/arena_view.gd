@@ -20,6 +20,9 @@ var _trail: Array = []
 var _trail_now := -1.0
 var _speed_vis := 0.0   # 自機の動きの速さ(0..1。尾の炎の長さ)
 var _slider_nodes := {}   # スライダーの軌道の描画ノード(key → {body, core})
+## マルチプレイ: 自分の機体の色と、他の人の機体 [{pos, color, name, slow, alpha}](mp_game.gd が決める)
+var own_color := Color(0.32, 0.80, 1.0)
+var remotes: Array = []
 
 
 func _draw() -> void:
@@ -68,6 +71,8 @@ func _draw_under() -> void:
 		draw_circle(e.pos, 5.0, Color(1, 1, 1, a))
 	# 自機の機体は予兆・軌道の上、弾の下に描く(弾が機体の上に見える)
 	if not dead:
+		for r in remotes:
+			_draw_remote_ship(r)
 		_draw_player_body()
 
 
@@ -75,6 +80,7 @@ func _draw_over() -> void:
 	if dead:
 		_draw_death()
 		return
+	_draw_remote_marks()
 	_draw_player_marks()
 
 
@@ -146,7 +152,7 @@ func _draw_player_body() -> void:
 	_update_trail()
 	var p: Vector2 = sim.player_pos
 	var sc: float = sim.player_scale   # MOD で自機が大きくなる(当たり判定の点も同じ倍率)
-	var base := Color(0.32, 0.80, 1.0)
+	var base := own_color
 	var body := base.lerp(Color(1.0, 0.32, 0.34), hit_glow)
 	var wing := Color(body.r * 0.52, body.g * 0.6, body.b * 0.92).lerp(Color(0.85, 0.2, 0.25), hit_glow * 0.5)
 	var spine := body.lerp(Color.WHITE, 0.82)
@@ -168,7 +174,13 @@ func _draw_player_body() -> void:
 			right.append(q - nrm * half)
 			cols.append(Color(body.r, body.g, body.b, 0.5 * k))
 		for i in range(1, _trail.size()):
-			draw_polygon(PackedVector2Array([left[i - 1], left[i], right[i], right[i - 1]]), PackedColorArray([cols[i - 1], cols[i], cols[i], cols[i - 1]]))
+			# 四角形のまま描くと、細かく折り返す動きで辺が交差(蝶ネクタイ)して描画エラーになるので、2 枚の三角形で描く(面積のないものは飛ばす)
+			for tri in [[left[i - 1], left[i], right[i], cols[i - 1], cols[i], cols[i]], [left[i - 1], right[i], right[i - 1], cols[i - 1], cols[i], cols[i - 1]]]:
+				var ta: Vector2 = tri[0]
+				var tb: Vector2 = tri[1]
+				var tc: Vector2 = tri[2]
+				if absf((tb - ta).cross(tc - ta)) > 0.01:
+					draw_primitive(PackedVector2Array([ta, tb, tc]), PackedColorArray([tri[3], tri[4], tri[5]]), PackedVector2Array())
 	# 淡い光
 	draw_circle(p + Vector2(0, 1) * sc, 21.0 * sc, Color(body.r, body.g, body.b, 0.06))
 	draw_circle(p + Vector2(0, 1) * sc, 13.0 * sc, Color(body.r, body.g, body.b, 0.10))
@@ -332,3 +344,46 @@ func _draw_death() -> void:
 		var env := pow(sin(PI * k), 1.2)
 		var col := Color(1.0, 0.7 - 0.3 * hh, 0.4)
 		draw_circle(pos, 1.6 + 1.4 * hh, Color(col.r, col.g, col.b, 0.55 * env))
+
+
+## 他の人の機体(マルチプレイ)。自機と同じ形で、その人の色。尾・炎はなし。弾の下の層に描く(対戦では淡いゴースト)。
+func _draw_remote_ship(r: Dictionary) -> void:
+	var p: Vector2 = r.pos
+	var sc: float = sim.player_scale
+	var a: float = r.alpha
+	var body: Color = r.color
+	var wing := Color(body.r * 0.52, body.g * 0.6, body.b * 0.92)
+	var spine := body.lerp(Color.WHITE, 0.82)
+	draw_circle(p + Vector2(0, 1) * sc, 21.0 * sc, Color(body.r, body.g, body.b, 0.05 * a))
+	var hull := PackedVector2Array([
+		Vector2(0, -15), Vector2(5.5, -5), Vector2(11, 8), Vector2(6, 6.5), Vector2(3, 9),
+		Vector2(0, 6), Vector2(-3, 9), Vector2(-6, 6.5), Vector2(-11, 8), Vector2(-5.5, -5)])
+	var pts := PackedVector2Array()
+	for v in hull:
+		pts.append(p + v * sc)
+	draw_colored_polygon(pts, Color(body.r, body.g, body.b, a))
+	for s in [1.0, -1.0]:
+		var wp := PackedVector2Array()
+		for v in [Vector2(2.4 * s, 0), Vector2(5.5 * s, -5), Vector2(11 * s, 8), Vector2(6 * s, 6.5), Vector2(3.4 * s, 3.5)]:
+			wp.append(p + v * sc)
+		draw_colored_polygon(wp, Color(wing.r, wing.g, wing.b, a))
+	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -12) * sc, p + Vector2(2.4, 2) * sc, p + Vector2(0, 6) * sc, p + Vector2(-2.4, 2) * sc]), Color(spine.r, spine.g, spine.b, a))
+	pts.append(pts[0])
+	draw_polyline(pts, Color(1, 1, 1, 0.9 * a), 1.2, true)
+
+
+## 他の人の目印(弾の上の層): 低速の弧・当たり判定の小さな点・名前。どれも細く淡いので、弾を隠さない。
+func _draw_remote_marks() -> void:
+	var font := ThemeDB.fallback_font
+	for r in remotes:
+		var p: Vector2 = r.pos
+		var sc: float = sim.player_scale
+		var a: float = minf(float(r.alpha) + 0.25, 1.0)
+		var c: Color = r.color
+		if r.slow:
+			for i in range(4):
+				var a0 := now * 1.6 + TAU * float(i) / 4.0
+				draw_arc(p, 21.0 * sc, a0, a0 + 0.9, 10, Color(c.r, c.g, c.b, 0.5 * a), 1.5, true)
+		draw_circle(p, 3.2 * sc, Color(1, 1, 1, 0.75 * a))
+		draw_circle(p, 1.8 * sc, Color(c.r, c.g, c.b, a))
+		draw_string(font, p + Vector2(-60, -22.0 * sc - 4.0), str(r.name), HORIZONTAL_ALIGNMENT_CENTER, 120.0, 11, Color(c.r, c.g, c.b, 0.7 * a))

@@ -133,7 +133,23 @@ var just_hit := false           # 新しい被弾が始まったステップ
 var active_warns: Array = []
 var active_gizmos: Array = []
 
+## --- マルチプレイ(協力モード。setup_coop で有効になる) ---
+var net_mode := ""               # "" = ひとり(対戦も、各自が自分の GameSim を回すので "")/ "coop"
+var authority := true            # false = 協力の参加者(ホスト以外): ゲージ・スコア・クリア・ゲームオーバーはホストが決めて、apply_net_* で受け取る
+var players_n := 1
+var graze_div := 1.0             # グレイズのボーナスは、全員の合計を人数で割って(平均で)数える
+var aim_targets := {}            # イベント番号 → 自機狙いの目標位置(ホストが決めて全員へ配る。全員で同じ弾になる)
+var slot_positions: Array = []   # スロット順の全員の位置(協力: 自機狙いの相手の選び方・休憩/クリアの判定)。自分の位置も入る
+var net_events: Array = []       # ホストが全員へ配る出来事 {k: "wipe" / "clear" / "fail", ...}
+var contact_dt := 0.0            # 参加者: まだホストへ送っていない、自分の被弾時間・グレイズ・被弾回数
+var contact_graze := 0
+var contact_hits := 0
+var own_graze := 0                # 自分ひとりぶんの成績(協力では、graze・hits・hit_time は全員の合計になるので、結果画面の個人別の表示に使う)
+var own_hits := 0
+var own_hit_time := 0.0
+
 var _prev_pos := Vector2.ZERO  # このステップ開始時の自機位置(移動経路上の当たり判定用)
+var _ext_hit_t := 0.0          # ホスト: 他の人が被弾した直後は、ゲージが回復しない(秒)
 var _ev_idx := 0
 var _warn_idx := 0
 var _giz_idx := 0
@@ -178,6 +194,94 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 			active_time -= maxf(minf(float(b[1]), last_fire) - maxf(float(b[0]), first_fire_time), 0.0)
 	damage_tau = DAMAGE_TAU * maxf(active_time / DAMAGE_REF_TIME, 1.0)
 	_update_score()
+
+
+## 協力モードにする(setup のあとに呼ぶ)。体力は全員で 1 本を共有し、人数に応じて増える(満タン = 1 人ぶんの被弾時間 × 人数)。
+## 全員の被弾時間を足して減るので、1 人あたりの負担は、ひとりで遊ぶときと同じになる。
+func setup_coop(n: int, is_host: bool) -> void:
+	net_mode = "coop"
+	players_n = maxi(n, 1)
+	authority = is_host
+	drain_time *= float(players_n)
+	graze_div = float(players_n)
+	_update_score()
+
+
+## ホスト: 参加者から届いた被弾の報告(被弾時間・グレイズ・被弾回数)を、共有のゲージとスコアに反映する。
+func ext_report(contact_s: float, graze_n: int, hit_n: int) -> void:
+	if not authority or finished:
+		return
+	graze += maxi(graze_n, 0)
+	hits += maxi(hit_n, 0)
+	if contact_s > 0.0:
+		hit_time += contact_s
+		var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
+		var dmg := contact_s / drain_time * factor
+		damage_total += dmg
+		gauge -= dmg
+		_ext_hit_t = 0.3
+	_update_score()
+
+
+## 参加者: ホストから届いた共有の状態(ゲージ・累計ダメージ・グレイズ・被弾回数・被弾時間)を反映する。
+func apply_net_state(d: Dictionary) -> void:
+	gauge = clampf(float(d.get("g", gauge)), 0.0, 1.0)
+	damage_total = float(d.get("d", damage_total))
+	graze = int(d.get("z", graze))
+	hits = int(d.get("h", hits))
+	hit_time = float(d.get("ht", hit_time))
+	_update_score()
+
+
+## 参加者: ホストが決めた出来事(休憩の一掃・クリア・ゲームオーバー)を反映する。
+func apply_net_event(e: Dictionary, now: float) -> void:
+	match str(e.get("k", "")):
+		"wipe":
+			field.clear()
+			break_clear_t = now
+			break_end_t = float(e.get("end", now))
+		"clear":
+			if e.has("st"):
+				apply_net_state(e.st)
+			field.clear()
+			finished = true
+			progress = 1.0
+			score_progress = 1.0
+			break_clear_t = -1.0
+			_update_score()
+		"fail":
+			if e.has("st"):
+				apply_net_state(e.st)
+			failed = true
+			finished = true
+			death_pos = player_pos
+			death_time = now
+			_update_score()
+
+
+## 参加者: まだ送っていない被弾の報告を取り出す(取り出すと 0 に戻る)。何もなければ空の辞書。
+func take_contact() -> Dictionary:
+	if contact_dt <= 0.0 and contact_graze == 0 and contact_hits == 0:
+		return {}
+	var out := {"c": contact_dt, "z": contact_graze, "h": contact_hits}
+	contact_dt = 0.0
+	contact_graze = 0
+	contact_hits = 0
+	return out
+
+
+## ホスト: 今の共有の状態(参加者へ配る)。
+func net_state() -> Dictionary:
+	return {"g": gauge, "d": damage_total, "z": graze, "h": hits, "ht": hit_time}
+
+
+## 協力: 自機狙いの目標位置。ホストが決めて配った位置があればそれ、なければ(届く前に撃つ場合)スロット順に持ち回りで狙う。
+func aim_target_for(idx: int) -> Vector2:
+	if aim_targets.has(idx):
+		return aim_targets[idx]
+	if net_mode == "coop" and slot_positions.size() > 1:
+		return slot_positions[idx % slot_positions.size()]
+	return player_pos
 
 
 ## 休憩地帯の中か。
@@ -244,30 +348,49 @@ func _update(now: float, dt: float) -> void:
 	# 弾(当たっている間は毎ステップダメージ。弾は消えない)
 	field.update(dt, player_pos, player_r, true, _prev_pos)
 	var resting := in_break(now)  # 休憩地帯: スコアは上がらず、ゲージも回復しない
-	_update_break_wipe(now, resting)
+	if authority:
+		_update_break_wipe(now, resting)
+	elif not resting:
+		break_clear_t = -1.0
 	if not resting:
-		graze += field.graze_count
+		own_graze += field.graze_count
+		if authority:
+			graze += field.graze_count
+		else:
+			contact_graze += field.graze_count   # 協力の参加者: ホストへ報告する
 	hit_now = field.hit and not debug_invincible
+	_ext_hit_t = maxf(_ext_hit_t - dt, 0.0)
 	if hit_now:
 		if _no_hit_time >= EPISODE_GAP:
-			hits += 1
+			own_hits += 1
+			if authority:
+				hits += 1
+			else:
+				contact_hits += 1
 			just_hit = true
 		_no_hit_time = 0.0
-		hit_time += dt
-		# ゲージが少ないとき(20% 以下)は被ダメージが半分(MOD で無効になる)
-		var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
-		var dmg := dt / drain_time * factor
-		damage_total += dmg
-		gauge -= dmg
+		own_hit_time += dt
+		if authority:
+			hit_time += dt
+			# ゲージが少ないとき(20% 以下)は被ダメージが半分(MOD で無効になる)
+			var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
+			var dmg := dt / drain_time * factor
+			damage_total += dmg
+			gauge -= dmg
+		else:
+			contact_dt += dt
 	else:
 		_no_hit_time += dt
-		if not resting:
+		if not resting and authority and _ext_hit_t <= 0.0:
 			gauge = minf(gauge + GAUGE_REGEN * dt, 1.0)
 
 	# 進行率: 曲の進行(時間)とは別に、スコア用の進行率は「発射した弾数」で進める
 	progress = clampf(now / maxf(end_time, 0.001), 0.0, 1.0)
 	score_progress = clampf(float(bullets_fired) / float(maxi(bullets_total, 1)), 0.0, 1.0) if bullets_total > 0 else 0.0
 	_update_score()
+
+	if not authority:
+		return   # 協力の参加者: ゲームオーバー・クリアはホストが決める(apply_net_event)
 
 	if gauge <= 0.000001:
 		gauge = 0.0
@@ -277,6 +400,8 @@ func _update(now: float, dt: float) -> void:
 			death_pos = player_pos
 			death_time = now
 			_update_score()  # ゲームオーバーは 0 点
+			if net_mode == "coop":
+				net_events.append({"k": "fail", "st": net_state()})
 			return
 	if _check_clear(now):
 		field.clear()
@@ -285,6 +410,8 @@ func _update(now: float, dt: float) -> void:
 		score_progress = 1.0  # クリア: 表示点数が最終点になる
 		break_clear_t = -1.0
 		_update_score()
+		if net_mode == "coop":
+			net_events.append({"k": "clear", "st": net_state()})
 
 
 ## 休憩中、残った弾が当たりえない状態になったら一掃して、カウントダウンを始める。休憩が終わったら状態を戻す。
@@ -301,6 +428,8 @@ func _update_break_wipe(now: float, resting: bool) -> void:
 			if now >= b[0] and now <= b[1]:
 				break_end_t = b[1]
 				break
+		if net_mode == "coop":
+			net_events.append({"k": "wipe", "end": break_end_t})
 
 
 ## クリアの条件: 最後の弾幕を撃ち終え(予兆も終わり)、弾が当たりえない状態になった(または撃ち終えて CLEAR_TIMEOUT 秒たった)。
@@ -316,6 +445,11 @@ func _check_clear(now: float) -> bool:
 
 ## 残った弾がどれも「当たらない」か: 自機の近くに弾がなく、自機に接近している弾もない(BulletField.is_calm)。
 func _all_safe() -> bool:
+	if net_mode == "coop" and slot_positions.size() > 1:   # 協力: 全員の周りが落ち着いているとき
+		for p in slot_positions:
+			if not field.is_calm(p, player_r, SAFE_NEAR_R, SAFE_APPROACH_R, SAFE_LOOK_T):
+				return false
+		return true
 	return field.is_calm(player_pos, player_r, SAFE_NEAR_R, SAFE_APPROACH_R, SAFE_LOOK_T)
 
 
@@ -328,7 +462,7 @@ func _update_score() -> void:
 		score_potential = 0.0
 		score = 0.0
 		return
-	score_graze = SCORE_GRAZE * (1.0 - exp(-float(graze) / _graze_tau))   # 3 万点に漸近(届かない)
+	score_graze = SCORE_GRAZE * (1.0 - exp(-float(graze) / graze_div / _graze_tau))   # 3 万点に漸近(届かない)
 	score_gross = score_base + score_graze
 	score_potential = score_gross * damage_factor
 	score = score_potential * score_progress
@@ -338,10 +472,12 @@ func _fire(e: Dictionary, now: float) -> void:
 	var late := maxf(now - e.t, 0.0)
 	var pos: Vector2 = e.pos
 	var grace := SAFE_GRACE_PX if player_pos.distance_to(pos) < SAFE_RADIUS else 0.0
+	var aim_at := aim_target_for(_ev_idx)   # 自機狙いの相手(協力ではホストが決めた位置。ひとりでは自機)
+	aim_targets.erase(_ev_idx)
 	for s in e.shots:
 		var base: float = s.a0
 		if s.aim:
-			base += (player_pos - pos).angle()
+			base += (aim_at - pos).angle()
 		for i in range(s.n):
 			var v: Vector2 = Vector2.from_angle(PatternGen.shot_angle(s, base, i)) * s.speed
 			field.add(pos + v * late, v, s.size, s.color, grace, s.turn)

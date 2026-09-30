@@ -5,12 +5,16 @@ const TitleScreen = preload("res://scripts/ui/title_screen.gd")
 const MenuScreen = preload("res://scripts/ui/menu_screen.gd")
 const GameScreen = preload("res://scripts/game/game_screen.gd")
 const ResultScreen = preload("res://scripts/ui/result_screen.gd")
+const MultiScreen = preload("res://scripts/ui/multi_screen.gd")
+const NetScript = preload("res://scripts/net/net.gd")
+const SongLibrary = preload("res://scripts/song_library.gd")
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 
 var _current: Node
+var net                    # 通信層(マルチプレイを開くときに作る。部屋を出ても使い回す)
 var _last_play := {}
 var _music: AudioStreamPlayer = null   # クリアで引き継いだ曲(リザルト中に流れ続ける)
 
@@ -33,6 +37,18 @@ func _ready() -> void:
 	i = args.find("--shot-anim")
 	if i >= 0 and args.size() > i + 2:
 		_shot(args[i + 1], args[i + 2], args.slice(i + 3), true)
+		return
+	if args.has("--smoke-upnp"):
+		_smoke_upnp()
+		return
+	if args.has("--smoke-mp-ui"):
+		_smoke_mp_ui()
+		return
+	if args.has("--smoke-mp"):
+		_smoke_mp()
+		return
+	if args.has("--smoke-net"):
+		_smoke_net()
 		return
 	if args.has("--smoke-ui"):
 		_smoke_ui()
@@ -153,16 +169,80 @@ func _run_fade() -> void:
 func show_title() -> void:
 	var t := TitleScreen.new()
 	t.play_requested.connect(show_menu)
+	t.multi_requested.connect(show_multi)
 	_stop_music()
 	_swap(t)
 
 
-func show_menu() -> void:
+func show_menu(pick := false) -> void:
 	var m := MenuScreen.new()
-	m.play_requested.connect(start_game)
-	m.back_requested.connect(show_title)
+	m.pick_mode = pick   # マルチプレイの部屋の曲を選ぶとき(決定でロビーへ戻る)
+	if pick:
+		m.song_picked.connect(_on_song_picked)
+		m.back_requested.connect(func(): show_multi())
+	else:
+		m.play_requested.connect(start_game)
+		m.back_requested.connect(show_title)
 	_stop_music()
 	_swap(m)
+
+
+## 通信層(net.gd)。マルチプレイを開くときに作り、以後は使い回す(部屋を出ても、作り直さない)。
+func _get_net():
+	if net == null:
+		net = NetScript.new()
+		add_child(net)
+		net.prepare_game.connect(_on_prepare_game)
+		net.left.connect(_on_net_left)
+	return net
+
+
+## マルチプレイの画面(入口 → ロビー)。部屋にいる間は、ゲームやリザルトのあともロビーへ戻る。
+func show_multi(notice := "") -> void:
+	var m := MultiScreen.new()
+	m.setup(_get_net(), notice)
+	m.back_requested.connect(show_title)
+	m.pick_song_requested.connect(func(): show_menu(true))
+	_stop_music()
+	_swap(m)
+
+
+## ホストが選曲画面で決めた曲・MOD を、部屋に反映してロビーへ戻る。
+func _on_song_picked(loader, bm, settings: Dictionary, level: float) -> void:
+	var n = _get_net()
+	if n.is_host():
+		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": level},
+			settings.mods, float(settings.density_mul), loader, bm)
+	show_multi()
+
+
+## ゲームの準備(全員)。部屋の曲でプレイ画面を作る。作り終えると、画面が通信層へ準備完了を伝える(全員が済むと、ホストが開始の合図を出す)。
+func _on_prepare_game(info: Dictionary) -> void:
+	if net.song_bm == null:
+		net.leave()
+		show_multi("曲を読み込めませんでした")
+		return
+	var g := GameScreen.new()
+	g.setup_multi(net, info, net.song_loader, net.song_bm, Settings.load_all())
+	g.finished.connect(func(stats, music): show_result(stats, music))
+	g.quit_requested.connect(func():
+		net.leave()
+		show_title())
+	_stop_music()
+	_swap(g, true)
+
+
+## 部屋を出た・閉じられた・切れた。理由があるとき(自分から出たのではないとき)、ロビー以外の画面なら入口へ戻す。
+func _on_net_left(reason: String) -> void:
+	if reason == "" or (_current != null and _current.get_script() == MultiScreen):
+		return
+	show_multi(reason)
+
+
+func _on_mp_result_done() -> void:
+	if net != null and net.is_host():
+		net.return_to_lobby()
+	show_multi()
 
 
 func start_game(loader, bm, settings: Dictionary, debug_seek := -1.0, debug_death_t := -1.0) -> void:
@@ -181,10 +261,13 @@ func start_game(loader, bm, settings: Dictionary, debug_seek := -1.0, debug_deat
 ## music: クリアで引き継いだ曲(鳴ったまま、リザルトでも流し続ける。メニュー/リトライで消える)。画面は間を置かずに切り替える。
 func show_result(stats: Dictionary, music: AudioStreamPlayer = null) -> void:
 	var r := ResultScreen.new()
-	r.setup(stats)
-	r.menu_requested.connect(show_menu)
-	r.retry_requested.connect(func():
-		start_game(_last_play.loader, _last_play.bm, _last_play.settings))
+	r.setup(stats, net)
+	if stats.has("mp"):   # マルチプレイ: ロビーへ戻る(リトライはない)
+		r.menu_requested.connect(_on_mp_result_done)
+	else:
+		r.menu_requested.connect(show_menu)
+		r.retry_requested.connect(func():
+			start_game(_last_play.loader, _last_play.bm, _last_play.settings))
 	if music != null:
 		_stop_music(0.0)
 		_music = music
@@ -213,11 +296,11 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"title":
 			show_title()   # 例: --shot title out.png [howto|options 0..4]
 			if extra.size() > 0 and extra[0] == "howto":
-				_current._activate(1)
+				_current._activate(2)
 				if extra.size() > 1 and extra[1].is_valid_int():
 					_current._overlay._show(int(extra[1]))
 			elif extra.size() > 0 and extra[0] == "options":
-				_current._activate(2)
+				_current._activate(3)
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
@@ -279,6 +362,32 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 						_current._animate_hud(1.0 / 60.0)
 					_current._low_vis = _current._low_target()
 					_current._refresh()
+		"multi":
+			show_multi()   # 入口
+		"lobby":
+			await _mp_room("coop" if extra.has("coop") else "versus", extra.has("nosong"), extra.has("three"))
+			show_multi()   # 例: --shot lobby out.png [coop] [nosong] [three]
+		"lobbyguest":
+			await _mp_guest_room(extra.has("nosong"))   # 参加者から見たロビー。例: --shot lobbyguest out.png [nosong(曲を持っていない)]
+			show_multi()
+		"mpgame":
+			await _mp_room("coop" if extra.has("coop") else "versus", false, false)
+			var secs_mp := 7.0
+			for e in extra:
+				if e.is_valid_float():
+					secs_mp = float(e)
+			net.start_game()   # 例: --shot mpgame out.png coop 8(何秒進めて撮るか)
+			var t_mp := Time.get_ticks_msec()
+			while Time.get_ticks_msec() - t_mp < secs_mp * 1000.0 + 2500.0:
+				await get_tree().process_frame
+			_current.debug_move = func(): return _bot_dodge(_current)
+		"mpresult":
+			var nn = _get_net()
+			nn.results = {1: {"name": "Alice", "score": 903120.0, "hits": 0, "graze": 214, "hit_ms": 0}, 2: {"name": "Bob", "score": 871400.0, "hits": 3, "graze": 180, "hit_ms": 480}}
+			var mode_r := "coop" if extra.has("coop") else "versus"
+			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": false, "progress": 1.0, "hits": 3, "hit_ms": 480, "graze": 394, "score": 903120.0, "score_gross": 1013000.0,
+				"damage_factor": 0.89, "score_graze": 13000.0, "practice": false, "score_base": 1000000.0, "mod_ids": [], "mods": "",
+				"mp": {"mode": mode_r, "my_id": 1, "players": [{"id": 1, "name": "Alice", "slot": 0}, {"id": 2, "name": "Bob", "slot": 1}, {"id": 3, "name": "Carol", "slot": 2}]}})
 		"bullets":
 			_shot_bullets()
 		"result":
@@ -708,8 +817,9 @@ func _smoke_title() -> void:
 	await get_tree().create_timer(2.0).timeout
 	var t = _current
 	print("title: %s  items=%d  music_playing=%s  song=%s" % [t.get_script().resource_path.get_file(), t._cards.size(), str(t._audio.playing), t._last_path.get_file()])
+	await _key(KEY_DOWN)
 	await _key(KEY_DOWN)   # 遊び方
-	print("selected=%d (expect 1)" % t._sel)
+	print("selected=%d (expect 2)" % t._sel)
 	await _key(KEY_ENTER)
 	await get_tree().create_timer(0.5).timeout
 	print("howto open=%s  music_still_playing=%s" % [str(t._overlay != null), str(t._audio.playing)])
@@ -724,6 +834,7 @@ func _smoke_title() -> void:
 	await get_tree().create_timer(0.6).timeout
 	print("options closed=%s" % str(t._overlay == null))
 	await _key(KEY_UP)
+	await _key(KEY_UP)
 	await _key(KEY_UP)   # プレイ
 	await _key(KEY_ENTER)
 	await get_tree().create_timer(1.2).timeout
@@ -731,5 +842,467 @@ func _smoke_title() -> void:
 	await _key(KEY_ESCAPE)
 	await get_tree().create_timer(0.8).timeout
 	print("after Esc:  %s" % _current.get_script().resource_path.get_file())
+	t = _current
+	await get_tree().create_timer(0.5).timeout
+	await _key(KEY_DOWN)   # マルチプレイ
+	await _key(KEY_ENTER)
+	await get_tree().create_timer(1.2).timeout
+	print("after MULTI: %s" % _current.get_script().resource_path.get_file())
+	await _key(KEY_ESCAPE)
+	await get_tree().create_timer(0.8).timeout
+	print("after Esc:  %s" % _current.get_script().resource_path.get_file())
 	Settings.save_all(original)
+	get_tree().quit()
+
+
+## 開発用: 通信層(net.gd)を、同じプロセス内のホストと参加者で確認する(localhost。UPnP は使わない)。-- --smoke-net
+func _smoke_net() -> void:
+	var NetScript = load("res://scripts/net/net.gd")
+	var st := {"fails": 0}   # ラムダの中から増やせるように、辞書に持つ
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	var a = NetScript.new()
+	a.use_upnp = false
+	add_child(a)
+	var b = NetScript.new()
+	b.use_upnp = false
+	add_child(b)
+	chk.call(a.host_room("versus", "Alice"), "ホストが待ち受けを始める(port %d)" % a.port)
+	await get_tree().process_frame
+	chk.call(a.code != "" and a.players.size() == 1, "招待コード %s / 状況: %s" % [a.code, a.code_note])
+	# 参加(コードは LAN の IP を含むので、localhost へは ip:port で)
+	var ev := {"joined": false, "failed": ""}
+	b.joined.connect(func(): ev.joined = true)
+	b.join_failed.connect(func(r): ev.failed = r)
+	b.join("127.0.0.1:%d" % a.port, "Bob")
+	var t0 := Time.get_ticks_msec()
+	while not ev.joined and ev.failed == "" and Time.get_ticks_msec() - t0 < 5000:
+		await get_tree().process_frame
+	chk.call(ev.joined, "参加できる(%d ms)" % (Time.get_ticks_msec() - t0))
+	await get_tree().create_timer(0.6).timeout
+	chk.call(a.players.size() == 2 and b.players.size() == 2, "名簿が両方に届く: host=%s guest=%s" % [str(a.players.values().map(func(p): return p.name + "#" + str(p.slot))), str(b.players.values().map(func(p): return p.name + "#" + str(p.slot)))])
+	chk.call(b.my_id != 1 and b.players.has(b.my_id) and b.players[b.my_id].slot == 1, "参加者のスロットは 1")
+	chk.call(absf(b.clock_offset) < 0.01 and b.ping_ms >= 0.0 and b.ping_ms < 50.0, "時計合わせ: offset=%.4fs ping=%.2fms" % [b.clock_offset, b.ping_ms])
+	# 部屋の設定
+	a.set_mode("coop")
+	a.set_song({"md5": "abc", "title": "T", "artist": "A", "version": "V", "level": 4.2}, ["dark"], 1.0, null, null)
+	await get_tree().create_timer(0.3).timeout
+	chk.call(b.room.mode == "coop" and b.room.song.get("md5") == "abc" and b.room.mods == ["dark"], "部屋の設定が参加者に届く: %s" % str(b.room))
+	# 曲を持っていない人がいると開始できない
+	chk.call(a.start_game() != "", "曲を持っていない人がいると開始できない: '%s'" % a.start_game())
+	b.report_song(true)
+	await get_tree().create_timer(0.3).timeout
+	var got := {"prep_a": false, "prep_b": false, "go_a": -1.0, "go_b": -1.0, "msg_a": "", "msg_b": ""}
+	a.prepare_game.connect(func(info): got.prep_a = true; a.report_loaded(7))
+	b.prepare_game.connect(func(info): got.prep_b = info.mode == "coop" and info.players.size() == 2; b.report_loaded(7))
+	a.go.connect(func(s): got.go_a = s)
+	b.go.connect(func(s): got.go_b = s)
+	a.game_message.connect(func(from, m): got.msg_a = m.t)
+	b.game_message.connect(func(from, m): got.msg_b = m.t)
+	chk.call(a.start_game() == "", "全員が曲を持っていれば開始できる")
+	await get_tree().create_timer(0.8).timeout
+	chk.call(got.prep_a and got.prep_b, "全員に準備の合図が届く")
+	chk.call(got.go_a > 0.0 and got.go_b > 0.0 and absf(got.go_a - got.go_b) < 0.001, "開始の合図(共通の時計): %.3f / %.3f" % [got.go_a, got.go_b])
+	chk.call(a.room.phase == "playing" and b.room.phase == "playing", "phase = playing")
+	# 開始後は参加できない
+	var c = NetScript.new()
+	c.use_upnp = false
+	add_child(c)
+	var cf := {"r": ""}
+	c.join_failed.connect(func(r): cf.r = r)
+	c.join("127.0.0.1:%d" % a.port, "Carol")
+	t0 = Time.get_ticks_msec()
+	while cf.r == "" and Time.get_ticks_msec() - t0 < 5000:
+		await get_tree().process_frame
+	chk.call(cf.r.contains("ゲーム中"), "ゲーム中の部屋には入れない: '%s'" % cf.r)
+	# ゲーム中のメッセージ
+	b.to_host({"t": "g_test", "x": 1})
+	a.broadcast({"t": "g_back"})
+	await get_tree().create_timer(0.3).timeout
+	chk.call(got.msg_a == "g_test" and got.msg_b == "g_back", "ゲーム中のメッセージが届く")
+	# 最終成績
+	b.send_final({"score": 123456.0, "hits": 2})
+	a.send_final({"score": 654321.0, "hits": 0})
+	await get_tree().create_timer(0.4).timeout
+	chk.call(b.results.size() == 2 and a.results.size() == 2 and float(b.results[1].score) == 654321.0, "最終成績が全員に配られる")
+	# ロビーへ戻ると参加できる
+	a.return_to_lobby()
+	await get_tree().create_timer(0.2).timeout
+	cf.r = ""
+	var cj := {"ok": false}
+	c.joined.connect(func(): cj.ok = true)
+	c.join("127.0.0.1:%d" % a.port, "Carol")
+	t0 = Time.get_ticks_msec()
+	while not cj.ok and cf.r == "" and Time.get_ticks_msec() - t0 < 5000:
+		await get_tree().process_frame
+	chk.call(cj.ok, "ロビーに戻れば 3 人目が入れる")
+	await get_tree().create_timer(0.4).timeout
+	chk.call(a.players.size() == 3, "3 人")
+	# 参加者が抜ける
+	var slot_c: int = a.players[c.my_id].slot
+	c.leave()
+	await get_tree().create_timer(0.5).timeout
+	chk.call(a.players.size() == 2 and b.players.size() == 2, "参加者が抜けると名簿から消える")
+	# 抜けたスロットは次の人が使う
+	var d = NetScript.new()
+	d.use_upnp = false
+	add_child(d)
+	var dj := {"ok": false}
+	d.joined.connect(func(): dj.ok = true)
+	var by_code: String = a.code   # 招待コードで参加する(LAN の IP から試す)
+	d.join(by_code, "Dave")
+	t0 = Time.get_ticks_msec()
+	while not dj.ok and Time.get_ticks_msec() - t0 < 5000:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.3).timeout
+	chk.call(dj.ok and a.players.has(d.my_id) and a.players[d.my_id].slot == slot_c, "招待コード(%s)で参加でき、空いたスロットを再利用する(slot %d)" % [by_code, slot_c])
+	d.leave()
+	# ホストが閉じると参加者に知らせる
+	var lf := {"reason": "-"}
+	b.left.connect(func(r): lf.reason = r)
+	a.leave()
+	t0 = Time.get_ticks_msec()
+	while lf.reason == "-" and Time.get_ticks_msec() - t0 < 6000:
+		await get_tree().process_frame
+	chk.call(lf.reason != "-" and lf.reason != "" , "ホストが閉じると参加者に届く: '%s' (%d ms)" % [lf.reason, Time.get_ticks_msec() - t0])
+	# 不正なコード・つながらない行き先
+	var e = NetScript.new()
+	e.use_upnp = false
+	add_child(e)
+	var ef := {"r": ""}
+	e.join_failed.connect(func(r): ef.r = r)
+	e.join("ZZZZ", "Eve")
+	chk.call(ef.r.contains("正しくありません"), "不正なコードは即座に弾く: '%s'" % ef.r)
+	ef.r = ""
+	e.join("127.0.0.1:24999", "Eve")
+	t0 = Time.get_ticks_msec()
+	while ef.r == "" and Time.get_ticks_msec() - t0 < 8000:
+		await get_tree().process_frame
+	chk.call(ef.r != "", "誰もいない行き先は、時間内に失敗する: '%s' (%d ms)" % [ef.r, Time.get_ticks_msec() - t0])
+	print("smoke-net: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## 開発用: マルチプレイの対戦・協力を、同じプロセス内のホストと参加者(ボットが操作)で、実時間で通して確認する(localhost。UPnP なし)。
+##   -- --smoke-mp [coop|versus] [fail]     coop: 共有ゲージ・同じ弾・クリアの一致 / fail: 全員が動かず、ゲームオーバーが全員に届くか
+func _smoke_mp() -> void:
+	var args := OS.get_cmdline_user_args()
+	var mode := "coop" if args.has("coop") else "versus"
+	var fail_test := args.has("fail")
+	var st := {"fails": 0}   # ラムダの中から増やせるように、辞書に持つ
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	var a = NetScript.new()
+	a.use_upnp = false
+	add_child(a)
+	var b = NetScript.new()
+	b.use_upnp = false
+	add_child(b)
+	var lag := 0.0
+	for arg in args:
+		if arg.begins_with("lag"):
+			lag = float(arg.trim_prefix("lag"))   # 例: lag120(片道 120ms + ゆらぎ 30ms)
+	a.debug_latency_ms = lag
+	b.debug_latency_ms = lag
+	a.debug_jitter_ms = lag * 0.25
+	b.debug_jitter_ms = lag * 0.25
+	a.host_room(mode, "Alice")
+	var joined := {"ok": false}
+	b.joined.connect(func(): joined.ok = true)
+	b.join("127.0.0.1:%d" % a.port, "Bob")
+	while not joined.ok:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.4).timeout
+	var loader := OszLoader.new()
+	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+	var bm = loader.difficulties[loader.difficulties.size() - 1 if args.has("hard") else 2]   # 既定は Normal(最初のノーツは 2.4 秒)。hard は最上位(自機狙い・弾数が多い)
+	var found := SongLibrary.find_by_md5(bm.md5)
+	chk.call(not found.is_empty(), "参加者が、MD5 から曲を見つけられる: %s" % str(found.get("path", "")).get_file())
+	var lb := OszLoader.new()
+	lb.open(found.path)
+	var bmb = null
+	for d in lb.difficulties:
+		if d.md5 == bm.md5:
+			bmb = d
+	var mods: Array = [] if (fail_test or mode == "versus") else ["practice"]
+	a.set_mode(mode)
+	a.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": 3.0}, mods, 1.0, loader, bm)
+	b.report_song(true, lb, bmb)
+	await get_tree().create_timer(0.4).timeout
+	var gs := {}
+	var done := {}
+	var settings := {"offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "mods": []}
+	var make := func(n, key: String, dodge: bool):
+		n.prepare_game.connect(func(info):
+			var g := GameScreen.new()
+			g.setup_multi(n, info, n.song_loader, n.song_bm, settings)
+			g.finished.connect(func(stats, music): done[key] = stats)
+			if dodge:
+				g.debug_move = func(): return _bot_dodge(g)
+			else:
+				g.debug_move = func(): return Vector2.ZERO   # 動かない(被弾し続ける)
+			gs[key] = g
+			add_child(g))
+	make.call(a, "a", false)   # ホストは動かない
+	make.call(b, "b", not fail_test)   # 参加者は避ける(fail のときは動かない)
+	chk.call(a.start_game() == "", "開始できる(%s)" % mode)
+	var t0 := Time.get_ticks_msec()
+	while gs.size() < 2 or not (gs.a._audio_started and gs.b._audio_started):
+		await get_tree().process_frame
+		if Time.get_ticks_msec() - t0 > 10000:
+			break
+	chk.call(gs.size() == 2 and gs.a._audio_started and gs.b._audio_started, "全員の曲が始まる(%d ms)" % (Time.get_ticks_msec() - t0))
+	chk.call(absf(gs.a._now - gs.b._now) < 0.06, "曲の時計が揃っている: a=%.3f b=%.3f" % [gs.a._now, gs.b._now])
+	# しばらくプレイ(最初のノーツは 2.4 秒)
+	var play_s := maxf(8.0, gs.a.sim.first_fire_time + 8.0) if not fail_test else 40.0   # 最初の弾のあと 8 秒ぶん
+	t0 = Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < play_s * 1000.0 and not (gs.a.sim.finished or gs.b.sim.finished):
+		await get_tree().process_frame
+	var ga = gs.a
+	var gb = gs.b
+	print("  [%.1fs] a: now=%.2f gauge=%.3f hits=%d graze=%d score=%.0f bullets=%d | b: now=%.2f gauge=%.3f hits=%d graze=%d score=%.0f bullets=%d" % [
+		play_s, ga._now, ga.sim.gauge, ga.sim.hits, ga.sim.graze, ga.sim.score, ga.field.count, gb._now, gb.sim.gauge, gb.sim.hits, gb.sim.graze, gb.sim.score, gb.field.count])
+	if fail_test:
+		await get_tree().create_timer(0.6).timeout   # ホストの決定が届くのを待つ
+		chk.call(ga.sim.failed and gb.sim.failed, "全員が動かないと、ゲームオーバーが全員に届く(a=%s b=%s)" % [str(ga.sim.failed), str(gb.sim.failed)])
+		chk.call(absf(ga.sim.death_time - gb.sim.death_time) < 0.5, "ほぼ同時に終わる: a=%.2f b=%.2f" % [ga.sim.death_time, gb.sim.death_time])
+		t0 = Time.get_ticks_msec()
+		while done.size() < 2 and Time.get_ticks_msec() - t0 < 8000:
+			await get_tree().process_frame
+		chk.call(done.size() == 2 and done.a.failed and done.b.failed, "両方がリザルトへ進む(ゲームオーバー)")
+		await get_tree().create_timer(0.5).timeout
+		chk.call(a.results.size() == 2 and b.results.size() == 2, "最終成績が全員に配られる")
+		print("smoke-mp fail: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+		get_tree().quit()
+		return
+	# 位置が届いている
+	var rb: Vector2 = ga._mp.remotes[b.my_id].target
+	var ra: Vector2 = gb._mp.remotes[1].target
+	chk.call(rb.distance_to(gb.sim.player_pos) < 80.0 and ra.distance_to(ga.sim.player_pos) < 80.0, "互いの位置が届く: b を a から見た誤差 %.0fpx / a を b から見た誤差 %.0fpx" % [rb.distance_to(gb.sim.player_pos), ra.distance_to(ga.sim.player_pos)])
+	chk.call(ga._mp.draw_list().size() == 1 and gb._mp.draw_list().size() == 1, "相手の自機の描画リスト")
+	chk.call(absf(ga.field.count - gb.field.count) <= maxi(4, int(0.06 * ga.field.count)), "弾の数がほぼ同じ(a=%d b=%d)" % [ga.field.count, gb.field.count])
+	if mode == "coop":
+		chk.call(absf(ga.sim.gauge - gb.sim.gauge) < 0.06, "ゲージが共有されている: a=%.3f b=%.3f" % [ga.sim.gauge, gb.sim.gauge])
+		chk.call(ga.sim.hits > 0 and absi(ga.sim.hits - gb.sim.hits) <= 1, "被弾回数が共有されている: a=%d b=%d" % [ga.sim.hits, gb.sim.hits])
+		chk.call(absi(ga.sim.graze - gb.sim.graze) <= 4, "グレイズが共有されている: a=%d b=%d" % [ga.sim.graze, gb.sim.graze])
+		chk.call(ga.sim.gauge < 1.0, "動かない a の被弾でゲージが減っている")
+		# 全員が同じ弾になっている: a の弾それぞれについて、b の最も近い弾との距離(曲の時計のずれぶんは許す)
+		var worst := 0.0
+		for i in range(ga.field.count):
+			var best := 1e9
+			for j in range(gb.field.count):
+				best = minf(best, ga.field.pos[i].distance_to(gb.field.pos[j]))
+			worst = maxf(worst, best)
+		chk.call(worst < 12.0, "弾の位置がほぼ一致(a の各弾から、b の最も近い弾までの最大 %.1fpx)" % worst)
+	else:
+		chk.call(gb.sim.gauge > ga.sim.gauge + 0.05 or ga.sim.gauge < 0.999, "対戦: ゲージは各自(a は被弾で減る、b は避けて減らない): a=%.3f b=%.3f" % [ga.sim.gauge, gb.sim.gauge])
+		chk.call(ga._mp.remotes[b.my_id].score > 0.0 and absf(ga._mp.remotes[b.my_id].score - gb.sim.score) < 0.05 * maxf(gb.sim.score, 1.0) + 2000.0, "相手のスコアが届く: %.0f / %.0f" % [ga._mp.remotes[b.my_id].score, gb.sim.score])
+	# 終盤へ飛んで、クリアまでの流れ
+	var last: float = ga.sim.events[ga.sim.events.size() - 1].t
+	ga._audio.seek((last - 0.5) * ga._rate)
+	gb._audio.seek((last - 0.5) * gb._rate)
+	t0 = Time.get_ticks_msec()
+	while done.size() < 2 and Time.get_ticks_msec() - t0 < 30000:
+		await get_tree().process_frame
+	chk.call(done.size() == 2, "両方がクリアしてリザルトへ進む(%d ms)" % (Time.get_ticks_msec() - t0))
+	if done.size() == 2:
+		print("  final a: score=%.0f hits=%d graze=%d failed=%s | b: score=%.0f hits=%d graze=%d failed=%s" % [done.a.score, done.a.hits, done.a.graze, str(done.a.failed), done.b.score, done.b.hits, done.b.graze, str(done.b.failed)])
+		if mode == "coop":
+			chk.call(not done.a.failed and not done.b.failed and absf(done.a.score - done.b.score) < 1.0 and done.a.hits == done.b.hits, "協力: 同じチームの結果(スコア・被弾)になる")
+		else:
+			chk.call(not done.a.failed and not done.b.failed and done.b.score > done.a.score, "対戦: 動かない a より、避けた b のスコアが高い")
+	await get_tree().create_timer(0.6).timeout
+	chk.call(a.results.size() == 2 and b.results.size() == 2, "最終成績が全員に配られる: %s" % str(a.results.keys()))
+	if a.results.size() == 2:
+		print("  results: ", str(a.results))
+	print("smoke-mp %s: " % mode, "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## ボット: 近くの弾から離れる(弾がなければ、下寄りの中央へ戻る)。
+func _bot_dodge(g) -> Vector2:
+	var p: Vector2 = g.sim.player_pos
+	var f = g.field
+	var v := Vector2.ZERO
+	for i in range(f.count):
+		var d: Vector2 = p - f.pos[i]
+		var l := d.length()
+		if l < 110.0 and l > 0.1:
+			v += d / l * (110.0 - l) / 110.0
+	v += (Vector2(480, 560) - p) * 0.004
+	return v
+
+
+## 開発用(スクリーンショット・確認): 自分がホストの部屋を作り、もう 1〜2 人(ボット)を参加させ、曲を設定しておく。参加者のプレイ画面は、見えない場所で動く。
+var _shot_nets: Array = []
+
+
+func _mp_room(mode: String, nosong: bool, three: bool) -> void:
+	var n = _get_net()
+	n.use_upnp = false
+	n.host_room(mode, "Alice")
+	var loader := OszLoader.new()
+	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+	var bm = loader.difficulties[2]
+	var names := ["Bob", "Carol"] if three else ["Bob"]
+	for nm in names:
+		var b = NetScript.new()
+		b.use_upnp = false
+		add_child(b)
+		_shot_nets.append(b)
+		var ok := {"v": false}
+		b.joined.connect(func(): ok.v = true)
+		b.join("127.0.0.1:%d" % n.port, nm)
+		while not ok.v:
+			await get_tree().process_frame
+		b.report_song(true, loader, bm)
+		b.prepare_game.connect(func(info):
+			var g := GameScreen.new()
+			g.setup_multi(b, info, loader, bm, {"offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "mods": []})
+			g.debug_move = func(): return _bot_dodge(g)
+			g.visible = false
+			g.process_mode = Node.PROCESS_MODE_INHERIT
+			add_child(g))
+	await get_tree().create_timer(0.4).timeout
+	if not nosong:
+		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": 4.62}, ["hell"] if mode == "versus" else [], 1.0, loader, bm)
+	n.set_mode(mode)
+	await get_tree().create_timer(0.4).timeout
+
+
+## 開発用: マルチプレイの画面の流れを、ホスト側の実際の画面操作で通して確認する(参加者は同じプロセス内のボット)。-- --smoke-mp-ui
+##   タイトル → マルチプレイ → 部屋を作る → 選曲(決定)→ ロビー → 開始 → プレイ画面(メニューを開いても止まらない)→ 退出 → タイトル
+func _smoke_mp_ui() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	var n = _get_net()
+	n.use_upnp = false
+	show_title()
+	await get_tree().create_timer(1.0).timeout
+	await _key(KEY_DOWN)
+	await _key(KEY_ENTER)
+	await get_tree().create_timer(1.0).timeout
+	var m = _current
+	chk.call(m.get_script() == MultiScreen and m._page == "entry", "タイトルからマルチプレイの入口へ: %s / %s" % [m.get_script().resource_path.get_file(), m._page])
+	m._on_create()
+	await get_tree().create_timer(0.3).timeout
+	chk.call(m._page == "lobby" and n.role == "host" and n.code != "", "部屋を作るとロビー(招待コード %s)" % n.code)
+	# 参加者(ボット)
+	var b = NetScript.new()
+	b.use_upnp = false
+	add_child(b)
+	var ok := {"v": false, "left": "-"}
+	b.joined.connect(func(): ok.v = true)
+	b.left.connect(func(r): ok.left = r)
+	b.join("127.0.0.1:%d" % n.port, "Bob")
+	while not ok.v:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.4).timeout
+	chk.call(n.players.size() == 2, "参加者が入ると、ホストの名簿に載る")
+	# 選曲
+	m.pick_song_requested.emit()
+	await get_tree().create_timer(1.0).timeout
+	var menu = _current
+	chk.call(menu.get_script() == MenuScreen and menu.pick_mode, "曲・MOD を選ぶ画面(選曲モード)")
+	var idx := -1
+	for i in range(menu._songs.size()):
+		if menu._songs[i].path.contains("Reol"):
+			idx = i
+	menu._select_song(idx)
+	await get_tree().create_timer(0.4).timeout
+	menu._select_diff(2)
+	var want_md5: String = menu._loader.difficulties[2].md5
+	menu._start()
+	await get_tree().create_timer(0.8).timeout
+	m = _current
+	chk.call(m.get_script() == MultiScreen and n.room.song.get("md5") == want_md5, "決定でロビーへ戻り、部屋に曲が設定される: %s" % str(n.room.song.get("title", "")))
+	# 参加者は、MD5 から曲を探す(ロビー画面と同じ処理)
+	var found := SongLibrary.find_by_md5(want_md5)
+	var lb := OszLoader.new()
+	lb.open(found.path)
+	var bmb = null
+	for d in lb.difficulties:
+		if d.md5 == want_md5:
+			bmb = d
+	b.report_song(true, lb, bmb)
+	b.prepare_game.connect(func(info):
+		var g := GameScreen.new()
+		g.setup_multi(b, info, lb, bmb, {"offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "mods": []})
+		g.visible = false
+		add_child(g))
+	await get_tree().create_timer(0.5).timeout
+	chk.call(m._start_blocker() == "", "全員が曲を持てば、開始できる('%s')" % m._start_blocker())
+	m._on_start()
+	var t0 := Time.get_ticks_msec()
+	while not (_current.get_script() == GameScreen and _current._audio_started) and Time.get_ticks_msec() - t0 < 8000:
+		await get_tree().process_frame
+	var g = _current
+	chk.call(g.get_script() == GameScreen and g._mp != null and g._audio_started, "プレイ画面が始まる(%d ms)" % (Time.get_ticks_msec() - t0))
+	await get_tree().create_timer(1.0).timeout
+	# Esc でメニュー: ゲームは止まらない
+	var before: float = g._now
+	await _key(KEY_ESCAPE)
+	await get_tree().create_timer(1.0).timeout
+	chk.call(g._mp_menu and not g._paused and g._pause_layer.visible and g._now > before + 0.8, "Esc でメニューが開くが、ゲームは止まらない(now %.2f → %.2f)" % [before, g._now])
+	chk.call(not g._pause_btns[1].visible and g._pause_btns[2].text == "退出", "リトライはなく、「退出」になる")
+	await _key(KEY_DOWN)
+	chk.call(g._pause_sel == 2, "↓ でリトライを飛ばして「退出」へ(sel=%d)" % g._pause_sel)
+	await _key(KEY_ENTER)
+	await get_tree().create_timer(1.0).timeout
+	chk.call(_current.get_script() == TitleScreen and n.role == "", "退出するとタイトルへ戻り、部屋を出る")
+	t0 = Time.get_ticks_msec()
+	while ok.left == "-" and Time.get_ticks_msec() - t0 < 6000:
+		await get_tree().process_frame
+	chk.call(ok.left != "-" and ok.left != "", "ホストが抜けると、参加者に「%s」と届く" % ok.left)
+	Settings.save_all(original)
+	print("smoke-mp-ui: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## 開発用(スクリーンショット): 自分は参加者、ホストはボット。nosong なら、自分はその曲を持っていない状態にする。
+func _mp_guest_room(nosong: bool) -> void:
+	var h = NetScript.new()
+	h.use_upnp = false
+	add_child(h)
+	_shot_nets.append(h)
+	h.host_room("coop", "Alice")
+	var loader := OszLoader.new()
+	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+	var bm = loader.difficulties[3]
+	h.set_song({"md5": "0".repeat(32) if nosong else bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": 4.62}, ["dark"], 1.0, loader, bm)   # nosong: 参加者の手元にない曲(MD5 が見つからない)
+	var n = _get_net()
+	n.use_upnp = false
+	var ok := {"v": false}
+	n.joined.connect(func(): ok.v = true)
+	n.join("127.0.0.1:%d" % h.port, "Bob")
+	while not ok.v:
+		await get_tree().process_frame
+	if not nosong:
+		n.report_song(true, loader, bm)
+	await get_tree().create_timer(0.6).timeout
+
+
+## 開発用: UPnP を使う本番と同じ部屋作り(ルーターのポートを一時的に開けて、すぐ閉じる)。招待コードの中身を確認する。-- --smoke-upnp
+func _smoke_upnp() -> void:
+	var InviteCode = load("res://scripts/net/invite_code.gd")
+	var n = NetScript.new()
+	add_child(n)
+	var ev := {"code": false}
+	n.code_changed.connect(func(): ev.code = true)
+	var t0 := Time.get_ticks_msec()
+	print("host_room: ", n.host_room("versus", "Test"))
+	while not ev.code and Time.get_ticks_msec() - t0 < 12000:
+		await get_tree().process_frame
+	print("code=%s  (%d ms)  note=%s" % [n.code, Time.get_ticks_msec() - t0, n.code_note])
+	print("decoded: ", InviteCode.decode(n.code))
+	n.leave()   # ポートを閉じる
+	print("closed")
 	get_tree().quit()

@@ -8,11 +8,14 @@ const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const GameSim = preload("res://scripts/game/game_sim.gd")
+const MpGame = preload("res://scripts/net/mp_game.gd")
 
 ## スコア表示の ease-out(1/RATE 秒ほどで大半が追いつく。プレイ画面の表示と同じ考え方)
 const COUNT_RATE := 3.5
 
 var stats: Dictionary
+var net                          # マルチプレイのとき: 通信層(他の人の最終成績が届くたびに、一覧を更新する)
+var _board: VBoxContainer         # マルチプレイの成績の一覧
 
 var _score_l: Label
 var _t := 0.0                    # 開いてからの経過秒(スコアのカウントアップの開始を遅らせる)
@@ -21,8 +24,9 @@ var _score_target := 0.0
 var _score_disp := 0.0
 
 
-func setup(p_stats: Dictionary) -> void:
+func setup(p_stats: Dictionary, p_net = null) -> void:
 	stats = p_stats
+	net = p_net if p_stats.has("mp") else null
 
 
 func _ready() -> void:
@@ -97,6 +101,8 @@ func _ready() -> void:
 	var chips := HBoxContainer.new()
 	chips.add_theme_constant_override("separation", 8)
 	chips.add_child(UiStyle.chip("Lv %.2f" % stats.level, UiStyle.level_color(stats.level)))
+	if stats.has("mp"):
+		chips.add_child(UiStyle.chip("対戦" if stats.mp.mode == "versus" else "協力", UiStyle.GOLD))
 	for id in stats.get("mod_ids", []):
 		var m := Mods.find(id)
 		if not m.is_empty():
@@ -113,25 +119,34 @@ func _ready() -> void:
 		right.add_child(_score_l)
 		right.add_child(_gap(4))
 		right.add_child(UiStyle.hline())
-		right.add_child(_row("ベーススコア", UiStyle.fmt(int(round(stats.get("score_base", 1000000.0)))), _mod_note()))
-		right.add_child(_row("グレイズボーナス", "+ " + UiStyle.fmt(int(stats.score_graze)), ""))
-		right.add_child(_row("被ダメージ係数", "× %.3f" % stats.damage_factor, ""))
-		right.add_child(UiStyle.hline())
+		if not (stats.has("mp") and stats.mp.mode == "versus"):   # 対戦は、内訳の代わりに参加者の成績を並べる
+			right.add_child(_row("ベーススコア", UiStyle.fmt(int(round(stats.get("score_base", 1000000.0)))), _mod_note()))
+			right.add_child(_row("グレイズボーナス", "+ " + UiStyle.fmt(int(stats.score_graze)), ""))
+			right.add_child(_row("被ダメージ係数", "× %.3f" % stats.damage_factor, ""))
+			right.add_child(UiStyle.hline())
 	right.add_child(_gap(6))
 
-	# 成績(3 つ並べる)
-	var grid := HBoxContainer.new()
-	grid.add_theme_constant_override("separation", 40)
-	grid.add_child(_stat("GRAZE", int(stats.graze), "", 0.7))
-	grid.add_child(_stat("被弾", int(stats.hits), " 回", 0.8))
-	grid.add_child(_stat("被弾時間", int(stats.hit_ms), " ms", 0.9))
-	right.add_child(grid)
+	if stats.has("mp"):   # マルチプレイ: 参加者の成績の一覧(他の人が終えるたびに更新)
+		_board = VBoxContainer.new()
+		_board.add_theme_constant_override("separation", 8)
+		right.add_child(_board)
+		_rebuild_board()
+		if net != null:
+			net.results_changed.connect(_rebuild_board)
+	else:
+		# 成績(3 つ並べる)
+		var grid := HBoxContainer.new()
+		grid.add_theme_constant_override("separation", 40)
+		grid.add_child(_stat("GRAZE", int(stats.graze), "", 0.7))
+		grid.add_child(_stat("被弾", int(stats.hits), " 回", 0.8))
+		grid.add_child(_stat("被弾時間", int(stats.hit_ms), " ms", 0.9))
+		right.add_child(grid)
 
 	# 下部のボタン(Enter / R のキーでも同じ操作ができる)
 	var hint := HBoxContainer.new()
 	hint.add_theme_constant_override("separation", 12)
 	hint.position = Vector2(560, 626)
-	for spec in [["メニューへ", menu_requested], ["リトライ", retry_requested]]:
+	for spec in ([["ロビーへ", menu_requested]] if stats.has("mp") else [["メニューへ", menu_requested], ["リトライ", retry_requested]]):
 		var b := Button.new()
 		b.text = spec[0]
 		b.focus_mode = Control.FOCUS_NONE
@@ -217,4 +232,81 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE:
 				menu_requested.emit()
 			KEY_R:
-				retry_requested.emit()
+				if not stats.has("mp"):
+					retry_requested.emit()
+
+
+func _exit_tree() -> void:
+	if net != null and net.results_changed.is_connected(_rebuild_board):
+		net.results_changed.disconnect(_rebuild_board)
+
+
+## マルチプレイ: 参加者の成績の一覧。対戦はスコアの高い順(1 位に色。全員が終えたら WIN)、協力は 1 人ずつの GRAZE・被弾。
+## 自分の分は、通信を待たずにこの画面の値を使う。まだ終えていない人は「プレイ中」。
+func _rebuild_board() -> void:
+	if _board == null:
+		return
+	for c in _board.get_children():
+		c.queue_free()
+		_board.remove_child(c)
+	var mp: Dictionary = stats.mp
+	var versus: bool = mp.mode == "versus"
+	var res: Dictionary = net.results.duplicate() if net != null else {}
+	res[int(mp.my_id)] = {"score": float(stats.score), "hits": int(stats.hits) if versus else int(res.get(int(mp.my_id), {}).get("hits", stats.hits)),
+		"graze": int(res.get(int(mp.my_id), {}).get("graze", stats.graze)), "hit_ms": int(res.get(int(mp.my_id), {}).get("hit_ms", stats.hit_ms))}
+	var rows: Array = []
+	for p in mp.players:
+		if net != null and p.id != int(mp.my_id) and not net.players.has(p.id) and not res.has(p.id):
+			continue   # 終える前に去った人
+		rows.append({"id": p.id, "name": p.name, "slot": p.slot, "res": res.get(p.id)})
+	if versus:
+		rows.sort_custom(func(a, b):
+			if (a.res != null) != (b.res != null):
+				return a.res != null
+			if a.res == null:
+				return a.slot < b.slot
+			return float(a.res.score) > float(b.res.score))
+	var all_done := true
+	for r in rows:
+		if r.res == null:
+			all_done = false
+	var base: float = float(stats.get("score_base", 1000000.0))
+	var place := 0
+	for r in rows:
+		place += 1
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		row.custom_minimum_size = Vector2(0, 36)
+		var lead: bool = versus and place == 1 and r.res != null
+		var accent: Color = UiStyle.GOLD if lead else UiStyle.TEXT
+		if versus:
+			var pl := UiStyle.label(str(place), 20, accent if r.res != null else UiStyle.TEXT_FAINT, true)
+			pl.custom_minimum_size = Vector2(22, 0)
+			row.add_child(pl)
+		var dot := Control.new()
+		dot.custom_minimum_size = Vector2(12, 12)
+		dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		var c: Color = MpGame.SLOT_COLORS[int(r.slot) % MpGame.SLOT_COLORS.size()]
+		dot.draw.connect(func(): dot.draw_circle(Vector2(6, 6), 6.0, c))
+		row.add_child(dot)
+		var nm := UiStyle.label(str(r.name), 18, accent if r.id == int(mp.my_id) or lead else UiStyle.TEXT_DIM, r.id == int(mp.my_id))
+		nm.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		nm.custom_minimum_size = Vector2(170, 0)
+		row.add_child(nm)
+		if r.res == null:
+			row.add_child(UiStyle.label("プレイ中…", 15, UiStyle.TEXT_FAINT))
+		elif versus:
+			var sc := UiStyle.label(UiStyle.fmt(int(round(float(r.res.score)))), 24, accent, true)
+			sc.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+			sc.custom_minimum_size = Vector2(150, 0)
+			row.add_child(sc)
+			var rk := GameSim.rank_of(false, int(r.res.hits), float(r.res.score), base)
+			row.add_child(UiStyle.chip(rk, UiStyle.rank_color(rk)))
+			row.add_child(UiStyle.label("被弾 %d 回" % int(r.res.hits), 13, UiStyle.TEXT_DIM))
+			if lead and all_done and rows.size() > 1:
+				row.add_child(UiStyle.chip("WIN", UiStyle.GOLD))
+		else:
+			row.add_child(UiStyle.label("GRAZE %d" % int(r.res.graze), 15, UiStyle.TEXT))
+			row.add_child(UiStyle.label("被弾 %d 回" % int(r.res.hits), 15, UiStyle.TEXT))
+			row.add_child(UiStyle.label("%d ms" % int(r.res.hit_ms), 15, UiStyle.TEXT_DIM))
+		_board.add_child(row)

@@ -7,7 +7,7 @@ signal closed
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 
-const SECTIONS := ["はじめに", "操作", "ゲージとスコア", "MOD", "曲の追加"]
+const SECTIONS := ["はじめに", "操作", "ゲージとスコア", "MOD", "マルチプレイ", "曲の追加"]
 
 var _pages: Array = []
 var _nav: Array = []
@@ -82,7 +82,7 @@ func _ready() -> void:
 	root.add_child(content_margin)
 	var stack := Control.new()
 	content_margin.add_child(stack)
-	_pages = [_page_intro(), _page_controls(), _page_score(), _page_mods(), _page_songs()]
+	_pages = [_page_intro(), _page_controls(), _page_score(), _page_mods(), _page_multi(), _page_songs()]
 	for p in _pages:
 		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		stack.add_child(p)
@@ -202,7 +202,7 @@ func _page_controls() -> Control:
 	_row(v, "移動(マウス)", "マウスを動かす(カーソルは隠れて、動いた分だけ自機が動きます)")
 	_row(v, "低速", "Shift(マウスなら右クリックでも可)。ゆっくり細かく動けます")
 	_row(v, "イントロをスキップ", "Space。最初のノーツの少し前まで飛ばします")
-	_row(v, "ポーズ", "Esc。再開 / リトライ / メニューへ と、音量の調整ができます")
+	_row(v, "ポーズ", "Esc。再開 / リトライ / メニューへ と、音量の調整ができます(マルチプレイでは、ゲームは止まらず、退出と音量の調整ができます)")
 	_head(v, "選曲画面")
 	_row(v, "↑ ↓", "曲または難易度を選ぶ")
 	_row(v, "← → / Tab", "操作の対象を「曲」と「難易度」で切り替える")
@@ -245,6 +245,24 @@ func _page_mods() -> Control:
 			if not p.begins_with("ベーススコア"):
 				effects.append(p)
 		_para(v, "  /  ".join(effects))
+	return s[0]
+
+
+func _page_multi() -> Control:
+	var s := _section("マルチプレイ")
+	var v: VBoxContainer = s[1]
+	_para(v, "サーバーなしで、友達と直接つないで遊びます(最大 4 人)。部屋を立てる人(ホスト)が招待コードを作り、参加する人がそのコードを入力します。", UiStyle.TEXT)
+	_head(v, "遊び方")
+	_row(v, "ホスト", "タイトルの「マルチプレイ」→「部屋を作る」。出てきた招待コードを友達に伝え、曲・MOD を選んで「ゲーム開始」")
+	_row(v, "参加する人", "「マルチプレイ」→ 招待コードを入力 →「参加する」。開始はホストが押します")
+	_row(v, "曲", "全員が同じ曲(.osz)を持っている必要があります。持っていない人は、songs フォルダに入れると自動で見つかります")
+	_row(v, "MOD・弾密度", "ホストが選んだものが、全員に共通で掛かります(全員が同じ弾幕になります)")
+	_head(v, "モード")
+	_row(v, "対戦", "各自が自分の画面で同じ弾幕を避けます。スコアの高い人の勝ち。体力が 0 になってもゲームオーバーにならず、最後まで続けられます。他の人の自機は淡く表示されます")
+	_row(v, "協力", "全員が同じフィールドで、いっしょに避けます。体力は全員で 1 本を共有し、人数に応じて増えます。体力が 0 になると全員がゲームオーバー、最後まで体力が残ればクリアです")
+	_head(v, "つながらないとき")
+	_para(v, "ホストが部屋を作るとき、ルーターの UPnP で UDP ポートを自動で開けます。UPnP が使えないルーターでは、ルーターの設定で、コードの下に表示されるポート(UDP 24680〜24935 のいずれか)を、ホストの PC へ転送してください。同じ LAN の中なら、そのまま参加できます。")
+	_para(v, "プロバイダによっては(IPv4 の共有アドレスなど)、外から直接つなぐことができません。その場合は、Tailscale・ZeroTier などの VPN で同じネットワークに入り、招待コードの代わりに、ホストの VPN の IP アドレス(例: 100.64.0.5)を入力してください。初めて部屋を作るとき、Windows のファイアウォールの確認が出たら、許可してください。", UiStyle.TEXT_DIM)
 	return s[0]
 
 

@@ -1,11 +1,12 @@
 extends Control
-## タイトル画面。「プレイ / 遊び方 / 設定」の 3 項目。背景は、ランダムに選んだ曲の画像で、その曲を流しておく
+## タイトル画面。「プレイ / マルチプレイ / 遊び方 / 設定」の 4 項目。背景は、ランダムに選んだ曲の画像で、その曲を流しておく
 ## (曲が終わったら、別のランダムな曲へ)。遊び方と設定は、この画面の上に重ねるパネル(曲は流れ続ける)。
 ## 曲が 1 つもないときは、無音で暗い背景のまま。
 ##
 ## 操作: ↑↓ で選び、Enter で決定。マウスでも操作できる。
 
 signal play_requested
+signal multi_requested
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
@@ -16,7 +17,7 @@ const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 
 const BG_TINT := Color(0.4, 0.4, 0.46)
-const ITEMS := [["プレイ", "PLAY"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"]]
+const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"]]
 const MUSIC_DB := -4.0
 
 var settings: Dictionary = {}
@@ -212,8 +213,14 @@ func _activate(i: int) -> void:
 				await get_tree().create_timer(0.3).timeout
 			play_requested.emit()
 		1:
-			_open(HowToPanel.new())
+			_leaving = true
+			_fade_music(0.35)
+			if UiStyle.animate:
+				await get_tree().create_timer(0.3).timeout
+			multi_requested.emit()
 		2:
+			_open(HowToPanel.new())
+		3:
 			var p := OptionsPanel.new()
 			p.setup(settings, Callable())
 			_open(p)

@@ -14,6 +14,7 @@ const Settings = preload("res://scripts/settings.gd")
 const Sfx = preload("res://scripts/game/sfx.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const MpGame = preload("res://scripts/net/mp_game.gd")
 
 const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
@@ -62,6 +63,17 @@ var settings: Dictionary
 var debug_seek := -1.0
 ## デバッグ: ゲームオーバー演出の経過秒を固定する(seek 中に死んだ場合のみ)。
 var debug_death_t := -1.0
+
+## マルチプレイ(setup_multi で設定。ひとりのときは null / 空)
+var net
+var mp_info: Dictionary = {}
+var _mp
+var _mp_menu := false          # マルチプレイ中のメニュー(ゲームは止めずに重ねるだけ)
+var _mp_box: VBoxContainer     # 左パネルの参加者一覧
+var _mp_ids: Array = []
+var _mp_rows: Dictionary = {}
+## 開発用: 設定すると、キー入力の代わりに移動方向(Vector2)をこの関数から得る(ボット)
+var debug_move := Callable()
 
 var sim
 var field
@@ -142,6 +154,17 @@ func setup(p_loader, p_bm, p_settings: Dictionary) -> void:
 	settings = p_settings
 
 
+## マルチプレイで始める。net: 通信層(net.gd)、info: 部屋の設定(mode, mods, density_mul, players)。MOD・弾密度は、部屋のものを使う(全員で同じ弾幕にする)。
+func setup_multi(p_net, info: Dictionary, p_loader, p_bm, p_settings: Dictionary) -> void:
+	net = p_net
+	mp_info = info
+	loader = p_loader
+	bm = p_bm
+	settings = p_settings.duplicate()
+	settings["mods"] = info.mods.duplicate()
+	settings["density_mul"] = float(info.density_mul)
+
+
 func _ready() -> void:
 	_mouse_mode = settings.get("control", "keyboard") == "mouse"
 	# 背景(譜面の画像を暗く)
@@ -198,9 +221,19 @@ func _ready() -> void:
 	_audio.pitch_scale = _rate
 	sim = GameSim.new()
 	_end_time = bm.last_time() / 1000.0 / _rate + 2.0   # 再生速度が上がると、曲は短くなる
-	sim.setup(field, gen, _end_time, _mods.practice, _mods)
+	# 対戦は、体力が 0 でもゲームオーバーにならない(最後まで続く)。協力は、体力を全員で共有する(ホストが決める)
+	sim.setup(field, gen, _end_time, _mods.practice or (net != null and mp_info.mode == "versus"), _mods)
 	_view_under.sim = sim
 	_view_over.sim = sim
+	if net != null:
+		if mp_info.mode == "coop":
+			sim.setup_coop(mp_info.players.size(), net.is_host())
+		_mp = MpGame.new()
+		_mp.setup(net, mp_info, sim)
+		_view_under.own_color = _mp.my_color()
+		_view_over.own_color = _mp.my_color()
+		net.game_message.connect(_mp.handle)
+		net.go.connect(_mp.on_go)
 
 	_build_hud()
 	if debug_seek >= 0.0:
@@ -224,10 +257,18 @@ func _ready() -> void:
 		_refresh()
 	elif _mouse_mode:
 		_capture_mouse()
+	if net != null:
+		# 全員が同じ弾幕を作れたかの確認用の要約(ホストと違う人は外される)。開始の合図(go)は、全員の準備が済んでから届く
+		net.report_loaded(sim.events.size() * 100003 + sim.bullets_total)
 
 
 func _exit_tree() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if net != null and _mp != null:
+		if net.game_message.is_connected(_mp.handle):
+			net.game_message.disconnect(_mp.handle)
+		if net.go.is_connected(_mp.on_go):
+			net.go.disconnect(_mp.on_go)
 
 
 func _build_hud() -> void:
@@ -286,6 +327,15 @@ func _build_left_panel() -> void:
 			var chip := UiStyle.chip(m.tag, m.color)
 			chip.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 			col.add_child(chip)
+	if _mp != null:   # マルチプレイ: 参加者の一覧(対戦はスコア順)
+		var gap3 := Control.new()
+		gap3.custom_minimum_size = Vector2(0, 14)
+		col.add_child(gap3)
+		col.add_child(UiStyle.caption("VERSUS" if _mp.mode == "versus" else "CO-OP"))
+		_mp_box = VBoxContainer.new()
+		_mp_box.add_theme_constant_override("separation", 5)
+		_mp_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(_mp_box)
 
 
 ## 右パネル(幅 160): GRAZE / HIT TIME と、モード表示。
@@ -328,7 +378,7 @@ func _build_pause() -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 10)
 	panel.add_child(v)
-	v.add_child(UiStyle.label("PAUSED", 28, UiStyle.TEXT, true))
+	v.add_child(UiStyle.label("MENU" if _mp != null else "PAUSED", 28, UiStyle.TEXT, true))   # マルチプレイでは、ゲームは止まらない
 	v.add_child(UiStyle.hline())
 	_pause_btns.clear()
 	var specs := [["再開", "Esc", Callable(self, "_pause_activate").bind(0)],
@@ -345,6 +395,9 @@ func _build_pause() -> void:
 			_refresh_pause())
 		v.add_child(b)
 		_pause_btns.append(b)
+	if _mp != null:   # マルチプレイ: リトライはなく、「メニューへ」は部屋を出ることになる
+		_pause_btns[1].visible = false
+		_pause_btns[2].text = "退出"
 	v.add_child(UiStyle.hline())
 	_pause_vol = _pause_slider_row(v, "音量", func(x: float): _set_master_volume(int(x)))
 	_pause_sfx = _pause_slider_row(v, "効果音", func(x: float): _set_sfx_volume(int(x)))
@@ -393,9 +446,12 @@ func _process(delta: float) -> void:
 	delta = minf(delta, 0.05)
 	_ui_time += delta
 	if not _audio_started:
-		_now += delta
+		if _mp != null:   # マルチプレイ: 開始の合図まで待ち、合図のあとは全員で共通の時計で READY を数える(同じ瞬間に曲が始まる)
+			_now = maxf(-LEAD_IN + (net.shared_time() - _mp.start_shared), -LEAD_IN) if _mp.started else -LEAD_IN
+		else:
+			_now += delta
 		if _now >= 0.0:
-			_audio.play()
+			_audio.play(_now * _rate if _now > 0.1 else 0.0)   # 遅れて始まった人は、途中から
 			_audio_started = true
 			_fade_out_center()
 	else:
@@ -411,6 +467,8 @@ func _process(delta: float) -> void:
 	if _mouse_mode:
 		slow = slow or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
 	_step_sim(slow)
+	if _mp != null:
+		_mp.tick(delta, _now)
 
 	# 効果音は 1 回だけ消費する(シミュレーション停止後に残った分を毎フレーム鳴らさない)
 	if not sim.failed:
@@ -446,7 +504,10 @@ func _process(delta: float) -> void:
 			remove_child(_audio)
 		else:
 			music = null
-		finished.emit(_stats(), music)
+		var st_clear := _stats()
+		if _mp != null:
+			_mp.send_final(st_clear)
+		finished.emit(st_clear, music)
 		return
 	if sim.finished and _end_timer < 0.0:
 		_end_timer = END_DELAY_FAIL
@@ -455,7 +516,10 @@ func _process(delta: float) -> void:
 		if _end_timer <= 0.0 and not _done:
 			_done = true
 			_audio.stop()
-			finished.emit(_stats(), null)
+			var st_fail := _stats()
+			if _mp != null:
+				_mp.send_final(st_fail)
+			finished.emit(st_fail, null)
 
 
 ## 曲クロック(_now)を進める。音声クロック t は、ミキサーのかたまり単位で更新されるため、そのまま使うと
@@ -554,7 +618,7 @@ func _apply_death_fx() -> void:
 
 
 func _stats() -> Dictionary:
-	return {
+	var d := {
 		"title": bm.display_name(),
 		"level": gen.level,
 		"mean": gen.rating.mean,
@@ -575,9 +639,16 @@ func _stats() -> Dictionary:
 		"practice": _mods.practice,
 		"bg": _bg_tex,
 	}
+	if _mp != null:   # マルチプレイ: 結果画面が、参加者の成績を並べるのに使う
+		d["mp"] = {"mode": _mp.mode, "my_id": _mp.my_id, "players": _mp.roster.duplicate(true)}
+	return d
 
 
 func _read_move() -> Vector2:
+	if debug_move.is_valid():
+		return debug_move.call()
+	if _mp_menu:
+		return Vector2.ZERO
 	var m := Vector2.ZERO
 	if Input.is_physical_key_pressed(KEY_LEFT) or Input.is_physical_key_pressed(KEY_A):
 		m.x -= 1.0
@@ -591,6 +662,10 @@ func _read_move() -> Vector2:
 
 
 func _refresh() -> void:
+	if _mp != null:
+		var rl: Array = _mp.draw_list()
+		_view_under.remotes = rl
+		_view_over.remotes = rl
 	_view_under.now = _now
 	_view_under.sync_sliders()
 	_view_over.now = _now
@@ -925,27 +1000,31 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				_skip_intro()
 		KEY_ESCAPE:
 			if _end_timer < 0.0 and _outro_t < 0.0:
-				_set_paused(not _paused)
+				_set_paused(not _menu_open())
 		KEY_UP, KEY_DOWN:
-			if _paused:
-				_pause_sel = (_pause_sel + (-1 if event.keycode == KEY_UP else 1) + 5) % 5
+			if _menu_open():
+				var d := -1 if event.keycode == KEY_UP else 1
+				for _i in range(5):
+					_pause_sel = (_pause_sel + d + 5) % 5
+					if not (_mp != null and _pause_sel == 1):   # マルチプレイにリトライはない
+						break
 				_refresh_pause()
 		KEY_LEFT, KEY_RIGHT:
-			if _paused:
+			if _menu_open():
 				var d := -5 if event.keycode == KEY_LEFT else 5
 				if _pause_sel == 4:
 					_set_sfx_volume(int(settings.get("sfx_volume", 70)) + d)
 				else:
 					_set_master_volume(int(settings.get("volume", 80)) + d)
 		KEY_ENTER, KEY_KP_ENTER:
-			if _paused and _pause_sel < 3:
+			if _menu_open() and _pause_sel < 3:
 				_pause_activate(_pause_sel)
 		KEY_R:
-			if _paused:
+			if _menu_open() and _mp == null:
 				_audio.stop()
 				retry_requested.emit()
 		KEY_Q:
-			if _paused:
+			if _menu_open():
 				_audio.stop()
 				quit_requested.emit()
 
@@ -957,7 +1036,7 @@ func _skip_target() -> float:
 
 ## スキップできるか。最初のノーツの前で、進む幅が SKIP_MIN_GAIN 秒以上あるとき。
 func _can_skip() -> bool:
-	if sim == null or _paused or _dead or _end_timer >= 0.0 or _outro_t >= 0.0 or debug_seek >= 0.0 or sim.first_fire_time < 0.0:
+	if sim == null or _mp != null or _paused or _dead or _end_timer >= 0.0 or _outro_t >= 0.0 or debug_seek >= 0.0 or sim.first_fire_time < 0.0:
 		return false
 	return _skip_target() - maxf(_now, 0.0) >= SKIP_MIN_GAIN
 
@@ -978,6 +1057,20 @@ func _skip_intro() -> void:
 
 
 func _set_paused(p: bool) -> void:
+	if _mp != null:   # マルチプレイ: 他の人がいるので、ゲームは止めない。メニューを重ねるだけ(自機は動かさない)
+		_mp_menu = p
+		_pause_layer.visible = p
+		if p:
+			_pause_sel = 0
+			_refresh_pause()
+			_pause_panel.pivot_offset = _pause_panel.size * 0.5
+			UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
+		if _mouse_mode:
+			if p:
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			else:
+				_capture_mouse()
+		return
 	_paused = p
 	_pause_layer.visible = p
 	if p:
@@ -995,12 +1088,19 @@ func _set_paused(p: bool) -> void:
 			_capture_mouse()
 
 
+## ポーズ(マルチプレイでは、ゲームを止めないメニュー)が開いているか。
+func _menu_open() -> bool:
+	return _paused or _mp_menu
+
+
 ## ポーズ画面の項目の実行(0 = 再開、1 = リトライ、2 = メニューへ)。
 func _pause_activate(i: int) -> void:
 	match i:
 		0:
 			_set_paused(false)
 		1:
+			if _mp != null:
+				return
 			_audio.stop()
 			retry_requested.emit()
 		2:
@@ -1039,7 +1139,7 @@ func _refresh_pause() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if _mouse_mode and not _paused and not _dead and event is InputEventMouseMotion:
+	if _mouse_mode and not _paused and not _mp_menu and not _dead and (_mp == null or _mp.started) and event is InputEventMouseMotion:
 		# モード切替直後の初期イベント(カーソルの中央移動)は無視する
 		if Time.get_ticks_msec() - _mouse_capture_ms > 200:
 			_mouse_accum += event.relative
@@ -1064,6 +1164,7 @@ func _fade_out_center() -> void:
 ## HUD の細かい動き: グレイズの数字が弾む / 被弾中は被弾時間が赤くなる / スキップ案内がなめらかに出入りする。
 func _animate_hud(delta: float) -> void:
 	_update_hp_fx(delta)
+	_update_mp_rows(delta)
 	_low_vis += (_low_target() - _low_vis) * (1.0 - exp(-delta * 4.0))   # 赤みは、残量の変化にゆっくり追従する
 	if sim.graze > _last_graze:
 		_graze_pop = 1.0
@@ -1098,3 +1199,52 @@ func _ease_score(delta: float) -> void:
 	# 被ダメージで点が減っている間(表示が目標より上にある間)は、数字が赤くなる
 	var falling := target < _score_disp - 0.5
 	_score_red += ((1.0 if falling else 0.0) - _score_red) * (1.0 - exp(-delta * (16.0 if falling else 5.0)))
+
+
+## 左パネルの参加者一覧(マルチプレイ)を更新する。顔ぶれ・並びが変わったときだけ作り直し、スコアは毎回更新する。
+## 対戦は名前の下にスコア(高い順)、協力は名前だけ(スコアはチームで 1 つ)。
+func _update_mp_rows(delta: float) -> void:
+	if _mp == null or _mp_box == null:
+		return
+	var rows: Array = _mp.rows(delta)
+	var ids: Array = rows.map(func(r): return r.id)
+	if ids != _mp_ids:
+		_mp_ids = ids
+		for c in _mp_box.get_children():
+			c.queue_free()
+			_mp_box.remove_child(c)
+		_mp_rows.clear()
+		for r in rows:
+			var row := VBoxContainer.new()
+			row.add_theme_constant_override("separation", -1)
+			row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var top := HBoxContainer.new()
+			top.add_theme_constant_override("separation", 6)
+			top.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var dot := Control.new()
+			dot.custom_minimum_size = Vector2(9, 9)
+			dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			var dc: Color = r.color
+			dot.draw.connect(func(): dot.draw_circle(Vector2(4.5, 4.5), 4.0, dc))
+			top.add_child(dot)
+			var nl := UiStyle.label(r.name, 12, UiStyle.TEXT if r.me else UiStyle.TEXT_DIM, r.me)
+			nl.custom_minimum_size = Vector2(110, 0)
+			nl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			top.add_child(nl)
+			row.add_child(top)
+			var sl: Label = null
+			if _mp.mode == "versus":
+				sl = UiStyle.label("", 14, UiStyle.TEXT if r.me else UiStyle.TEXT_DIM, true)
+				var line := HBoxContainer.new()
+				line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+				var pad := Control.new()
+				pad.custom_minimum_size = Vector2(15, 0)
+				line.add_child(pad)
+				line.add_child(sl)
+				row.add_child(line)
+			_mp_box.add_child(row)
+			_mp_rows[r.id] = sl
+	for r in rows:
+		var sl2: Label = _mp_rows.get(r.id)
+		if sl2 != null:
+			sl2.text = UiStyle.fmt(int(round(r.score)))

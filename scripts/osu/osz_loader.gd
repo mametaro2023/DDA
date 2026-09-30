@@ -23,7 +23,9 @@ func open(p: String) -> bool:
 	for f in _reader.get_files():
 		if f.to_lower().ends_with(".osu"):
 			var bytes := _reader.read_file(f)
-			var bm := OsuParser.parse(bytes.get_string_from_utf8(), f)
+			var text := bytes.get_string_from_utf8()
+			var bm := OsuParser.parse(text, f)
+			bm.md5 = text.md5_text()
 			if bm.mode == 0 and not bm.hit_objects.is_empty():
 				difficulties.append(bm)
 	if difficulties.is_empty():

@@ -10,6 +10,8 @@ const HS_FINISH := 4
 const HS_CLAP := 8
 
 var source_file := ""
+## .osu の内容の MD5(マルチプレイで、参加者が同じ譜面を持っているかの照合に使う。配布元が違っても同じ譜面なら同じ値)
+var md5 := ""
 var title := ""
 var artist := ""
 var version := ""

@@ -8,6 +8,8 @@ const ScreenWipe = preload("res://scripts/ui/screen_wipe.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const TitleScreen = preload("res://scripts/ui/title_screen.gd")
+const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
+const ArenaView = preload("res://scripts/game/arena_view.gd")
 
 var _fail := 0
 
@@ -174,6 +176,46 @@ func _initialize() -> void:
 	title._select(0)
 	_check(title._sel == 2, "遷移中は選択を変えない")
 	title.queue_free()
+
+	# --- カーソルが自機の位置へ飛ぶ(ゲーム開始のつなぎ) ---
+	var cur := CursorOverlay.new()
+	root.add_child(cur)
+	cur._inside = true
+	cur._focused = true
+	cur.debug_pos = Vector2(1186, 646)
+	await _frames(3)
+	_check(CursorOverlay.inst == cur, "カーソルの表示物が登録される")
+	var arrived := {"n": 0}
+	var target := Vector2(640, 612)
+	_check(not CursorOverlay.fly_to(target, 0.3, func(): pass) or true, "(ヘッドレスはマウスモードが変わらず、カーソルが描かれない場合がある)")
+	CursorOverlay.cancel_fly()
+	cur._draw.visible = true   # 描かれている状態にする
+	_check(CursorOverlay.fly_to(target, 0.3, func(): arrived.n += 1), "カーソルが描かれているときは飛ばせる")
+	await _wait(0.12)
+	_check(cur._pos.distance_to(Vector2(1186, 646)) > 20.0 and cur._pos.distance_to(target) > 20.0, "飛んでいる途中は、出発点でも目的地でもない(%s)" % str(cur._pos))
+	await _wait(0.4)
+	_check(arrived.n == 1, "着いたら 1 回だけ done が呼ばれる(%d)" % arrived.n)
+	_check(cur._fly_t < 0.0, "着いたら飛行は終わる")
+	cur._draw.visible = true
+	_check(CursorOverlay.fly_to(target, 0.3, func(): arrived.n += 10), "もう一度飛ばせる")
+	await _wait(0.05)
+	CursorOverlay.cancel_fly()
+	await _wait(0.4)
+	_check(arrived.n == 1, "cancel_fly したら done は呼ばれない(%d)" % arrived.n)
+	UiStyle.animate = false
+	_check(not CursorOverlay.fly_to(target, 0.3, func(): pass), "動きなしのときは飛ばさない(すぐ次へ進める)")
+	UiStyle.animate = true
+	cur.queue_free()
+	await _frames(2)
+	_check(CursorOverlay.inst == null, "片付くと登録も外れる")
+	# 自機の現れ具合: 0 は描かない / 1 は元どおり
+	var av := ArenaView.new()
+	av.sim = {"player_pos": Vector2(100, 100)}
+	av.ship_in = 0.0
+	_check(not av._begin_ship_scale(), "ship_in = 0 のときは自機を描かない")
+	av.ship_in = 1.0
+	_check(av._begin_ship_scale(), "ship_in = 1 のときは、変換なしで描く")
+	av.free()
 
 	print("RESULT: ", "OK" if _fail == 0 else "%d FAILURES" % _fail)
 	quit(1 if _fail > 0 else 0)

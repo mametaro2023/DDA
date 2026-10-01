@@ -22,9 +22,17 @@ var _inside := false
 var _focused := true
 var _pressed := false
 var _trail: Array = []   # 動いた跡 [位置, 経過秒]。短く薄れる尾になる
+## 画面の切り替えで、カーソルが自機の位置へ飛んでいく動き(fly_to)。飛んでいる間は、本物のマウスの位置を見ない
+static var inst: Node
+var _fly_t := -1.0
+var _fly_dur := 0.6
+var _fly_from := Vector2.ZERO
+var _fly_to := Vector2.ZERO
+var _fly_done := Callable()
 
 
 func _ready() -> void:
+	inst = self
 	layer = 127
 	_draw = Control.new()
 	_draw.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -38,6 +46,30 @@ func _ready() -> void:
 	get_tree().root.focus_exited.connect(func(): _focused = false)
 	_inside = Rect2i(w.position, w.size).has_point(DisplayServer.mouse_get_position())   # 起動したとき、すでにウィンドウの上にあるか
 	_hide_os_cursor()
+
+
+func _exit_tree() -> void:
+	if inst == self:
+		inst = null
+
+
+## カーソルを、いまの位置から to へ弧を描いて飛ばす(ゲーム開始で、カーソルが自機になるように)。着いたら done を呼ぶ。
+## 飛ばせたら true(動きなし・カーソルが描かれていないときは false。呼び出し側は、すぐ次へ進む)。
+static func fly_to(to: Vector2, dur: float, done: Callable) -> bool:
+	if inst == null or not UiStyle.animate or not inst._draw.visible:
+		return false
+	inst._fly_from = inst._pos
+	inst._fly_to = to
+	inst._fly_dur = dur
+	inst._fly_done = done
+	inst._fly_t = 0.0
+	return true
+
+
+## 飛んでいる途中でやめる(done は呼ばない)。
+static func cancel_fly() -> void:
+	if inst != null:
+		inst._fly_t = -1.0
 
 
 func _hide_os_cursor() -> void:
@@ -59,17 +91,30 @@ func _input(event: InputEvent) -> void:
 
 func _process(delta: float) -> void:
 	_hide_os_cursor()   # ポーズ・画面の切り替えなどで、OS のカーソルが戻ってきたら、また隠す
-	var show := _inside and _focused and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN
+	var show := (_inside and _focused and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN) or _fly_t >= 0.0
 	if _draw.visible != show:
 		_draw.visible = show
 	if not show:
 		_trail.clear()
 		return
-	_pos = get_viewport().get_mouse_position() if debug_pos.x < 0.0 else debug_pos
+	var flying := _fly_t >= 0.0
+	if flying:
+		_fly_t += delta
+		var k := clampf(_fly_t / _fly_dur, 0.0, 1.0)
+		var e := 4.0 * k * k * k if k < 0.5 else 1.0 - pow(-2.0 * k + 2.0, 3.0) / 2.0   # ease-in-out(cubic)
+		var line := _fly_to - _fly_from
+		var bend := line.orthogonal().normalized() * minf(line.length() * 0.18, 90.0) * sin(PI * e)   # 少し弧を描く(一直線より、目で追いやすい)
+		_pos = _fly_from.lerp(_fly_to, e) + bend
+	else:
+		_pos = get_viewport().get_mouse_position() if debug_pos.x < 0.0 else debug_pos
 	_update_trail(delta)
 	var target := R_IDLE
 	var target_fill := 0.0
-	if _pressed:
+	if flying:   # 飛びながら輪がしぼんで、着くころには自機の周りの小さな輪になる
+		var kk := clampf(_fly_t / _fly_dur, 0.0, 1.0)
+		target = lerpf(R_HOVER, R_PRESS * 0.9, kk)
+		target_fill = 0.1 + 0.25 * kk
+	elif _pressed:
 		target = R_PRESS
 		target_fill = 0.35
 	elif _over_clickable():
@@ -79,6 +124,12 @@ func _process(delta: float) -> void:
 	_r = lerpf(_r, target, k)
 	_fill = lerpf(_fill, target_fill, k)
 	_draw.queue_redraw()
+	if flying and _fly_t >= _fly_dur:   # 着いた: 輪が広がって、受け取り側(自機)へ渡す
+		_fly_t = -1.0
+		var a := UiStyle.ACCENT
+		UiFx.ring(_draw, _fly_to, Color(a.r, a.g, a.b, 0.95), 6.0, 46.0, 0.45, 2.5)
+		if _fly_done.is_valid():
+			_fly_done.call()
 
 
 ## 尾: 動くたびに位置を足し、古いものから消す(時間で薄れるので、速く動かすほど長く伸びる)。

@@ -21,11 +21,13 @@ const Ambient = preload("res://scripts/ui/ambient.gd")
 const SmoothScroll = preload("res://scripts/ui/smooth_scroll.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 const BG_TINT := Color(0.34, 0.34, 0.4)
 
 ## 難易度カードの弾数バー(平均・最大)の満点
 const BAR_MAX := 500.0
+const LAUNCH_TIME := 0.4   # PLAY を押してから、次の画面へ切り替えるまでの演出の長さ(秒)
 
 var settings: Dictionary = {}
 var pick_mode := false
@@ -45,6 +47,9 @@ var _bg2: TextureRect
 var _bg_holder: Control
 var _ambient: Node2D
 var _par := Vector2.ZERO
+var _drift: Tween               # 背景のゆっくりした拡大・縮小(発進のときに止めて、ズームインに切り替える)
+var _play_btn: Button
+var _launching := false         # 発進の演出中(操作は受け付けない)
 var _intro_nodes: Array = []       # 入場アニメーションで滑り込むもの
 var _buttons: Array = []           # ホバーで少し大きくなるボタン
 var _lv_shown := {}             # 難易度名 → 表示中の Lv(MOD で変わるとき、前の値から数え直す)
@@ -84,6 +89,7 @@ func _ready() -> void:
 	_bg2 = _bg_layer()
 	if UiStyle.animate:   # 背景画像をごくゆっくり拡大・縮小する(ずっと動き続ける)
 		var drift := create_tween().set_loops()
+		_drift = drift
 		drift.tween_property(_bg_holder, "scale", Vector2(1.08, 1.08), 22.0).from(Vector2(1.02, 1.02)).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 		drift.tween_property(_bg_holder, "scale", Vector2(1.02, 1.02), 22.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	var shade := ColorRect.new()
@@ -164,6 +170,7 @@ func _ready() -> void:
 		play.add_theme_color_override(k, Color(0.02, 0.06, 0.1))
 	play.add_theme_font_override("font", UiStyle.bold())
 	play.pressed.connect(_start)
+	_play_btn = play
 	_intro_nodes.append(_place(play, 1124, 626, 124, 40))
 	_buttons.append(play)
 	_status = UiStyle.label("", 12, UiStyle.TEXT_FAINT)   # 読み込みに失敗したときのメッセージ用
@@ -697,13 +704,20 @@ func _mod_preview_text() -> String:
 # --- 開始 ---
 
 func _start() -> void:
-	if _loader == null or _diff_sel < 0 or _job_pending:   # 曲を読み込み中は、まだ始められない(選び直した曲の難易度が出るまで)
+	if _loader == null or _diff_sel < 0 or _job_pending or _launching:   # 曲を読み込み中は、まだ始められない(選び直した曲の難易度が出るまで)
 		return
 	if _song_sel >= 0:
 		settings.last_song = _songs[_song_sel].path
 		settings.last_diff = _loader.difficulties[_diff_sel].version
 	Settings.save_all(settings)
 	UiSfx.play("confirm")
+	# 発進: すぐには切り替えず、選んだ難易度が前に出て、ほかが退き、背景がズームインして、曲が小さくなる(0.4 秒)。それから次の画面へ
+	_launching = true
+	_launch_anim()
+	if UiStyle.animate:
+		await get_tree().create_timer(LAUNCH_TIME).timeout
+		if not is_inside_tree():
+			return
 	_audio.stop()
 	if pick_mode:
 		song_picked.emit(_loader, _loader.difficulties[_diff_sel], settings, float(_ratings[_diff_sel].level))
@@ -711,8 +725,44 @@ func _start() -> void:
 	play_requested.emit(_loader, _loader.difficulties[_diff_sel], settings)
 
 
+## 発進の演出。選んだ難易度のカードと曲名だけを残して、ほかをなめらかに退かせる。
+func _launch_anim() -> void:
+	if not UiStyle.animate:
+		return
+	var keep: Array = [_title_l, _artist_l, _meta_l, _diff_scroll, _bg_holder]
+	for c in get_children():
+		if c is Control and not c is ColorRect and not keep.has(c):   # (背景の暗幕・下地は、そのまま)
+			var dx := -40.0 if c.position.x < 460.0 else 0.0   # 左の曲リストは左へ、右の部品はその場で薄れる
+			var t := c.create_tween().set_parallel(true)
+			t.tween_property(c, "modulate:a", 0.0, 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+			if dx != 0.0:
+				t.tween_property(c, "position:x", c.position.x + dx, 0.3).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	for i in range(_diff_cards.size()):
+		var holder: Control = _diff_cards[i].get_parent()
+		if i == _diff_sel:   # 選んだカードは、前に出る
+			holder.pivot_offset = holder.size * 0.5
+			UiStyle.spring(holder, "scale", Vector2.ONE, Vector2(1.035, 1.035), 0.3)
+		else:
+			var t2 := holder.create_tween().set_parallel(true)
+			t2.tween_property(holder, "modulate:a", 0.0, 0.25)
+			t2.tween_property(holder, "position:x", holder.position.x + 30.0, 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	# PLAY ボタンから輪と粒が広がる
+	if _play_btn != null:
+		var at := _play_btn.get_global_rect().get_center()
+		UiFx.ring(self, at, UiStyle.ACCENT, 20.0, 200.0, 0.5, 3.0)
+		UiFx.burst(self, at, UiStyle.ACCENT, 14, 260.0, 0.55, 3.0)
+	# 背景はズームイン(ずっと続けていた拡大縮小は止める)
+	if _drift != null and _drift.is_valid():
+		_drift.kill()
+	var tz := _bg_holder.create_tween()
+	tz.tween_property(_bg_holder, "scale", Vector2(1.16, 1.16), LAUNCH_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	# 曲は小さくなりながら消える
+	var ta := _audio.create_tween()
+	ta.tween_property(_audio, "volume_db", -40.0, LAUNCH_TIME)
+
+
 func _input(event: InputEvent) -> void:
-	if _options != null or not (event is InputEventKey and event.pressed):
+	if _options != null or _launching or not (event is InputEventKey and event.pressed):
 		return
 	match event.keycode:
 		KEY_UP, KEY_DOWN:

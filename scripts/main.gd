@@ -91,6 +91,9 @@ func _ready() -> void:
 	if args.has("--smoke-ui"):
 		_smoke_ui()
 		return
+	if args.has("--smoke-start"):
+		_smoke_start()
+		return
 	if args.has("--smoke-clock"):
 		_smoke_clock()
 		return
@@ -903,8 +906,7 @@ func _smoke_ui() -> void:
 	await get_tree().create_timer(0.4).timeout   # 閉じる動きのぶん待つ
 	print("Esc        -> options open=%s (menu still %s)" % [str(m._options != null), str(_current == m)])
 	await _key(KEY_ENTER)
-	for i in range(4):
-		await get_tree().process_frame
+	await get_tree().create_timer(0.7).timeout   # 発進の演出(0.4 秒)のあとで、ゲーム画面になる
 	var g = _current
 	print("Enter      -> screen=%s mods=%s Lv=%.2f (MODなし %.2f)" % [g.get_script().resource_path.get_file(), str(g._mods.ids), g.gen.level, g.gen.base_level])
 	await _key(KEY_ESCAPE)
@@ -923,6 +925,60 @@ func _smoke_ui() -> void:
 	print("Q          -> screen=%s" % _current.get_script().resource_path.get_file())
 	Settings.restore(orig)   # ユーザーの設定ファイルを元に戻す
 	print("settings restored")
+	get_tree().quit()
+
+
+## 開発用: PLAY を押してからゲームが始まるまでの「間」を、時間を追って確認する(発進の演出 → カーソルが自機へ飛ぶ → 自機が現れる → GO)。
+## 例: --smoke-start [keyboard]   画面写真は user:// ではなく、第 1 引数の接頭辞があればそこへ保存(--shots <接頭辞>)
+func _smoke_start() -> void:
+	var args := OS.get_cmdline_user_args()
+	var orig := Settings.load_all()
+	var st := Settings.load_all()
+	st.control = "keyboard" if args.has("keyboard") else "mouse"
+	Settings.save_all(st)
+	var shots := ""
+	var si := args.find("--shots")
+	if si >= 0 and args.size() > si + 1:
+		shots = str(args[si + 1])
+	add_child(UiSfx.new())
+	var cur := CursorOverlay.new()
+	add_child(cur)
+	cur._inside = true
+	cur._focused = true
+	show_menu()
+	for i in range(4):
+		await get_tree().process_frame
+	var m = _current
+	while m._job_pending:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.8).timeout
+	# カーソルは PLAY ボタンの上
+	var from: Vector2 = m._play_btn.get_global_rect().get_center()
+	cur.debug_pos = from
+	await get_tree().create_timer(0.2).timeout
+	print("start: control=%s  cursor at PLAY %s  mouse_mode=%d" % [st.control, str(from), Input.mouse_mode])
+	var t0 := Time.get_ticks_msec()
+	m._play_btn.pressed.emit()
+	var marks := [0.1, 0.25, 0.45, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 2.6]
+	var k := 0
+	var g = null
+	while k < marks.size():
+		while (Time.get_ticks_msec() - t0) / 1000.0 < marks[k]:
+			await get_tree().process_frame
+		if g == null and _current != m and _current.get_script() == GameScreen:
+			g = _current
+		var line := "t=%.2f screen=%s" % [(Time.get_ticks_msec() - t0) / 1000.0, _current.get_script().resource_path.get_file().get_basename()]
+		line += "  cursor_pos=(%.0f,%.0f) fly=%.2f" % [cur._pos.x, cur._pos.y, cur._fly_t]
+		if g != null and is_instance_valid(g):
+			line += "  guiding=%s arrived=%s ship_in=%.2f mouse_mode=%d now=%.2f label=%s" % [str(g._guiding), str(g._arrived), g._view_under.ship_in, Input.mouse_mode, g._now, g._center_label.text]
+		print(line)
+		if shots != "":
+			get_viewport().get_texture().get_image().save_png("%s_%d.png" % [shots, k])
+		k += 1
+	if g != null and is_instance_valid(g):
+		var ship_at: Vector2 = GameScreen.ARENA_POS + g.sim.player_pos
+		print("ship start (screen) = %s   cursor flew to = %s" % [str(ship_at), str(cur._fly_to)])
+	Settings.restore(orig)
 	get_tree().quit()
 
 
@@ -1870,13 +1926,13 @@ func _smoke_new() -> void:
 	await get_tree().create_timer(0.4).timeout
 	chk.call(not _settings_btn.visible, "タイトル画面には出ない(自分の入口がある)")
 	start_game(play_loader, play_loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "control": "mouse", "sfx_volume": 0})
-	await get_tree().create_timer(0.4).timeout
+	await get_tree().create_timer(1.0).timeout   # カーソルが自機へ飛ぶ演出(0.6 秒)のあとで、マウスが捕まえられる
 	open_settings(0)
 	chk.call(not _settings_btn.visible and _settings_panel == null, "プレイ中は、設定を開けない")
 	var cap0 := Input.mouse_mode
 	start_game(play_loader, play_loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "control": "mouse", "sfx_volume": 0})   # リトライ: 新しいプレイ画面が先にできて、古いほうがあとで消える
 	await get_tree().create_timer(0.5).timeout
-	chk.call(cap0 == Input.MOUSE_MODE_CAPTURED and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED, "リトライしても、マウスは捕まえたまま(独自カーソルは出ない)")
+	chk.call(cap0 == Input.MOUSE_MODE_CAPTURED and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED, "リトライしても、マウスは捕まえたまま(独自カーソルは出ない) cap0=%d now=%d" % [cap0, Input.mouse_mode])
 	_current.queue_free()
 	_current = null
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE

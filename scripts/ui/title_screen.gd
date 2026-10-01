@@ -353,12 +353,7 @@ func _process(delta: float) -> void:
 	if not UiStyle.animate:
 		return
 	_t += delta
-	# 視差: 背景はマウスと逆へ、漂うリングはマウスと同じ向きへ、ゆっくり追従して動く(奥行きが出る)
-	var n := ((get_viewport().get_mouse_position() - Vector2(640, 360)) / Vector2(640, 360)).clampf(-1.0, 1.0)
-	_par = _par.lerp(n, 1.0 - exp(-3.0 * delta))
-	_bg_holder.position = -_par * Vector2(10, 6)
-	if _ambient != null:
-		_ambient.position = _par * Vector2(22, 14)
+	_par = UiStyle.parallax(_bg_holder, _ambient, _par, delta, get_viewport())
 	# ロゴは、入場が終わったあと 1 文字ずつ位相をずらして、ゆっくり浮き沈みする
 	var amp := clampf((_t - 1.0) / 0.8, 0.0, 1.0) * 3.5
 	if amp > 0.0:

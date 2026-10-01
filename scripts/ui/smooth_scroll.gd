@@ -5,6 +5,7 @@ extends Node
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 
 const STEP := 88.0        # ホイール 1 目盛りの距離(px)
 const RATE := 16.0        # 目標へ近づく速さ(大きいほど速い)
@@ -45,7 +46,10 @@ func _input(event: InputEvent) -> void:
 		return
 	_sync()
 	var d := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
+	var before := _target
 	_target = clampf(_target + d * STEP * maxf(event.factor, 1.0), 0.0, _max_scroll())
+	if _target != before:
+		UiSfx.play("tick", 1.0 + 0.04 * clampf(_target / maxf(_max_scroll(), 1.0), 0.0, 1.0) * 10.0, 0.6)   # 目盛りごとのコッという音。下へ行くほど少し高い
 	sc.get_viewport().set_input_as_handled()
 
 

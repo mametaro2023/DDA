@@ -15,6 +15,7 @@ const Sfx = preload("res://scripts/game/sfx.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
 
 const ARENA_POS := Vector2(160, 0)
@@ -1020,6 +1021,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 					_pause_sel = (_pause_sel + d + 5) % 5
 					if not (_mp != null and _pause_sel == 1):   # マルチプレイにリトライはない
 						break
+				UiSfx.play("select", 1.0 + 0.12 * _pause_sel)
+				if _pause_sel < _pause_btns.size():   # 選んだボタンが、ぴょこっと弾む
+					_pause_btns[_pause_sel].pivot_offset = _pause_btns[_pause_sel].size * 0.5
+					UiStyle.spring(_pause_btns[_pause_sel], "scale", Vector2(1.06, 1.06), Vector2.ONE, 0.3)
 				_refresh_pause()
 		KEY_LEFT, KEY_RIGHT:
 			if _menu_open():
@@ -1072,11 +1077,13 @@ func _set_paused(p: bool) -> void:
 	if _mp != null:   # マルチプレイ: 他の人がいるので、ゲームは止めない。メニューを重ねるだけ(自機は動かさない)
 		_mp_menu = p
 		_pause_layer.visible = p
+		UiSfx.play("open" if p else "close")
 		if p:
 			_pause_sel = 0
 			_refresh_pause()
 			_pause_panel.pivot_offset = _pause_panel.size * 0.5
 			UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
+			_pause_enter()
 		if _mouse_mode:
 			if p:
 				Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
@@ -1085,12 +1092,14 @@ func _set_paused(p: bool) -> void:
 		return
 	_paused = p
 	_pause_layer.visible = p
+	UiSfx.play("open" if p else "close")
 	if p:
 		_pause_sel = 0
 		_refresh_pause()
 		_pause_panel.pivot_offset = _pause_panel.size * 0.5
 		UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
-		UiStyle.tween(_pause_panel, "scale", Vector2(0.94, 0.94), Vector2.ONE, 0.24, 0.0, Tween.TRANS_BACK)
+		UiStyle.spring(_pause_panel, "scale", Vector2(0.9, 0.9), Vector2.ONE, 0.4)
+		_pause_enter()
 	if _audio_started:
 		_audio.stream_paused = p
 	if _mouse_mode:
@@ -1098,6 +1107,15 @@ func _set_paused(p: bool) -> void:
 			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		else:
 			_capture_mouse()
+
+
+## ポーズを開いたとき、ボタンが上から順に弾んで現れる。
+func _pause_enter() -> void:
+	var k := 0
+	for b in _pause_btns:
+		if b.visible:
+			UiStyle.pop_scale(b, 0.9, 0.32, 0.06 + 0.05 * k)
+			k += 1
 
 
 ## ポーズ(マルチプレイでは、ゲームを止めないメニュー)が開いているか。

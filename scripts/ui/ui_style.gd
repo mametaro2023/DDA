@@ -175,17 +175,35 @@ static func hline() -> ColorRect:
 	return r
 
 
-## 押せるカード(PanelContainer)。左クリックで on_click、ダブルクリックで on_double。
+## 押せるカード(PanelContainer)。左クリックで on_click、ダブルクリックで on_double。押している間は少し縮み、離すと弾んで戻る。
 static func card(min_h: float, on_click: Callable, on_double := Callable()) -> PanelContainer:
 	var c := PanelContainer.new()
 	c.custom_minimum_size = Vector2(0, min_h)
 	c.mouse_filter = Control.MOUSE_FILTER_STOP
 	c.gui_input.connect(func(ev: InputEvent):
-		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
-			on_click.call()
-			if ev.double_click and on_double.is_valid():
-				on_double.call())
+		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
+			if ev.pressed:
+				_card_press(c, 0.975, 0.06, false)
+				on_click.call()
+				if ev.double_click and on_double.is_valid():
+					on_double.call()
+			else:
+				_card_press(c, 1.0, 0.3, true))
+	c.mouse_exited.connect(func(): _card_press(c, 1.0, 0.2, false))
 	return c
+
+
+static func _card_press(c: Control, to: float, dur: float, back: bool) -> void:
+	if not animate or not c.is_inside_tree():
+		c.scale = Vector2.ONE
+		return
+	c.pivot_offset = c.size * 0.5
+	var old = c.get_meta("press_tween") if c.has_meta("press_tween") else null
+	if old is Tween and old.is_valid():
+		old.kill()
+	var t := c.create_tween()
+	t.tween_property(c, "scale", Vector2(to, to), dur).set_trans(Tween.TRANS_BACK if back else Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	c.set_meta("press_tween", t)
 
 
 ## カードの見た目: selected(選択中)/ focus(この列が操作対象か)/ accent(選択の色)。
@@ -281,16 +299,51 @@ static func spring(node: Node, prop: NodePath, from: Variant, to: Variant, dur :
 	return t
 
 
-## 中心から弾んで現れる(拡大しながらフェードイン)。パネル・トースト・ランクなど。
+## 中心から弾んで現れる(拡大しながらフェードイン)。パネル・トースト・ランクなど。作った直後で大きさが未確定なら、1 フレーム待つ。
 static func pop_scale(c: Control, from_scale := 0.86, dur := 0.38, delay := 0.0) -> void:
-	c.pivot_offset = c.size * 0.5
 	if not animate or not c.is_inside_tree():
 		c.scale = Vector2.ONE
 		c.modulate.a = 1.0
 		return
 	c.modulate.a = 0.0
+	c.scale = Vector2(from_scale, from_scale)
+	if c.size == Vector2.ZERO:
+		await c.get_tree().process_frame
+		if not is_instance_valid(c) or not c.is_inside_tree():
+			return
+	c.pivot_offset = c.size * 0.5
 	spring(c, "scale", Vector2(from_scale, from_scale), Vector2.ONE, dur, delay)
 	tween(c, "modulate:a", 0.0, 1.0, minf(dur, 0.22), delay)
+
+
+## 背景の視差: マウスの位置へ、ゆっくり追従して動く(背景はマウスと逆へ、漂うリングは同じ向きへ。奥行きが出る)。
+## par は前回の戻り値(最初は Vector2.ZERO)を渡す。bg は拡大して画面をはみ出している背景の入れもの(動かしても端が見えないよう、±10px 程度)。
+static func parallax(bg: Control, amb: Node2D, par: Vector2, delta: float, viewport: Viewport) -> Vector2:
+	if not animate:
+		return par
+	var n := ((viewport.get_mouse_position() - Vector2(640, 360)) / Vector2(640, 360)).clampf(-1.0, 1.0)
+	par = par.lerp(n, 1.0 - exp(-3.0 * delta))
+	if bg != null:
+		bg.position = -par * Vector2(10, 6)
+	if amb != null:
+		amb.position = par * Vector2(22, 14)
+	return par
+
+
+## 全面に広げたページ(アンカーで親いっぱい)を、dx だけ横にずれた位置から滑り込ませる。位置ではなく左右の端のオフセットを一緒に動かす。
+static func slide_page(page: Control, dx: float, dur := 0.34) -> void:
+	if not animate or not page.is_inside_tree():
+		page.offset_left = 0.0
+		page.offset_right = 0.0
+		return
+	var old = page.get_meta("slide_tween") if page.has_meta("slide_tween") else null
+	if old is Tween and old.is_valid():
+		old.kill()
+	var t := page.create_tween()
+	t.tween_method(func(v: float):
+		page.offset_left = v
+		page.offset_right = v, dx, 0.0, dur).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	page.set_meta("slide_tween", t)
 
 
 ## 子を、上から順に少しずつ遅らせて、下から浮かび上がらせる(base 秒後から step 秒おき)。

@@ -11,6 +11,8 @@ const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
 const FileAssoc = preload("res://scripts/file_assoc.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 const SECTIONS := ["MOD", "操作", "音", "ゲーム"]
 
@@ -26,6 +28,10 @@ var _mod_preview: Label
 var _dim: ColorRect
 var _panel: PanelContainer
 var _closing := false
+var _nav_ind: Panel          # 選択中の項目の下で、上下に滑る枠
+var _nav_holder: Control
+var _nav_tween: Tween
+var _cur := -1               # 表示中のセクション
 
 
 func setup(p_settings: Dictionary, p_preview: Callable) -> void:
@@ -60,7 +66,19 @@ func _ready() -> void:
 	for side in ["left", "right", "top", "bottom"]:
 		nav_margin.add_theme_constant_override("margin_" + side, 22)
 	nav_margin.add_child(nav_box)
-	root.add_child(nav_margin)
+	_nav_holder = Control.new()   # 枠(_nav_ind)を、ボタンの下で自由に動かすための入れもの
+	_nav_holder.custom_minimum_size = Vector2(254, 0)
+	_nav_ind = Panel.new()
+	_nav_ind.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var ia := UiStyle.ACCENT
+	var ind_style := UiStyle.box(Color(ia.r, ia.g, ia.b, 0.14), Color(ia.r, ia.g, ia.b, 0.8), 1, 4)
+	ind_style.border_width_left = 3
+	_nav_ind.add_theme_stylebox_override("panel", ind_style)
+	_nav_ind.visible = false
+	_nav_holder.add_child(_nav_ind)
+	nav_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_nav_holder.add_child(nav_margin)
+	root.add_child(_nav_holder)
 	nav_box.add_child(UiStyle.label("OPTIONS", 22, UiStyle.TEXT, true))
 	nav_box.add_child(UiStyle.caption("設定"))
 	var sp := Control.new()
@@ -74,6 +92,9 @@ func _ready() -> void:
 		b.button_group = group
 		b.focus_mode = Control.FOCUS_NONE
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		for st in ["pressed", "hover_pressed"]:   # 選択の面は、滑る枠が描く(ボタン自身は文字の色だけ)
+			b.add_theme_stylebox_override(st, UiStyle.box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 4, 16, 8))
+		b.set_meta("juice_sound", "select")
 		b.pressed.connect(func(): _show(i))
 		nav_box.add_child(b)
 		_nav.append(b)
@@ -105,8 +126,11 @@ func _ready() -> void:
 
 	_show(0)
 	# 開く動き: 背景が暗くなり、パネルが下からふわっと上がる
+	UiSfx.play("open")
 	UiStyle.tween(_dim, "color:a", 0.0, 0.66, 0.22)
-	UiStyle.pop_in(panel, 0.0, Vector2(0, 28), 0.32)
+	UiStyle.pop_scale(panel, 0.93, 0.42)
+	for k in range(_nav.size()):   # 項目が上から順に、弾んで現れる(コンテナの中なので、位置ではなく大きさで動かす)
+		UiStyle.pop_scale(_nav[k], 0.88, 0.4, 0.12 + 0.05 * k)
 
 
 func show_section(i: int) -> void:
@@ -115,31 +139,66 @@ func show_section(i: int) -> void:
 
 func _show(i: int) -> void:
 	var changed_page: bool = not _pages[i].visible
+	var dir := 1 if i >= _cur else -1
+	var prev := _cur
+	_cur = i
 	for k in range(_pages.size()):
 		_pages[k].visible = (k == i)
 		_nav[k].set_pressed_no_signal(k == i)
 	if changed_page and _panel != null and _panel.is_inside_tree():
-		# セクションを切り替えると、中身が上から順にふわっと現れる
+		# セクションを切り替えると、ページは進む向きから滑り込み、中身が上から順にふわっと現れる
+		if prev >= 0:
+			UiStyle.slide_page(_pages[i], 30.0 * dir)
 		var j := 0
 		for c in _pages[i].get_children():
 			UiStyle.tween(c, "modulate:a", 0.0, 1.0, 0.3, 0.03 * j)
 			j += 1
+	_move_nav_indicator(prev < 0)
 	if i == 0:
 		refresh_mod_info()
+
+
+## 選択の枠を、選んだ項目の位置へ動かす(行き過ぎてから戻る。最初だけ、レイアウトが決まってから、その場に置く)。
+func _move_nav_indicator(first: bool) -> void:
+	if first or not _nav_holder.is_inside_tree() or _nav[_cur].size == Vector2.ZERO:
+		await get_tree().process_frame
+		if not is_instance_valid(_nav_ind) or _cur < 0:
+			return
+		_place_nav_indicator(false)
+		_nav_ind.visible = true
+		UiStyle.tween(_nav_ind, "modulate:a", 0.0, 1.0, 0.3, 0.1)
+		return
+	_place_nav_indicator(true)
+
+
+func _place_nav_indicator(animated: bool) -> void:
+	var b: Control = _nav[_cur]
+	var to := b.global_position - _nav_holder.global_position
+	_nav_ind.size = b.size
+	if _nav_tween != null and _nav_tween.is_valid():
+		_nav_tween.kill()
+	if not animated or not UiStyle.animate:
+		_nav_ind.position = to
+		return
+	UiSfx.play("select", UiSfx.scale_pitch(float(_cur) / 4.0, 1.0))
+	_nav_tween = _nav_ind.create_tween()
+	_nav_tween.tween_property(_nav_ind, "position", to, 0.34).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 func close_panel() -> void:
 	if _closing:
 		return
 	_closing = true
+	UiSfx.play("close")
 	if not UiStyle.animate:
 		closed.emit()
 		return
-	# 閉じる動き: パネルが少し下がりながら消え、背景が明るさを戻す
+	# 閉じる動き: パネルが少し縮みながら消え、背景が明るさを戻す
+	_panel.pivot_offset = _panel.size * 0.5
 	var t := create_tween().set_parallel(true)
-	t.tween_property(_dim, "color:a", 0.0, 0.16)
+	t.tween_property(_dim, "color:a", 0.0, 0.18)
 	t.tween_property(_panel, "modulate:a", 0.0, 0.16)
-	t.tween_property(_panel, "position:y", _panel.position.y + 18.0, 0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	t.tween_property(_panel, "scale", Vector2(0.96, 0.96), 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	t.chain().tween_callback(func(): closed.emit())
 
 
@@ -212,13 +271,23 @@ func _toggle_card(title: String, lines: String, color: Color, on: bool, right_te
 		chip_wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		chip_wrap.add_child(UiStyle.chip(right_text, color))
 		h.add_child(chip_wrap)
+	c.mouse_entered.connect(func(): UiSfx.play("hover", 0.95))
+	c.mouse_exited.connect(func(): UiStyle._card_press(c, 1.0, 0.2, false))
 	c.gui_input.connect(func(ev: InputEvent):
-		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
-			state.on = not state.on
-			apply.call()
-			ind.pivot_offset = ind.size * 0.5
-			UiStyle.tween(ind, "scale", Vector2(1.5, 1.5), Vector2.ONE, 0.3, 0.0, Tween.TRANS_BACK, Tween.EASE_OUT)
-			on_toggle.call(state.on))
+		if not (ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT):
+			return
+		if not ev.pressed:
+			UiStyle._card_press(c, 1.0, 0.32, true)
+			return
+		UiStyle._card_press(c, 0.98, 0.06, false)
+		state.on = not state.on
+		apply.call()
+		ind.pivot_offset = ind.size * 0.5
+		UiStyle.spring(ind, "scale", Vector2(0.4, 0.4), Vector2.ONE, 0.42)
+		UiSfx.play("on" if state.on else "off")
+		if state.on:   # 入れたときは、つまみから粒が弾ける
+			UiFx.burst(self, ind.get_global_rect().get_center() - global_position, color, 9, 120.0, 0.5, 2.6)
+		on_toggle.call(state.on))
 	# 外から見た目を更新できるように、状態をメタに持たせる
 	c.set_meta("state", state)
 	c.set_meta("apply", apply)
@@ -249,7 +318,11 @@ func _slider_row(parent: Control, cap: String, lo: float, hi: float, step: float
 	var v := UiStyle.label(fmt.call(value), 15, UiStyle.ACCENT)
 	v.custom_minimum_size = Vector2(90, 0)
 	h.add_child(v)
-	s.value_changed.connect(func(x: float): v.text = fmt.call(x))
+	s.value_changed.connect(func(x: float):
+		v.text = fmt.call(x)
+		if v.is_visible_in_tree():   # 値の文字が、変わるたびにぴょこっと跳ねる
+			v.pivot_offset = Vector2(0.0, v.size.y * 0.5)
+			UiStyle.spring(v, "scale", Vector2(1.18, 1.18), Vector2.ONE, 0.3))
 	parent.add_child(h)
 	return s
 
@@ -357,6 +430,15 @@ func _build_audio() -> Control:
 		settings.music_volume = int(x)
 		Volume.set_music(x)
 		changed.emit("volume"))
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 8)
+	v.add_child(gap)
+	v.add_child(_toggle_card("UI の音", "ボタンに触れたとき・選んだとき・パネルを開いたときなどの小さな音(音量は「効果音」に従います)", UiStyle.ACCENT,
+		bool(settings.ui_sound), "", func(on: bool):
+			settings.ui_sound = on
+			UiSfx.enabled = on
+			if on:
+				UiSfx.play("on")))
 	return v
 
 

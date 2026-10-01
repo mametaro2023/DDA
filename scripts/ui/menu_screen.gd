@@ -20,6 +20,7 @@ const Volume = preload("res://scripts/volume.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const SmoothScroll = preload("res://scripts/ui/smooth_scroll.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 
 const BG_TINT := Color(0.34, 0.34, 0.4)
 
@@ -42,6 +43,8 @@ var _diff_cards: Array = []
 var _bg: TextureRect            # 今見えている背景(もう 1 枚 _bg2 と交代でクロスフェードする)
 var _bg2: TextureRect
 var _bg_holder: Control
+var _ambient: Node2D
+var _par := Vector2.ZERO
 var _intro_nodes: Array = []       # 入場アニメーションで滑り込むもの
 var _buttons: Array = []           # ホバーで少し大きくなるボタン
 var _lv_shown := {}             # 難易度名 → 表示中の Lv(MOD で変わるとき、前の値から数え直す)
@@ -88,7 +91,8 @@ func _ready() -> void:
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(shade)
-	add_child(Ambient.new())   # 背景で漂うリング
+	_ambient = Ambient.new()   # 背景で漂うリング
+	add_child(_ambient)
 
 	# --- 左: 曲リスト ---
 	_intro_nodes.append(_place(UiStyle.label("DDA", 30, UiStyle.ACCENT, true), 36, 20, 200, 40))
@@ -194,6 +198,10 @@ func _exit_tree() -> void:
 	var w := get_window()
 	if w != null and w.files_dropped.is_connected(_on_files_dropped):
 		w.files_dropped.disconnect(_on_files_dropped)
+
+
+func _process(delta: float) -> void:
+	_par = UiStyle.parallax(_bg_holder, _ambient, _par, delta, get_viewport())
 
 
 ## 画面を開いたときの入場: 見出し・下部バー・ボタンが順に滑り込み、ボタンはホバーで少し大きくなる。
@@ -328,7 +336,11 @@ func _rebuild_song_cards(animate := true) -> void:
 		a.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		v.add_child(a)
 		card.add_child(v)
-		card.mouse_entered.connect(func(): card.set_meta("hover", true); _restyle_song(i))
+		card.mouse_entered.connect(func():
+			card.set_meta("hover", true)
+			if i != _song_sel:
+				UiSfx.play("hover", 1.0)
+			_restyle_song(i))
 		card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_song(i))
 		_song_box.add_child(UiStyle.wrap_card(card, 56))
 		_song_cards.append(card)
@@ -359,6 +371,7 @@ func _select_song(i: int) -> void:
 	_prev_sel = _song_sel if not _job_pending else _prev_sel
 	var old := _song_sel
 	_song_sel = i
+	UiSfx.play("select", UiSfx.scale_pitch(float(i % 6) / 5.0, 1.0))   # 曲を移るごとに、音階が上がる・下がる
 	_restyle_song(old)
 	_restyle_song(i)
 	_song_smooth.scroll_to_control(_song_cards[i])
@@ -543,7 +556,11 @@ func _rebuild_diff_cards(animate_in := false) -> void:
 		bars_box.add_child(bars)
 		h.add_child(bars_box)
 		card.add_child(h)
-		card.mouse_entered.connect(func(): card.set_meta("hover", true); _restyle_diff(i))
+		card.mouse_entered.connect(func():
+			card.set_meta("hover", true)
+			if i != _diff_sel:
+				UiSfx.play("hover", 1.15)
+			_restyle_diff(i))
 		card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_diff(i))
 		_diff_box.add_child(UiStyle.wrap_card(card, 68))
 		_diff_cards.append(card)
@@ -609,6 +626,8 @@ func _select_diff(i: int) -> void:
 	i = clampi(i, 0, _diff_cards.size() - 1)
 	var old := _diff_sel
 	_diff_sel = i
+	if old != i:
+		UiSfx.play("select", 1.35 * UiSfx.scale_pitch(float(i % 6) / 5.0, 1.0))
 	_restyle_all()
 	_diff_smooth.scroll_to_control(_diff_cards[i])
 	_update_detail()
@@ -638,9 +657,13 @@ func _refresh_mod_bar() -> void:
 	if p.ids.is_empty():
 		_mod_bar.add_child(UiStyle.label("MOD なし", 13, UiStyle.TEXT_FAINT))
 		return
+	var k := 0
 	for id in p.ids:
 		var m := Mods.find(id)
-		_mod_bar.add_child(UiStyle.chip(m.name, m.color))
+		var chip := UiStyle.chip(m.name, m.color)
+		_mod_bar.add_child(chip)
+		UiStyle.pop_scale(chip, 0.5, 0.35, 0.05 * k)   # チップは、弾んで現れる
+		k += 1
 	_mod_bar.add_child(UiStyle.label("ベーススコア ×%.4f" % p.score_mul, 13, UiStyle.TEXT_DIM))
 
 
@@ -680,6 +703,7 @@ func _start() -> void:
 		settings.last_song = _songs[_song_sel].path
 		settings.last_diff = _loader.difficulties[_diff_sel].version
 	Settings.save_all(settings)
+	UiSfx.play("confirm")
 	_audio.stop()
 	if pick_mode:
 		song_picked.emit(_loader, _loader.difficulties[_diff_sel], settings, float(_ratings[_diff_sel].level))
@@ -699,7 +723,10 @@ func _input(event: InputEvent) -> void:
 				_select_song(_song_sel + d)
 			get_viewport().set_input_as_handled()
 		KEY_LEFT, KEY_RIGHT, KEY_TAB:
+			var was := _focus_diff
 			_focus_diff = (event.keycode == KEY_RIGHT) or (event.keycode == KEY_TAB and not _focus_diff)
+			if was != _focus_diff:
+				UiSfx.play("tick", 1.5 if _focus_diff else 1.2)
 			_restyle_all()
 			get_viewport().set_input_as_handled()
 		KEY_ENTER, KEY_KP_ENTER:
@@ -708,11 +735,13 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		KEY_ESCAPE:
 			if not event.echo:
+				UiSfx.play("back")
 				_audio.stop()
 				back_requested.emit()
 			get_viewport().set_input_as_handled()
 		KEY_O:
 			if not event.echo:
+				UiSfx.play("open")
 				open_options(0)
 			get_viewport().set_input_as_handled()
 

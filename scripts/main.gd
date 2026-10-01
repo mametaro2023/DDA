@@ -606,6 +606,14 @@ func _stop_music(fade := 0.4) -> void:
 
 
 ## スクリーンショット(開発用): -- --shot menu|game|result out.png [difficulty-substring] [seconds]
+## 開発用: スクリーンショットで使う曲。指定の .osz がこの環境になければ、見つかった最初の曲を使う。
+func _dev_osz(path: String) -> String:
+	if FileAccess.file_exists(path):
+		return path
+	var found := SongLibrary.find_all()
+	return str(found[0]) if not found.is_empty() else path
+
+
 func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 	match kind:
 		"title":
@@ -641,7 +649,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			var path := "C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"
 			if extra.size() > 3 and extra[3] == "soleily":
 				path = "C:/Desktop/my_apps/DDA/241526 Soleily - Renatus.osz"
-			loader.open(path)
+			loader.open(_dev_osz(path))
 			var want: String = extra[0] if extra.size() > 0 else "Extra"
 			var secs: float = float(extra[1]) if extra.size() > 1 else 30.0
 			var bm = loader.difficulties[loader.difficulties.size() - 1]
@@ -741,7 +749,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			_shot_bullets()
 		"result":
 			var rl := OszLoader.new()
-			rl.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+			rl.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 			var rbm = rl.difficulties[rl.difficulties.size() - 1]
 			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "graze": 123, "score": 1013000.0 if extra.has("ss") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
 				"score_base": 1060000.0, "mod_ids": ["hell", "rush"], "mods": "地獄 + 加速",
@@ -753,7 +761,12 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 	if animated:
 		var t0 := Time.get_ticks_msec()
 		var k := 0
-		for at in [0.1, 0.3, 0.6, 1.2, 2.5]:
+		var times := [0.1, 0.3, 0.6, 1.2, 2.5]
+		for e in extra:   # 例: t=0.7,0.8,0.9 で、撮る時刻(開いてからの秒)を指定できる
+			if str(e).begins_with("t="):
+				times = str(e).trim_prefix("t=").split(",")
+				times = times.map(func(x): return float(x))
+		for at in times:
 			while (Time.get_ticks_msec() - t0) / 1000.0 < at:
 				await get_tree().process_frame
 			var path := "%s_%d.png" % [out, k]

@@ -5,6 +5,7 @@ extends Control
 signal closed
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const Updater = preload("res://scripts/updater.gd")
 
 var updater
@@ -104,8 +105,9 @@ func _ready() -> void:
 	updater.progress.connect(_on_progress)
 	updater.failed.connect(_on_failed)
 	updater.staged.connect(_on_staged)
+	UiSfx.play("open")
 	UiStyle.tween(_dim, "color:a", 0.0, 0.7, 0.22)
-	UiStyle.pop_in(_panel, 0.0, Vector2(0, 28), 0.32)
+	UiStyle.pop_scale(_panel, 0.93, 0.42)
 
 
 func _exit_tree() -> void:
@@ -169,12 +171,15 @@ func close_panel() -> void:
 	if _closing or _busy:
 		return
 	_closing = true
+	UiSfx.play("close")
 	if not UiStyle.animate:
 		closed.emit()
 		return
+	_panel.pivot_offset = _panel.size * 0.5
 	var t := create_tween().set_parallel(true)
-	t.tween_property(_dim, "color:a", 0.0, 0.16)
+	t.tween_property(_dim, "color:a", 0.0, 0.18)
 	t.tween_property(_panel, "modulate:a", 0.0, 0.16)
+	t.tween_property(_panel, "scale", Vector2(0.96, 0.96), 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	t.chain().tween_callback(func(): closed.emit())
 
 

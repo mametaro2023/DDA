@@ -161,7 +161,7 @@ func _click() -> PackedFloat32Array:
 	var b := _tone(0.085, 980.0, 600.0, 32.0, 0.55, 0.3)
 	# 触った瞬間のコツッという粒
 	for i in range(int(0.006 * RATE)):
-		b[i] += _noise() * exp(-float(i) / RATE * 700.0) * 0.18
+		b[i] += _noise() * exp(-float(i) / RATE * 700.0) * 0.18 * minf(float(i) / (0.0008 * RATE), 1.0)   # 0.8ms の立ち上がり(0 サンプル目から鳴ると、プチッと聞こえる)
 	return b
 
 
@@ -214,10 +214,10 @@ func _whoosh() -> PackedFloat32Array:
 
 ## スタンプ(ランクの確定): 低い胴鳴り(音程が落ちる)+ 短い衝撃 + 明るい 1 音。
 func _stamp() -> PackedFloat32Array:
-	var b := _tone(0.4, 130.0, 48.0, 9.0, 0.95, 0.3)
+	var b := _tone(0.4, 130.0, 48.0, 9.0, 0.5, 0.3)
 	for i in range(int(0.05 * RATE)):
-		b[i] += _noise() * exp(-float(i) / RATE * 90.0) * 0.45
-	var bell := _tone(0.3, 1320.0, 1320.0, 11.0, 0.3, 0.4)
+		b[i] += _noise() * exp(-float(i) / RATE * 90.0) * 0.22 * minf(float(i) / (0.0008 * RATE), 1.0)
+	var bell := _tone(0.3, 1320.0, 1320.0, 11.0, 0.18, 0.4)
 	for i in range(bell.size()):
 		b[i] += bell[i]
 	return b

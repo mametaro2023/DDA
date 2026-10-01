@@ -35,7 +35,7 @@ static func ring(parent: Node, pos: Vector2, color: Color, r0 := 8.0, r1 := 64.0
 
 
 ## 弾ける粒。count 個が放射状に飛び、減速しながら小さく薄くなって消える。
-static func burst(parent: Node, pos: Vector2, color: Color, count := 12, speed := 170.0, dur := 0.6, size := 3.0, gravity := 0.0) -> void:
+static func burst(parent: Node, pos: Vector2, color: Color, count := 12, speed := 170.0, dur := 0.6, size := 3.0, gravity := 0.0, drag := 2.2) -> void:
 	if not UiStyle.animate or parent == null or not parent.is_inside_tree():
 		return
 	var f := new()
@@ -44,6 +44,7 @@ static func burst(parent: Node, pos: Vector2, color: Color, count := 12, speed :
 	f._color = color
 	f._dur = dur
 	f._gravity = gravity
+	f._drag = drag
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	var a0 := rng.randf() * TAU

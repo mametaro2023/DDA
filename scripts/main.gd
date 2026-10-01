@@ -22,6 +22,9 @@ const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
 const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
 const OpenChoicePanel = preload("res://scripts/ui/open_choice_panel.gd")
 const FileAssoc = preload("res://scripts/file_assoc.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const Juice = preload("res://scripts/ui/juice.gd")
+const ScreenWipe = preload("res://scripts/ui/screen_wipe.gd")
 
 var _current: Node
 var _ui_layer: CanvasLayer         # 設定・選択のパネルを、画面の上に重ねる層
@@ -43,7 +46,7 @@ var _music: AudioStreamPlayer = null   # クリアで引き継いだ曲(リザ�
 
 ## 画面切替の暗転フェード(通常起動のときだけ。開発用フックは即時に切り替える)
 var _fade_enabled := false
-var _fade: ColorRect
+var _wipe: Node                    # 画面の切り替えの幕(斜めのワイプ)
 var _fading := false
 var _pending: Node = null
 
@@ -126,6 +129,10 @@ func _ready() -> void:
 	if osz != "" and SingleInstance.forward(osz):
 		get_tree().quit()
 		return
+	var ui_settings := Settings.load_all()
+	UiSfx.enabled = bool(ui_settings.ui_sound)
+	add_child(UiSfx.new())   # UI の効果音(ホバー・クリック・開閉など)
+	add_child(Juice.new())   # すべてのボタン・スライダーに、弾む動きと音を自動でつける
 	_setup_fade()
 	overlay = HudOverlay.new()
 	add_child(overlay)
@@ -379,29 +386,22 @@ func close_settings() -> void:
 
 
 func _setup_fade() -> void:
-	var layer := CanvasLayer.new()
-	layer.layer = 100
-	add_child(layer)
-	_fade = ColorRect.new()
-	_fade.color = Color(0.03, 0.035, 0.06, 0.0)
-	_fade.size = Vector2(1280, 720)
-	_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(_fade)
+	_wipe = ScreenWipe.new()
+	add_child(_wipe)
 	_fade_enabled = true
 
 
+## 画面の切り替え: 幕が覆う → 入れ替え → 幕が抜けて新しい画面が現れる。覆っている間にさらに要求が来たら、新しいほうだけ使う。
 func _run_fade() -> void:
 	_fading = true
+	UiSfx.play("whoosh")
 	while _pending != null:
-		var t_in := create_tween()
-		t_in.tween_property(_fade, "color:a", 1.0, 0.12)
-		await t_in.finished
+		await _wipe.cover()
 		var n := _pending
 		_pending = null
 		_swap_now(n)
-		var t_out := create_tween()
-		t_out.tween_property(_fade, "color:a", 0.0, 0.2)
-		await t_out.finished
+		await get_tree().process_frame   # 新しい画面を作った重いフレームは、幕の裏で済ませる
+		await _wipe.reveal()
 	_fading = false
 
 

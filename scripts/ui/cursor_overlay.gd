@@ -4,10 +4,12 @@ extends CanvasLayer
 ## プレイ中のマウス操作(MOUSE_MODE_CAPTURED)のときは何も描かない。ウィンドウの外・別のアプリを触っているときも描かない。
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 const R_IDLE := 8.0
 const R_HOVER := 13.0
 const R_PRESS := 6.0
+const TRAIL_LIFE := 0.22
 
 ## 開発用: 位置を決め打ちにする(スクリーンショット用)。負なら、本物のマウスの位置
 var debug_pos := Vector2(-1, -1)
@@ -19,6 +21,7 @@ var _fill := 0.0
 var _inside := false
 var _focused := true
 var _pressed := false
+var _trail: Array = []   # 動いた跡 [位置, 経過秒]。短く薄れる尾になる
 
 
 func _ready() -> void:
@@ -48,6 +51,10 @@ func _input(event: InputEvent) -> void:
 		_inside = true
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		_pressed = event.pressed
+		if event.pressed and _draw.visible:   # 押したところから、輪と数粒が広がる
+			var a := UiStyle.ACCENT
+			UiFx.ring(_draw, event.position, Color(a.r, a.g, a.b, 0.9), 6.0, 38.0, 0.42, 2.0)
+			UiFx.burst(_draw, event.position, Color(a.r, a.g, a.b, 0.9), 6, 90.0, 0.4, 2.4)
 
 
 func _process(delta: float) -> void:
@@ -56,8 +63,10 @@ func _process(delta: float) -> void:
 	if _draw.visible != show:
 		_draw.visible = show
 	if not show:
+		_trail.clear()
 		return
 	_pos = get_viewport().get_mouse_position() if debug_pos.x < 0.0 else debug_pos
+	_update_trail(delta)
 	var target := R_IDLE
 	var target_fill := 0.0
 	if _pressed:
@@ -70,6 +79,18 @@ func _process(delta: float) -> void:
 	_r = lerpf(_r, target, k)
 	_fill = lerpf(_fill, target_fill, k)
 	_draw.queue_redraw()
+
+
+## 尾: 動くたびに位置を足し、古いものから消す(時間で薄れるので、速く動かすほど長く伸びる)。
+func _update_trail(delta: float) -> void:
+	for p in _trail:
+		p[1] += delta
+	while not _trail.is_empty() and _trail[0][1] > TRAIL_LIFE:
+		_trail.pop_front()
+	if not UiStyle.animate:
+		return
+	if _trail.is_empty() or (_trail[_trail.size() - 1][0] as Vector2).distance_to(_pos) > 1.5:
+		_trail.append([_pos, 0.0])
 
 
 ## いま指している場所が、押せるもの(ボタン・スライダー・クリックを受け取るカード)か。
@@ -88,6 +109,10 @@ func _over_clickable() -> bool:
 
 func _on_draw() -> void:
 	var a := UiStyle.ACCENT
+	# 尾(新しいほど太く濃い。先端は輪の中心へつながる)
+	for i in range(_trail.size() - 1):
+		var k := 1.0 - clampf(_trail[i][1] / TRAIL_LIFE, 0.0, 1.0)
+		_draw.draw_line(_trail[i][0], _trail[i + 1][0], Color(a.r, a.g, a.b, 0.5 * k * k), 1.0 + 4.0 * k, true)
 	# 輪(暗い縁をつけて、明るい背景でも見えるようにする)
 	_draw.draw_arc(_pos, _r, 0.0, TAU, 40, Color(0, 0, 0, 0.55), 3.5, true)
 	_draw.draw_arc(_pos, _r, 0.0, TAU, 40, Color(a.r, a.g, a.b, 0.95), 1.8, true)

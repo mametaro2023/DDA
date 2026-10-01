@@ -108,6 +108,9 @@ static func make_theme() -> Theme:
 	t.set_stylebox("slider", "HSlider", track)
 	t.set_stylebox("grabber_area", "HSlider", fill)
 	t.set_stylebox("grabber_area_highlight", "HSlider", fill)
+	t.set_icon("grabber", "HSlider", knob(7.0, Color(1, 1, 1, 0.95), ACCENT))
+	t.set_icon("grabber_highlight", "HSlider", knob(10.0, Color.WHITE, ACCENT))
+	t.set_icon("grabber_disabled", "HSlider", knob(6.0, Color(1, 1, 1, 0.4), Color(1, 1, 1, 0.2)))
 	# スクロールバー(細く控えめ)
 	var sb_track := box(Color(1, 1, 1, 0.04), Color(0, 0, 0, 0), 0, 3)
 	sb_track.content_margin_left = 3
@@ -120,6 +123,23 @@ static func make_theme() -> Theme:
 	t.set_stylebox("grabber_highlight", "VScrollBar", sb_grab)
 	t.set_stylebox("grabber_pressed", "VScrollBar", sb_grab)
 	return t
+
+
+## スライダーのつまみ(丸。半径 r、中は fill、縁は rim)。縁をなめらかにするため、画素ごとに距離から透明度を決めて描く。
+static func knob(r: float, fill: Color, rim: Color) -> ImageTexture:
+	var n := int(ceil(r * 2.0)) + 6
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var c := (n - 1) * 0.5
+	for y in range(n):
+		for x in range(n):
+			var d := Vector2(x - c, y - c).length()
+			var a := clampf(r - d + 0.5, 0.0, 1.0)
+			if a <= 0.0:
+				continue
+			var ring := clampf(d - (r - 2.2) + 0.5, 0.0, 1.0)   # 外側 2px だけ縁の色
+			var col := fill.lerp(rim, ring)
+			img.set_pixel(x, y, Color(col.r, col.g, col.b, col.a * a))
+	return ImageTexture.create_from_image(img)
 
 
 static func label(text: String, size := 15, color := TEXT, bold_font := false) -> Label:
@@ -240,11 +260,46 @@ static func pop_in(c: Control, delay := 0.0, from_offset := Vector2(24, 0), dur 
 	c.set_meta("pop_tween", t)
 
 
-## ホバーで少し大きくなるボタン(中心を軸に、なめらかに拡大・縮小)。
-static func hover_scale(c: Control, amount := 1.04) -> void:
+## (旧)ホバーで少し大きくなるボタン。いまは Juice(juice.gd)が、すべてのボタンに自動でつけるので、何もしない。
+static func hover_scale(_c: Control, _amount := 1.04) -> void:
+	pass
+
+
+## 弾んで止まる動き: from → to へ、行き過ぎてから戻る(TRANS_BACK)。何度呼んでも、前の同じ prop の動きは止めて置き換える。
+static func spring(node: Node, prop: NodePath, from: Variant, to: Variant, dur := 0.4, delay := 0.0) -> Tween:
+	if not animate or not node.is_inside_tree():
+		node.set_indexed(prop, to)
+		return null
+	node.set_indexed(prop, from)
+	var key := "spring_" + str(prop).replace(":", "_")
+	var old = node.get_meta(key) if node.has_meta(key) else null
+	if old is Tween and old.is_valid():
+		old.kill()
+	var t := node.create_tween()
+	t.tween_property(node, prop, to, dur).set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	node.set_meta(key, t)
+	return t
+
+
+## 中心から弾んで現れる(拡大しながらフェードイン)。パネル・トースト・ランクなど。
+static func pop_scale(c: Control, from_scale := 0.86, dur := 0.38, delay := 0.0) -> void:
 	c.pivot_offset = c.size * 0.5
-	c.mouse_entered.connect(func(): tween(c, "scale", c.scale, Vector2(amount, amount), 0.12))
-	c.mouse_exited.connect(func(): tween(c, "scale", c.scale, Vector2.ONE, 0.16))
+	if not animate or not c.is_inside_tree():
+		c.scale = Vector2.ONE
+		c.modulate.a = 1.0
+		return
+	c.modulate.a = 0.0
+	spring(c, "scale", Vector2(from_scale, from_scale), Vector2.ONE, dur, delay)
+	tween(c, "modulate:a", 0.0, 1.0, minf(dur, 0.22), delay)
+
+
+## 子を、上から順に少しずつ遅らせて、下から浮かび上がらせる(base 秒後から step 秒おき)。
+static func stagger_in(items: Array, base := 0.0, step := 0.045, from_offset := Vector2(0, 14), dur := 0.38) -> void:
+	var k := 0
+	for c in items:
+		if c is Control and c.is_inside_tree():
+			pop_in(c, base + step * k, from_offset, dur)
+			k += 1
 
 
 ## コンテナの中でも動かせるように、カードを Control で包む(カードは holder いっぱいに広がり、offset で動く)。
@@ -265,7 +320,7 @@ static func _set_dx(card: Control, dx: float) -> void:
 
 
 ## 包んだカードを横にずらす(選択中・ホバー中のカードが少し右に出る)。登場の途中なら、目標だけ更新する(登場が終わる位置になる)。
-static func shift_card(card: Control, dx: float, dur := 0.18) -> void:
+static func shift_card(card: Control, dx: float, dur := 0.26) -> void:
 	var target: float = card.get_meta("dx", 0.0)
 	if is_equal_approx(target, dx):
 		return
@@ -277,7 +332,7 @@ static func shift_card(card: Control, dx: float, dur := 0.18) -> void:
 		_set_dx(card, dx)
 		return
 	var t := card.create_tween()
-	t.tween_method(func(v: float): _set_dx(card, v), card.offset_left, dx, dur).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	t.tween_method(func(v: float): _set_dx(card, v), card.offset_left, dx, dur).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	card.set_meta("shift_tween", t)
 
 

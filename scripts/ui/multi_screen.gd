@@ -16,6 +16,8 @@ const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
 const SongDownload = preload("res://scripts/song_download.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 const BG_TINT := Color(0.3, 0.3, 0.36)
 const MODES := [["versus", "対戦"], ["coop", "協力"]]
@@ -43,6 +45,10 @@ var _dl_text := ""
 var _dl_error := ""
 var _dl_bar: ProgressBar
 var _dl_label: Label
+var _ambient: Node2D
+var _par := Vector2.ZERO
+var _lobby_built := false         # ロビーを作ったことがあるか(最初だけ入場の動き。作り直しのたびには動かさない)
+var _known_ids: Dictionary = {}  # 見えている参加者(新しく入った人・出た人で、音を鳴らす)
 
 
 func setup(p_net, p_notice := "") -> void:
@@ -74,7 +80,8 @@ func _ready() -> void:
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(shade)
-	add_child(Ambient.new())
+	_ambient = Ambient.new()
+	add_child(_ambient)
 	_audio = AudioStreamPlayer.new()
 	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.volume_db = -6.0
@@ -160,6 +167,8 @@ func _button(text: String, on_press: Callable, primary := false) -> Button:
 
 func _show_entry(msg := "") -> void:
 	_page = "entry"
+	_lobby_built = false
+	_known_ids.clear()
 	_busy = false
 	_clear_content()
 	if msg != "":
@@ -265,6 +274,8 @@ func _on_state_changed() -> void:
 
 func _show_lobby() -> void:
 	_page = "lobby"
+	_lobby_built = false   # 開いたときは、入場の動きをつける
+	_known_ids.clear()
 	_resolve_song()
 	_refresh_lobby()
 
@@ -336,8 +347,26 @@ func _refresh_lobby() -> void:
 	pv.add_child(UiStyle.caption("PLAYERS  %d / %d" % [net.players.size(), net.MAX_PLAYERS]))
 	var ids: Array = net.players.keys()
 	ids.sort_custom(func(a, b): return net.players[a].slot < net.players[b].slot)
+	var joined: Array = []
 	for id in ids:
-		pv.add_child(_player_row(id, is_host))
+		var row_c := _player_row(id, is_host)
+		pv.add_child(row_c)
+		if _lobby_built and not _known_ids.has(id):   # 新しく入ってきた人は、弾んで現れる
+			joined.append(row_c)
+	var left_n := 0
+	for id in _known_ids:
+		if not net.players.has(id):
+			left_n += 1
+	if _lobby_built:
+		if not joined.is_empty():
+			UiSfx.play("on", 1.25)
+			for rc in joined:
+				UiStyle.pop_scale(rc, 0.85, 0.4)
+		elif left_n > 0:
+			UiSfx.play("off", 0.9)
+	_known_ids.clear()
+	for id in ids:
+		_known_ids[id] = true
 	# --- 右: モード / 曲 ---
 	_place(UiStyle.caption("MODE"), 668, 94, 200, 16)
 	var seg := HBoxContainer.new()
@@ -406,6 +435,13 @@ func _refresh_lobby() -> void:
 		_status = UiStyle.label(reason, 13, UiStyle.TEXT_DIM)
 		_place(_status, 668, 638, 400, 20)
 	_update_bg()
+	if not _lobby_built:   # 最初だけ、パネルが左右から滑り込む
+		_lobby_built = true
+		var k := 0
+		for c in _content.get_children():
+			if c is PanelContainer:
+				UiStyle.pop_in(c, 0.04 + 0.06 * k, Vector2(-26, 0) if c.position.x < 640.0 else Vector2(26, 0), 0.45)
+				k += 1
 
 
 ## 部屋の曲を持っていないとき(参加者): ダウンロードして取り込むボタン。ダウンロード中は進み具合。
@@ -561,6 +597,7 @@ func _update_bg() -> void:
 
 
 func _process(delta: float) -> void:
+	_par = UiStyle.parallax(_bg_holder, _ambient, _par, delta, get_viewport())
 	if _page != "lobby" or not net.is_active():
 		return
 	_t += delta

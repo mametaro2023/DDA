@@ -17,10 +17,18 @@ const Volume = preload("res://scripts/volume.gd")
 const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 const BG_TINT := Color(0.4, 0.4, 0.46)
 const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"]]
 const MUSIC_DB := -4.0
+const ITEM_X := 104.0
+const ITEM_Y := 380.0
+const ITEM_W := 360.0
+const ITEM_H := 58.0
+const ITEM_GAP := 12.0
+const PITCHES := [1.0, 1.122, 1.26, 1.5]   # 項目ごとの選択音の高さ(↑↓ で音階のように聞こえる)
 
 var settings: Dictionary = {}
 var update_info: Dictionary = {}   # 新しいバージョンがあるとき、main が渡す(あとから見つかった場合は show_update)
@@ -35,6 +43,12 @@ var _audio: AudioStreamPlayer
 var _last_path := ""
 var _overlay: Control        # 開いているパネル(遊び方 / 設定)
 var _leaving := false
+var _ambient: Node2D
+var _letters: Array = []     # ロゴの 1 文字ずつ(入場のあと、ゆっくり浮き沈みする)
+var _hl: Panel               # 選択中の項目の下で、上下になめらかに動く枠
+var _hl_tween: Tween
+var _par := Vector2.ZERO     # 背景の視差(マウスの位置に、ゆっくり追従)
+var _t := 0.0
 
 
 func _ready() -> void:
@@ -67,30 +81,45 @@ func _ready() -> void:
 		var c1 := Color(0.02, 0.025, 0.05, 0.0)
 		grad.draw_polygon(PackedVector2Array([Vector2(0, 0), Vector2(760, 0), Vector2(760, 720), Vector2(0, 720)]), PackedColorArray([c0, c1, c1, c0])))
 	add_child(grad)
-	add_child(Ambient.new())
+	_ambient = Ambient.new()
+	add_child(_ambient)
 
 	# --- タイトルの文字 ---
-	var logo := UiStyle.label("DDA", 132, UiStyle.ACCENT, true)
-	logo.position = Vector2(104, 92)
-	add_child(logo)
+	# ロゴは 1 文字ずつ、上から弾んで落ちてくる
+	var lx := 104.0
+	for i in range(3):
+		var ch := "DDA"[i]
+		var letter := UiStyle.label(ch, 132, UiStyle.ACCENT, true)
+		letter.position = Vector2(lx, 92)
+		add_child(letter)
+		lx += UiStyle.bold().get_string_size(ch, HORIZONTAL_ALIGNMENT_LEFT, -1, 132).x
+		letter.set_meta("base_y", 92.0)
+		_letters.append(letter)
+		UiStyle.spring(letter, "position:y", 92.0 - 70.0, 92.0, 0.7, 0.04 + 0.09 * i)
+		UiStyle.tween(letter, "modulate:a", 0.0, 1.0, 0.25, 0.04 + 0.09 * i)
 	var sub := UiStyle.label("OSU! DANMAKU DODGER", 20, UiStyle.TEXT_DIM)
 	sub.position = Vector2(112, 250)
 	add_child(sub)
 	var ver := UiStyle.chip("BETA   v%s" % _version(), UiStyle.GOLD)
 	ver.position = Vector2(112, 292)
 	add_child(ver)
-	UiStyle.pop_in(logo, 0.05, Vector2(-30, 0), 0.6)
 	UiStyle.pop_in(sub, 0.15, Vector2(-30, 0), 0.6)
 	UiStyle.pop_in(ver, 0.25, Vector2(-30, 0), 0.6)
 
 	# --- 項目 ---
+	_hl = Panel.new()   # 選択中の枠。カードの下で、選ぶたびに上下へ弾みながら動く
+	_hl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hl.add_theme_stylebox_override("panel", _hl_style())
+	_hl.size = Vector2(ITEM_W - 10.0, ITEM_H)
+	_hl.position = _hl_pos(_sel)
+	add_child(_hl)
 	var box := VBoxContainer.new()
-	box.position = Vector2(104, 380)
-	box.custom_minimum_size = Vector2(360, 0)
-	box.add_theme_constant_override("separation", 12)
+	box.position = Vector2(ITEM_X, ITEM_Y)
+	box.custom_minimum_size = Vector2(ITEM_W, 0)
+	box.add_theme_constant_override("separation", int(ITEM_GAP))
 	add_child(box)
 	for i in range(ITEMS.size()):
-		var card := UiStyle.card(58, func(): _activate(i))
+		var card := UiStyle.card(ITEM_H, func(): _activate(i))
 		var h := HBoxContainer.new()
 		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		h.add_theme_constant_override("separation", 14)
@@ -103,12 +132,13 @@ func _ready() -> void:
 		h.add_child(en)
 		card.add_child(h)
 		card.mouse_entered.connect(func(): _select(i))
-		var holder := UiStyle.wrap_card(card, 58)
+		var holder := UiStyle.wrap_card(card, ITEM_H)
 		box.add_child(holder)
 		_cards.append(card)
 	_restyle()
 	for i in range(_cards.size()):
 		UiStyle.enter_card(_cards[i], 0.3 + 0.08 * i, -40.0)
+	UiStyle.tween(_hl, "modulate:a", 0.0, 1.0, 0.4, 0.45)
 
 	# 背景と曲は、最初の画面を出してから読み込む(読み込みで最初のフレームが遅れないように)
 	_audio = AudioStreamPlayer.new()
@@ -216,38 +246,92 @@ func _select(i: int) -> void:
 	if i == _sel or _overlay != null or _leaving:
 		return
 	_sel = i
+	UiSfx.play("select", PITCHES[i])
 	_restyle()
+	_move_highlight()
+
+
+## 選択の枠の style(中は水色のうっすらした面、縁と左の太い線は水色)。
+func _hl_style() -> StyleBoxFlat:
+	var a := UiStyle.ACCENT
+	var st := UiStyle.box(Color(a.r, a.g, a.b, 0.13), Color(a.r, a.g, a.b, 0.85), 1, 5, 14, 9)
+	st.border_width_left = 3
+	return st
+
+
+func _hl_pos(i: int) -> Vector2:
+	return Vector2(ITEM_X + 14.0, ITEM_Y + i * (ITEM_H + ITEM_GAP))
+
+
+## 枠を、選んだ項目の位置へ動かす(行き過ぎてから戻る。動いている間、少し縦に伸びる)。
+func _move_highlight() -> void:
+	if _hl_tween != null and _hl_tween.is_valid():
+		_hl_tween.kill()
+	var to := _hl_pos(_sel)
+	if not UiStyle.animate or not is_inside_tree():
+		_hl.position = to
+		return
+	_hl_tween = create_tween().set_parallel(true)
+	_hl_tween.tween_property(_hl, "position", to, 0.34).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	var stretch := _hl.create_tween()
+	_hl.pivot_offset = _hl.size * 0.5
+	stretch.tween_property(_hl, "scale", Vector2(1.0, 1.1), 0.08).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	stretch.tween_property(_hl, "scale", Vector2.ONE, 0.26).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 func _restyle() -> void:
 	for i in range(_cards.size()):
 		var sel := (i == _sel)
-		UiStyle.style_card(_cards[i], sel, true, UiStyle.ACCENT, false)
+		if sel:   # 選択中の面は、動く枠(_hl)が描く。カード自身は透明にして、文字だけ前に出す
+			_cards[i].add_theme_stylebox_override("panel", UiStyle.box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 5, 14, 9))
+		else:
+			UiStyle.style_card(_cards[i], false, true, UiStyle.ACCENT, false)
 		UiStyle.shift_card(_cards[i], 14.0 if sel else 0.0)
 
 
 func _activate(i: int) -> void:
 	if _overlay != null or _leaving:
 		return
-	_sel = i
-	_restyle()
+	if i != _sel:
+		_sel = i
+		_restyle()
+		_move_highlight()
 	match i:
-		0:
+		0, 1:
+			UiSfx.play("confirm")
 			_leaving = true
 			_fade_music(0.35)
+			_burst_at_selected()
+			_slide_out()
 			if UiStyle.animate:
 				await get_tree().create_timer(0.3).timeout
-			play_requested.emit()
-		1:
-			_leaving = true
-			_fade_music(0.35)
-			if UiStyle.animate:
-				await get_tree().create_timer(0.3).timeout
-			multi_requested.emit()
+			(play_requested if i == 0 else multi_requested).emit()
 		2:
+			UiSfx.play("open")
 			_open(HowToPanel.new())
 		3:
+			UiSfx.play("open")
 			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
+
+
+## 決めた項目から、水色の輪と粒が広がる。
+func _burst_at_selected() -> void:
+	var at := _hl_pos(_sel) + Vector2(ITEM_W * 0.5, ITEM_H * 0.5)
+	UiFx.ring(self, at, UiStyle.ACCENT, 20.0, 150.0, 0.5, 2.5)
+	UiFx.burst(self, at, UiStyle.ACCENT, 14, 240.0, 0.55, 3.0)
+
+
+## 画面を出るとき、項目が左へ順に流れ出る。
+func _slide_out() -> void:
+	if not UiStyle.animate:
+		return
+	for k in range(_cards.size()):
+		var c: Control = _cards[k]
+		var t := c.create_tween().set_parallel(true)
+		t.tween_property(c, "modulate:a", 0.0, 0.2).set_delay(0.03 * k)
+		t.tween_method(func(v: float): UiStyle._set_dx(c, v), c.offset_left, -50.0, 0.22).set_delay(0.03 * k).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	var th := _hl.create_tween()
+	th.tween_property(_hl, "modulate:a", 0.0, 0.2)
 
 
 func _open(panel: Control) -> void:
@@ -263,6 +347,19 @@ func _close_overlay() -> void:
 		return
 	_overlay.queue_free()
 	_overlay = null
+
+
+func _process(delta: float) -> void:
+	if not UiStyle.animate:
+		return
+	_t += delta
+	_par = UiStyle.parallax(_bg_holder, _ambient, _par, delta, get_viewport())
+	# ロゴは、入場が終わったあと 1 文字ずつ位相をずらして、ゆっくり浮き沈みする
+	var amp := clampf((_t - 1.0) / 0.8, 0.0, 1.0) * 3.5
+	if amp > 0.0:
+		for i in range(_letters.size()):
+			var l: Label = _letters[i]
+			l.position.y = float(l.get_meta("base_y")) + sin(_t * 1.5 + i * 0.8) * amp
 
 
 func _input(event: InputEvent) -> void:

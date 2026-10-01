@@ -14,7 +14,7 @@ extends RefCounted
 ## 同じフィールドで一緒に避ける。体力・スコア・ゲームオーバー・クリア・休憩の一掃は、ホストが決める(権威)。
 ##   参加者 → ホスト: 自分の被弾時間・グレイズ・被弾回数を 15 回/秒でまとめて報告(g_ct)
 ##   ホスト → 全員: 共有の状態(ゲージ・累計ダメージなど)を 20 回/秒(g_cs)、出来事(一掃・クリア・ゲームオーバー)を即時(g_ev)
-##   自機狙いの弾: 誰を狙うかと、その位置をホストが撃つ AIM_LEAD 秒前に決めて配る(g_aim)。全員が同じ向きの弾になる
+##   自機狙いの弾: 全員を 1 発ずつ狙う。全員の位置(スロット順)を、ホストが撃つ AIM_LEAD 秒前に決めて配る(g_aim)。全員が同じ向きの弾になる
 ## 自機に近い位置から撃たれた弾の猶予(SAFE_RADIUS)だけは、自分の自機の位置で各自が決める(自分は理不尽に被弾しない)。
 
 const GameSim = preload("res://scripts/game/game_sim.gd")
@@ -146,7 +146,7 @@ func _slot_positions() -> Array:
 	return out
 
 
-## ホスト: これから撃つ自機狙いのイベントについて、狙う相手(スロット順の持ち回り)の位置を決めて配る。
+## ホスト: これから撃つ自機狙いのイベントについて、全員(スロット順)の位置を決めて配る。
 func _resolve_aims() -> void:
 	var events: Array = sim.events
 	while _aim_idx < events.size() and float(events[_aim_idx].t) - AIM_LEAD <= now:
@@ -164,9 +164,8 @@ func _resolve_aims() -> void:
 		var pos: Array = sim.slot_positions
 		if pos.size() < 2:
 			continue   # ひとりなら、撃つときの自機の位置(sim が決める)
-		var target: Vector2 = pos[i % pos.size()]
-		sim.aim_targets[i] = target
-		net.broadcast({"t": "g_aim", "i": i, "p": target})
+		sim.aim_targets[i] = pos.duplicate()
+		net.broadcast({"t": "g_aim", "i": i, "p": pos})
 
 
 # --- 受信 ---
@@ -204,8 +203,13 @@ func handle(from: int, msg: Dictionary) -> void:
 				sim.apply_net_event(ev, now)
 		"g_aim":  # 参加者(協力): 自機狙いの目標
 			var p2 = msg.get("p")
-			if mode == "coop" and not is_host and p2 is Vector2 and p2.is_finite():
-				sim.aim_targets[int(NetCore._num(msg.get("i", -1), -1.0, -1.0, 1e7))] = p2
+			if mode == "coop" and not is_host and p2 is Array and p2.size() >= 1 and p2.size() <= 4:
+				var list: Array = []
+				for q in p2:
+					if q is Vector2 and q.is_finite():
+						list.append(q)
+				if list.size() == p2.size():
+					sim.aim_targets[int(NetCore._num(msg.get("i", -1), -1.0, -1.0, 1e7))] = list
 		"g_left":  # ホスト: 誰かが去った
 			_gone(from)
 			if is_host:

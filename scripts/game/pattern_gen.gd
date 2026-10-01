@@ -59,6 +59,28 @@ const STAR_MAX := 6.6
 ## 弾の生成(目標の弾数の調整)には入れない: 生成は密度だけで目標に合わせ、長さは Lv の計算でだけ足す。
 const LENGTH_REF := 120.0
 
+## 発生源の補正(_make_remap): 一様な分布へ寄せる割合と、発生源を置く範囲の余白
+const REMAP_ALPHA := 1.0
+const REMAP_EDGE := 0.8           # 1 未満: 発生源を端へ寄せる
+const SRC_MARGIN := Vector2(24, 24)
+
+## 画面全体を使う弾幕(壁・収束リング)。★に対応する k が SPECIAL_K_MIN 以上の譜面で、強い拍(new combo)に挟む。
+## 間隔は、★が高いほど WALL_GAP_MAX → WALL_GAP_MIN 秒へ詰まる。壁と収束リングは交互。
+const SPECIAL_K_MIN := 0.2
+const WALL_GAP_MAX := 10.0
+const WALL_GAP_MIN := 5.0
+const WALL_SPEED := 0.9             # 壁の速さ(基準の弾速に対する倍率)
+const WALL_SPACING := 18.0          # 弾の間隔(自機の当たり判定より狭く、すり抜けられない)
+const WALL_GAP_W := 150.0           # 隙間の幅
+const WALL_GAP_SEPARATION := 260.0  # 前の隙間から、これ以上離す
+const DOOR_R := 260.0
+const DOOR_SPEED := 0.75
+const DOOR_SPACING := 20.0
+const DOOR_GAP_ANG := 0.7           # 収束リングの隙間の角度(rad)
+
+## 曲がる弾の角速度(rad/s)の最大(★に応じて増える)
+const CURL_RATE := 0.5
+
 ## 表示する Lv の厳しさ。同じ弾幕の Lv を、TARGET_TABLE から読んだ値より LEVEL_SHIFT だけ小さく表示する(= 同じ Lv なら、以前より弾が多く、難しい)。
 ## 生成の目標も、その分だけ上の★の弾数に合わせる(Lv = 推定★ のまま。表示の目盛りだけが厳しくなる)。
 const LEVEL_SHIFT := 1.0
@@ -225,10 +247,15 @@ static func _generate(bm: Beatmap, k: float, mul: float, speed: float, size: flo
 		"half_gap": lerpf(0.6, 0.2, k),
 		"warn_lead": lerpf(0.95, 0.5, k),
 	}
+	base["rm"] = _make_remap(bm)   # 発生源の位置を、画面全体に散らす(隅・縁も発生源にする)
 	var events: Array = []
 	var gizmos: Array = []
 	var prev_primary := -10.0
 	var idx := 0
+	var wall_t := -100.0       # 最後に壁を出した時刻
+	var door_t := -100.0       # 最後に収束リングを出した時刻
+	var wall_n := 0
+	var wall_gaps := [-1000.0, -1000.0]   # 前の壁の隙間の位置(横向き・縦向きの別。次は、そこから離す)
 	var times: Array = []
 	for o in bm.hit_objects:
 		times.append(o.time / 1000.0)
@@ -242,7 +269,7 @@ static func _generate(bm: Beatmap, k: float, mul: float, speed: float, size: flo
 		var kiai := bm.kiai_at(o.time)
 		var ci: int = (o.combo_index % 5) + (5 if kiai else 0)
 		var a0 := fposmod(idx * 0.7853982 + o.combo_index * 0.4, TAU)
-		var pos := to_arena(o.pos)
+		var pos := to_source(o.pos, c.rm)
 		# 連打の間引き
 		var gap := t - prev_primary
 		var tier := 0
@@ -259,6 +286,19 @@ static func _generate(bm: Beatmap, k: float, mul: float, speed: float, size: flo
 				_slider(bm, o, t, pos, tier, a0, ci, c, events, gizmos)
 			Beatmap.KIND_SPINNER:
 				_spinner(o, t, ci, c, events, gizmos)
+		# 強い拍(new combo)で、画面全体を使う弾幕(壁 / 収束リング)を挟む。隙間は、譜面の流れ(数ノーツ先の位置)に置く
+		if o.new_combo and o.kind != Beatmap.KIND_SPINNER and k >= SPECIAL_K_MIN:
+			var nxt: Vector2 = to_source(bm.hit_objects[mini(idx + 3, bm.hit_objects.size() - 1)].pos, c.rm)
+			var gap_s := lerpf(WALL_GAP_MAX, WALL_GAP_MIN, clampf((k - SPECIAL_K_MIN) / (1.0 - SPECIAL_K_MIN), 0.0, 1.0))
+			if t - maxf(wall_t, door_t) >= gap_s:
+				if wall_n % 2 == 0:
+					var ax := (wall_n / 2) % 2   # 左右からの壁と、上下からの壁は、交互(隙間の位置の軸が違う)
+					wall_gaps[ax] = _wall(t, wall_n / 2, nxt, wall_gaps[ax], ci, c, events, gizmos)
+					wall_t = t
+				else:
+					_door_ring(t, pos, nxt, ci, c, events)
+					door_t = t
+				wall_n += 1
 		idx += 1
 	events.sort_custom(func(a, b): return a.t < b.t)
 	gizmos.sort_custom(func(a, b): return a.t < b.t)
@@ -271,6 +311,116 @@ static func _generate(bm: Beatmap, k: float, mul: float, speed: float, size: flo
 
 static func _ev(t: float, pos: Vector2, warn: bool, shots: Array, sfx := "") -> Dictionary:
 	return {"t": t, "pos": pos, "warn": warn, "shots": shots, "sfx": sfx}
+
+
+## 位置と速度を最初から決めた弾の集まり(壁・収束リング)。list = [[位置, 速度ベクトル], ...]
+static func _list_shot(list: Array, speed: float, ci: int, c: Dictionary, size_mul := 1.0) -> Dictionary:
+	return {"n": list.size(), "speed": speed, "a0": 0.0, "spread": 0.0, "fan": false, "aim": false,
+		"size": c.size * size_mul, "color": ci, "turn": 0.0, "list": list}
+
+
+## 発生源の位置の補正。ノーツの位置は画面の中央に偏る(隅は少ない)ので、譜面全体のノーツ位置の分布を一様に近づけて、
+## 画面の隅・縁にも発生源が来るようにする。x と y を別々に、累積分布で一様な位置へ写し、元の位置と REMAP_ALPHA の割合で混ぜる。
+static func _make_remap(bm: Beatmap) -> Dictionary:
+	var xs := PackedFloat32Array()
+	var ys := PackedFloat32Array()
+	for o in bm.hit_objects:
+		xs.append(o.pos.x)
+		ys.append(o.pos.y)
+	xs.sort()
+	ys.sort()
+	return {"xs": xs, "ys": ys}
+
+
+static func to_source(p_osu: Vector2, rm: Dictionary) -> Vector2:
+	var orig := to_arena(p_osu)
+	if rm.xs.size() < 8:
+		return orig
+	var eq := Vector2(lerpf(SRC_MARGIN.x, ARENA.x - SRC_MARGIN.x, _edge_push(_cdf(rm.xs, p_osu.x))), lerpf(SRC_MARGIN.y, ARENA.y - SRC_MARGIN.y, _edge_push(_cdf(rm.ys, p_osu.y))))
+	return orig.lerp(eq, REMAP_ALPHA)
+
+
+## 0..1 の位置を、端へ寄せる(REMAP_EDGE < 1)。中央から撃つ弾は画面の中央を何度も通るので、発生源を一様にしても、弾の通過は中央に偏る。端の発生源を多くして、通過の密度をならす。
+static func _edge_push(u: float) -> float:
+	var d := 2.0 * u - 1.0
+	return 0.5 + 0.5 * signf(d) * pow(absf(d), REMAP_EDGE)
+
+
+static func _cdf(sorted: PackedFloat32Array, v: float) -> float:
+	return 0.5 * float(sorted.bsearch(v, true) + sorted.bsearch(v, false)) / float(sorted.size())
+
+
+static func _polyline_at(pts: PackedVector2Array, frac: float) -> Vector2:
+	if pts.size() == 1:
+		return pts[0]
+	var total := 0.0
+	for i in range(1, pts.size()):
+		total += pts[i].distance_to(pts[i - 1])
+	var target := total * frac
+	var acc := 0.0
+	for i in range(1, pts.size()):
+		var seg := pts[i].distance_to(pts[i - 1])
+		if acc + seg >= target and seg > 0.0:
+			return pts[i - 1].lerp(pts[i], (target - acc) / seg)
+		acc += seg
+	return pts[pts.size() - 1]
+
+
+## 壁: 画面の端から、隙間を 1 つ空けた弾の列が、画面を横切る(縦または横。端はめぐり順)。隙間は nxt(譜面の流れ)の位置に置き、前の隙間(prev_gap)からは離す。
+## 戻り値は、この壁の隙間の位置(次の壁が離れるため)。予兆: 端に、隙間つきの線(ギズモ)と、隙間の位置の輪。
+static func _wall(t: float, n: int, nxt: Vector2, prev_gap: float, ci: int, c: Dictionary, events: Array, gizmos: Array) -> float:
+	var edge := n % 4   # 0: 左から  1: 上から  2: 右から  3: 下から
+	var horizontal := (edge % 2 == 0)   # 左右から来る壁は、縦に並んだ弾の列
+	var along := nxt.y if horizontal else nxt.x
+	var lo := 120.0
+	var hi := (ARENA.y if horizontal else ARENA.x) - 120.0
+	if absf(along - prev_gap) < WALL_GAP_SEPARATION:   # 同じ場所なら、反対側へ
+		along = along + (WALL_GAP_SEPARATION if along < (lo + hi) * 0.5 else -WALL_GAP_SEPARATION)
+	along = clampf(along, lo, hi)
+	var spd: float = c.speed * WALL_SPEED
+	var dir: Vector2 = [Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0), Vector2(0, -1)][edge]
+	var list: Array = []
+	var length := ARENA.y if horizontal else ARENA.x
+	var p := 0.0
+	while p <= length:
+		if absf(p - along) > WALL_GAP_W * 0.5:
+			var sp: Vector2
+			match edge:
+				0: sp = Vector2(-4.0, p)
+				1: sp = Vector2(p, -4.0)
+				2: sp = Vector2(ARENA.x + 4.0, p)
+				_: sp = Vector2(p, ARENA.y + 4.0)
+			list.append([sp, dir * spd])
+		p += WALL_SPACING
+	var mark: Vector2
+	match edge:
+		0: mark = Vector2(30.0, along)
+		1: mark = Vector2(along, 30.0)
+		2: mark = Vector2(ARENA.x - 30.0, along)
+		_: mark = Vector2(along, ARENA.y - 30.0)
+	events.append(_ev(t, mark, true, [_list_shot(list, spd, ci, c, 0.9)], "boom"))
+	gizmos.append({"kind": "wall", "t": t, "end": t, "edge": edge, "gap": along, "gap_w": WALL_GAP_W, "color": ci})
+	return along
+
+
+## 収束リング: center を中心に、半径 DOOR_R の円周から中へ向かう弾の輪。隙間(DOOR_GAP_ANG の幅)を nxt の向きに空ける
+## (中にいる人は、隙間から外へ出る。画面の外へはみ出した弾は、すぐ消える)。
+static func _door_ring(t: float, center: Vector2, nxt: Vector2, ci: int, c: Dictionary, events: Array) -> void:
+	var spd: float = c.speed * DOOR_SPEED
+	var toward := (nxt - center).angle() if nxt.distance_to(center) > 30.0 else fposmod(center.x * 0.013, TAU)
+	var n := int(round(TAU * DOOR_R / DOOR_SPACING))
+	var list: Array = []
+	for i in range(n):
+		var a := TAU * float(i) / float(n)
+		if absf(wrapf(a - toward, -PI, PI)) < DOOR_GAP_ANG * 0.5:
+			continue
+		var sp := center + Vector2.from_angle(a) * DOOR_R
+		if not BOUNDS.has_point(sp):
+			continue
+		list.append([sp, -Vector2.from_angle(a) * spd])
+	if list.is_empty():
+		return
+	events.append(_ev(t, center, true, [_list_shot(list, spd, ci, c, 0.9)], "boom"))
 
 
 static func _shot(n: int, speed: float, a0: float, ci: int, c: Dictionary,
@@ -314,9 +464,11 @@ static func _circle_shots(hs: int, new_combo: bool, tier: int, a0: float, ci: in
 		shots.append(_shot(n, s * 0.7, a0 + PI / n, ci, c))
 	elif hs & Beatmap.HS_CLAP:
 		var h := maxi(n / 2, 3)
-		shots.append(_shot(h, s, a0, ci, c))
-		shots.append(_shot(h, s * 0.85, a0 + 0.25, ci, c))
-		shots.append(_shot(h, s * 0.7, a0 + 0.5, ci, c))
+		var curl := CURL_RATE * k if k >= 0.35 else 0.0   # 曲がる弾(向きは、リングごとに交互。隙間の位置が時間で動き、少しの移動では避けきれない)
+		var sgn := 1.0 if int(a0 * 10.0) % 2 == 0 else -1.0
+		shots.append(_shot(h, s, a0, ci, c, TAU, false, false, curl * sgn))
+		shots.append(_shot(h, s * 0.85, a0 + 0.25, ci, c, TAU, false, false, -curl * sgn))
+		shots.append(_shot(h, s * 0.7, a0 + 0.5, ci, c, TAU, false, false, curl * sgn))
 	elif hs & Beatmap.HS_WHISTLE:
 		shots.append(_shot(3 + int(2.0 * k), s * 1.15, 0.0, ci, c, 0.6, true, true))
 		shots.append(_shot(maxi(n / 2, 3), s * 0.8, a0, ci, c))
@@ -337,7 +489,7 @@ static func _slider(bm: Beatmap, o: Dictionary, t: float, pos: Vector2, tier: in
 	# 軌道(アリーナ座標)
 	var pts := PackedVector2Array()
 	for p in curve.points:
-		pts.append(to_arena(p))
+		pts.append(to_source(p, c.rm))
 	gizmos.append({"kind": "slider", "t": t, "end": end_t, "points": pts,
 		"span": span, "repeats": repeats, "color": ci})
 	# 頭
@@ -358,7 +510,7 @@ static func _slider(bm: Beatmap, o: Dictionary, t: float, pos: Vector2, tier: in
 		var frac := u - slide
 		if slide % 2 == 1:
 			frac = 1.0 - frac
-		var p := to_arena(curve.pos_at(frac))
+		var p := _polyline_at(pts, frac)
 		var shots: Array = []
 		shots.append(_shot(c.arms, s * 0.8, rot, ci, c, TAU, false, false, 0.0, 0.85))
 		if c.aim_trail and m % 4 == 0:
@@ -370,7 +522,7 @@ static func _slider(bm: Beatmap, o: Dictionary, t: float, pos: Vector2, tier: in
 	for j in range(1, repeats + 1):
 		var edge_t := t + j * span
 		var at_end := (j % 2 == 1)
-		var ep := to_arena(curve.pos_at(1.0 if at_end else 0.0))
+		var ep := _polyline_at(pts, 1.0 if at_end else 0.0)
 		var eh: int = o.edge_sounds[j] if j < o.edge_sounds.size() else 0
 		var n: int = c.ring_n
 		var edge_shots: Array = []
@@ -449,12 +601,20 @@ static func measure(events: Array) -> Dictionary:
 	for e in events:
 		var p: Vector2 = e.pos
 		for s in e.shots:
+			var i0 := maxi(int(e.t / SAMPLE_DT), 0)
+			if s.has("list"):   # 壁・収束リング: 位置と速度が決まっている(画面の外で始まる弾は、入ってから数える)
+				for b in s.list:
+					var bv: Vector2 = b[1]
+					var life2 := _exit_time(b[0], bv.normalized(), bv.length())
+					var i1b := mini(int((e.t + life2) / SAMPLE_DT) + 1, cells - 1)
+					diff[i0] += 1
+					diff[i1b] -= 1
+				continue
 			var base: float = s.a0
 			if s.aim:
 				base += (AIM_REF - p).angle()
 			for i in range(s.n):
 				var life := _exit_time(p, Vector2.from_angle(shot_angle(s, base, i)), s.speed)
-				var i0 := maxi(int(e.t / SAMPLE_DT), 0)
 				var i1 := mini(int((e.t + life) / SAMPLE_DT) + 1, cells - 1)
 				diff[i0] += 1
 				diff[i1] -= 1

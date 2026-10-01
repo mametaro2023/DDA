@@ -127,6 +127,13 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 			var s2: Dictionary = s.duplicate()
 			s2.size = float(s.size) * float(p.size_mul)
 			s2.speed = float(s.speed) * float(p.speed_mul)
+			if s.has("list"):   # 壁・収束リング: 弾数は変えず、速さと大きさだけ(速度ベクトルに倍率を掛ける)
+				var list2: Array = []
+				for b in s.list:
+					list2.append([b[0], b[1] * float(p.speed_mul)])
+				s2.list = list2
+				shots.append(s2)
+				continue
 			var want := float(s.n) * count_mul + carry
 			var n2 := maxi(int(floor(want + 0.000001)), 1)
 			carry = want - n2

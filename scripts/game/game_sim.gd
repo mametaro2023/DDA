@@ -138,7 +138,7 @@ var net_mode := ""               # "" = ひとり(対戦も、各自が自分の
 var authority := true            # false = 協力の参加者(ホスト以外): ゲージ・スコア・クリア・ゲームオーバーはホストが決めて、apply_net_* で受け取る
 var players_n := 1
 var graze_div := 1.0             # グレイズのボーナスは、全員の合計を人数で割って(平均で)数える
-var aim_targets := {}            # イベント番号 → 自機狙いの目標位置(ホストが決めて全員へ配る。全員で同じ弾になる)
+var aim_targets := {}            # イベント番号 → 自機狙いの目標位置の一覧(スロット順。ホストが決めて全員へ配る。全員で同じ弾になる)
 var slot_positions: Array = []   # スロット順の全員の位置(協力: 自機狙いの相手の選び方・休憩/クリアの判定)。自分の位置も入る
 var net_events: Array = []       # ホストが全員へ配る出来事 {k: "wipe" / "clear" / "fail", ...}
 var contact_dt := 0.0            # 参加者: まだホストへ送っていない、自分の被弾時間・グレイズ・被弾回数
@@ -275,13 +275,14 @@ func net_state() -> Dictionary:
 	return {"g": gauge, "d": damage_total, "z": graze, "h": hits, "ht": hit_time}
 
 
-## 協力: 自機狙いの目標位置。ホストが決めて配った位置があればそれ、なければ(届く前に撃つ場合)スロット順に持ち回りで狙う。
-func aim_target_for(idx: int) -> Vector2:
+## 自機狙いの目標位置の一覧。協力では、全員を 1 発ずつ(全員が同じ頻度で狙われる)。ホストが決めて配った位置があればそれ、
+## なければ(届く前に撃つ場合)いま分かっている全員の位置(スロット順)。ひとり・対戦では、自分だけ。
+func aim_targets_for(idx: int) -> Array:
 	if aim_targets.has(idx):
 		return aim_targets[idx]
 	if net_mode == "coop" and slot_positions.size() > 1:
-		return slot_positions[idx % slot_positions.size()]
-	return player_pos
+		return slot_positions
+	return [player_pos]
 
 
 ## 休憩地帯の中か。
@@ -472,22 +473,28 @@ func _fire(e: Dictionary, now: float) -> void:
 	var late := maxf(now - e.t, 0.0)
 	var pos: Vector2 = e.pos
 	var grace := SAFE_GRACE_PX if player_pos.distance_to(pos) < SAFE_RADIUS else 0.0
-	var aim_at := aim_target_for(_ev_idx)   # 自機狙いの相手(協力ではホストが決めた位置。ひとりでは自機)
+	var aims: Array = aim_targets_for(_ev_idx)   # 自機狙いの相手(協力では全員。ひとりでは自機)
 	aim_targets.erase(_ev_idx)
 	for s in e.shots:
-		var base: float = s.a0
-		if s.aim:
-			base += (aim_at - pos).angle()
-		for i in range(s.n):
-			var v: Vector2 = Vector2.from_angle(PatternGen.shot_angle(s, base, i)) * s.speed
-			field.add(pos + v * late, v, s.size, s.color, grace, s.turn)
+		if s.has("list"):   # 壁・収束リングなど、位置と速度を最初から決めた弾
+			for b in s.list:
+				var bg := SAFE_GRACE_PX if player_pos.distance_to(b[0]) < SAFE_RADIUS else 0.0
+				field.add(b[0] + b[1] * late, b[1], s.size, s.color, bg, s.turn)
+			continue
+		for at in (aims if s.aim else [Vector2.ZERO]):
+			var base: float = s.a0
+			if s.aim:
+				base += (at - pos).angle()
+			for i in range(s.n):
+				var v: Vector2 = Vector2.from_angle(PatternGen.shot_angle(s, base, i)) * s.speed
+				field.add(pos + v * late, v, s.size, s.color, grace, s.turn)
 	if track_fires and not e.shots.is_empty():
 		recent_fires.append({"pos": pos, "t": e.t, "color": e.shots[0].color})
 	if not e.shots.is_empty():
 		break_clear_t = -1.0   # 休憩中に新しい弾が撃たれたら、安全になるまで一掃を待ち直す
 	if not in_break(e.t):
 		for s in e.shots:
-			bullets_fired += int(s.n)
+			bullets_fired += int(s.n) * (aims.size() if s.aim else 1)
 	if e.sfx != "":
 		sfx_queue.append(e.sfx)
 

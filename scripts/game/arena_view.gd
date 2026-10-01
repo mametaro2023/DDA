@@ -50,6 +50,8 @@ func _draw_under() -> void:
 				var ep := GameSim.slider_emitter(g, now)
 				draw_circle(ep, 9.0, Color(c.r, c.g, c.b, 0.9 * a))
 				draw_arc(ep, 13.0, 0.0, TAU, 24, Color(1, 1, 1, 0.8 * a), 2.0, true)
+		elif g.kind == "wall":
+			_draw_wall_mark(g, c, a)
 		else:
 			draw_arc(g.pos, 42.0, 0.0, TAU, 48, Color(c.r, c.g, c.b, 0.8 * a), 3.0, true)
 			draw_circle(g.pos, 8.0, Color(1, 1, 1, 0.7 * a))
@@ -74,6 +76,38 @@ func _draw_under() -> void:
 		for r in remotes:
 			_draw_remote_ship(r)
 		_draw_player_body()
+
+
+## 壁の予兆: 弾が出てくる端に、隙間つきの線を引く(だんだん濃くなる。点滅はしない)。隙間の両端に短い印。
+func _draw_wall_mark(g: Dictionary, c: Color, a: float) -> void:
+	var edge: int = g.edge
+	var horizontal := (edge % 2 == 0)
+	var length := GameSim.ARENA.y if horizontal else GameSim.ARENA.x
+	var g0: float = float(g.gap) - float(g.gap_w) * 0.5
+	var g1: float = float(g.gap) + float(g.gap_w) * 0.5
+	var inset := 8.0
+	var col := Color(c.r, c.g, c.b, 0.5 * a)
+	for seg in [[0.0, g0], [g1, length]]:
+		var s0: float = seg[0]
+		var s1: float = seg[1]
+		if s1 - s0 < 1.0:
+			continue
+		var pa: Vector2
+		var pb: Vector2
+		match edge:
+			0:
+				pa = Vector2(inset, s0)
+				pb = Vector2(inset, s1)
+			1:
+				pa = Vector2(s0, inset)
+				pb = Vector2(s1, inset)
+			2:
+				pa = Vector2(GameSim.ARENA.x - inset, s0)
+				pb = Vector2(GameSim.ARENA.x - inset, s1)
+			_:
+				pa = Vector2(s0, GameSim.ARENA.y - inset)
+				pb = Vector2(s1, GameSim.ARENA.y - inset)
+		draw_line(pa, pb, col, 3.0, true)
 
 
 func _draw_over() -> void:

@@ -96,18 +96,17 @@ func _init() -> void:
 	var d := _make(2, false, [e])
 	var s4 = d[0]
 	s4.player_pos = Vector2(50, 50)   # 自分の位置は関係ない
-	s4.aim_targets[0] = Vector2(400, 500)   # ホストが決めた目標(真下)
+	s4.aim_targets[0] = [Vector2(400, 500)]   # ホストが決めた目標(真下)
 	s4.step(0.5, 0.001, Vector2.ZERO, false)
 	var f4 = d[1]
 	_check(f4.count == 1 and f4.vel[0].normalized().distance_to(Vector2.DOWN) < 0.01, "配られた目標(真下)へ撃つ: v=%s" % str(f4.vel[0]))
-	# 配られていなければ、スロット順の持ち回り(イベント番号 % 人数)
-	var d2 := _make(2, true, [e, _ev(0.6, Vector2(400, 100), [_shot(1, 100.0, true)])])
+	# 配られていなければ、いま分かっている全員を狙う(1 人 1 発。誰かが狙われっぱなしにならない)
+	var d2 := _make(2, true, [e])
 	var s5 = d2[0]
 	s5.slot_positions = [Vector2(100, 100), Vector2(700, 100)]
 	s5.step(0.5, 0.001, Vector2.ZERO, false)
-	s5.step(0.6, 0.001, Vector2.ZERO, false)
 	var f5 = d2[1]
-	_check(f5.count == 2 and f5.vel[0].x < 0.0 and f5.vel[1].x > 0.0, "持ち回り: 0 番目はスロット 0(左)、1 番目はスロット 1(右)を狙う")
+	_check(f5.count == 2 and f5.vel[0].x < 0.0 and f5.vel[1].x > 0.0, "全員を狙う: 1 発は左(スロット 0)、もう 1 発は右(スロット 1)へ")
 
 	# 5) 休憩の一掃・クリアは、全員の周りが落ち着いてから(ホスト)
 	var brk := _make(2, true, [_ev(0.1, Vector2(30, 30), [_shot(1, 0.0, false)]), _ev(9.0, Vector2(30, 30), [_shot(1, 0.0, false)])], [[1.0, 6.0]], 12.0, true)

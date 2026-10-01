@@ -11,6 +11,7 @@ extends CanvasLayer
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Volume = preload("res://scripts/volume.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 
 const NAMES := ["全体", "音楽", "効果音"]
 const STEP := 5
@@ -89,7 +90,10 @@ func _on_row_input(ev: InputEvent, row: Control, i: int) -> void:
 
 
 func _set_from_x(row: Control, i: int, x: float) -> void:
+	var before := Volume.get_value(i)
 	Volume.set_value(i, int(round(clampf((x - _bar_x()) / _bar_w(row), 0.0, 1.0) * 100.0)))
+	if Volume.get_value(i) != before:
+		_volume_tick()
 	_t = SHOW_TIME
 	_redraw()
 
@@ -112,6 +116,11 @@ func _draw_row(row: Control, i: int) -> void:
 	row.draw_string(font, Vector2(w - 50.0, 20), "%d%%" % v, HORIZONTAL_ALIGNMENT_RIGHT, 44.0, 14, c)
 
 
+## 音量を変えたときの、その音量での小さな音(音量の目安になり、音階のように上がる)。
+func _volume_tick() -> void:
+	UiSfx.play("tick", UiSfx.scale_pitch(Volume.get_value(_sel) / 100.0, 1.6) * 0.9, 1.0)
+
+
 func _select(i: int) -> void:
 	_sel = i
 	_t = SHOW_TIME
@@ -127,9 +136,14 @@ func _show_panel() -> void:
 	_t = SHOW_TIME
 	if _tween != null and _tween.is_valid():
 		_tween.kill()
+	var was_shown := _shown
 	_panel.visible = true
 	_panel.modulate.a = 1.0
 	_shown = true
+	if not was_shown:   # 出るときは、上から弾んで降りてくる
+		UiStyle.spring(_panel, "position:y", -80.0, 14.0, 0.4)
+	else:
+		_panel.position.y = 14.0
 	meter_visible = true
 	_redraw()
 
@@ -143,9 +157,10 @@ func _hide_panel() -> void:
 	if not UiStyle.animate:
 		_panel.visible = false
 		return
-	_tween = create_tween()
+	_tween = create_tween().set_parallel(true)   # 消えるときは、上へ戻りながら薄れる
 	_tween.tween_property(_panel, "modulate:a", 0.0, FADE_TIME)
-	_tween.tween_callback(func(): _panel.visible = false)
+	_tween.tween_property(_panel, "position:y", -10.0, FADE_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	_tween.chain().tween_callback(func(): _panel.visible = false)
 
 
 func _process(delta: float) -> void:
@@ -173,6 +188,7 @@ func _input(event: InputEvent) -> void:
 	var d := 1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1
 	Volume.set_value(_sel, Volume.get_value(_sel) + d * STEP)
 	_show_panel()
+	_volume_tick()
 	get_viewport().set_input_as_handled()
 
 
@@ -200,11 +216,15 @@ func toast(msg: String) -> void:
 	_toast.position = Vector2((1280.0 - _toast.size.x) * 0.5, 640.0)
 	_toast.visible = true
 	_toast_t = TOAST_TIME
+	UiSfx.play("toast")
 	if _toast_tween != null and _toast_tween.is_valid():
 		_toast_tween.kill()
-	if UiStyle.animate:
+	if UiStyle.animate:   # 下から弾んで上がり、ふわっと現れる
 		_toast.modulate.a = 0.0
-		_toast_tween = create_tween()
+		_toast_tween = create_tween().set_parallel(true)
 		_toast_tween.tween_property(_toast, "modulate:a", 1.0, 0.2)
+		UiStyle.spring(_toast, "position:y", 676.0, 640.0, 0.45)
+		_toast.pivot_offset = _toast.size * 0.5
+		UiStyle.spring(_toast, "scale", Vector2(0.9, 0.9), Vector2.ONE, 0.45)
 	else:
 		_toast.modulate.a = 1.0

@@ -6,6 +6,7 @@ signal closed
 
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 
 const SECTIONS := ["はじめに", "操作", "ゲージとスコア", "MOD", "マルチプレイ", "曲の追加"]
 
@@ -13,6 +14,7 @@ var _pages: Array = []
 var _nav: Array = []
 var _dim: ColorRect
 var _panel: PanelContainer
+var _cur := -1
 var _closing := false
 
 
@@ -88,29 +90,39 @@ func _ready() -> void:
 		stack.add_child(p)
 	_show(0)
 	UiStyle.tween(_dim, "color:a", 0.0, 0.7, 0.22)
-	UiStyle.pop_in(panel, 0.0, Vector2(0, 28), 0.32)
+	UiStyle.pop_scale(panel, 0.93, 0.42)
+	for k in range(_nav.size()):   # 項目が上から順に、弾んで現れる
+		UiStyle.pop_scale(_nav[k], 0.88, 0.4, 0.12 + 0.05 * k)
 
 
 func _show(i: int) -> void:
 	var changed_page: bool = not _pages[i].visible
+	var dir := 1 if i >= _cur else -1
+	var first := _cur < 0
+	_cur = i
 	for k in range(_pages.size()):
 		_pages[k].visible = (k == i)
 		_nav[k].set_pressed_no_signal(k == i)
 	if changed_page and _panel != null and _panel.is_inside_tree():
 		UiStyle.tween(_pages[i], "modulate:a", 0.0, 1.0, 0.25)
+		if not first:
+			UiStyle.slide_page(_pages[i], 30.0 * dir)
+			UiSfx.play("select", UiSfx.scale_pitch(float(i) / maxf(_pages.size() - 1, 1.0), 1.0))
 
 
 func close_panel() -> void:
 	if _closing:
 		return
 	_closing = true
+	UiSfx.play("close")
 	if not UiStyle.animate:
 		closed.emit()
 		return
+	_panel.pivot_offset = _panel.size * 0.5
 	var t := create_tween().set_parallel(true)
-	t.tween_property(_dim, "color:a", 0.0, 0.16)
+	t.tween_property(_dim, "color:a", 0.0, 0.18)
 	t.tween_property(_panel, "modulate:a", 0.0, 0.16)
-	t.tween_property(_panel, "position:y", _panel.position.y + 18.0, 0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	t.tween_property(_panel, "scale", Vector2(0.96, 0.96), 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	t.chain().tween_callback(func(): closed.emit())
 
 

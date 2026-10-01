@@ -14,6 +14,8 @@ var death_t := 0.0
 var death_pos := Vector2.ZERO
 ## 被弾中の赤み(0..1)。game_screen が被弾で 1 に上げ、なめらかに減衰させる(点滅させない)
 var hit_glow := 0.0
+## 自機の現れ具合(0 = 見えない / 1 = ふつう。BACK で行き過ぎて 1 に戻る)。ゲーム開始で、カーソルが自機になる演出に使う(中心 = 自機を軸に拡大)
+var ship_in := 1.0
 ## 自機の軌跡(尾)。{p, t} を古い順に持つ。TRAIL_LIFE 秒で消える
 const TRAIL_LIFE := 0.2
 var _trail: Array = []
@@ -182,8 +184,30 @@ func _update_trail() -> void:
 
 ## 自機の機体: 鋭い矢じり型(2 トーンの塗り分け + 中央の明るい背骨 + 淡い光)と、動くと伸びる尾。
 ## **弾の下の層(layer 0)に描く**: 巨大化 MOD などで自機が大きくても、機体の下にある弾が隠れず、弾が機体の上に見える。
+## 自機を、自機の位置を軸に ship_in 倍で描くための変換(描画の前に呼ぶ。終わったら _end_ship_scale)。見えないときは false。
+func _begin_ship_scale() -> bool:
+	if ship_in >= 0.999 and ship_in <= 1.001:
+		return true
+	if ship_in <= 0.01:
+		return false
+	var p: Vector2 = sim.player_pos
+	draw_set_transform(p * (1.0 - ship_in), 0.0, Vector2(ship_in, ship_in))
+	return true
+
+
+func _end_ship_scale() -> void:
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
 func _draw_player_body() -> void:
 	_update_trail()
+	if not _begin_ship_scale():
+		return
+	_draw_player_body_scaled()
+	_end_ship_scale()
+
+
+func _draw_player_body_scaled() -> void:
 	var p: Vector2 = sim.player_pos
 	var sc: float = sim.player_scale   # MOD で自機が大きくなる(当たり判定の点も同じ倍率)
 	var base := own_color
@@ -248,6 +272,13 @@ func _draw_player_body() -> void:
 ## 自機の目印(弾の上の層 layer 1 に描く): 低速時に回る 4 本の弧、ゲージの残量リング、被弾リング、中心の当たり判定の点。
 ## どれも細いので、弾を隠さない。当たり判定の点は、機体が大きくても位置が分かるように最前面に置く。
 func _draw_player_marks() -> void:
+	if not _begin_ship_scale():
+		return
+	_draw_player_marks_scaled()
+	_end_ship_scale()
+
+
+func _draw_player_marks_scaled() -> void:
 	var p: Vector2 = sim.player_pos
 	var sc: float = sim.player_scale
 	# 低速: 周りを回る 4 本の短い弧

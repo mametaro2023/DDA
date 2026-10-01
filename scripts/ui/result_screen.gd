@@ -9,6 +9,8 @@ const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 ## スコア表示の ease-out(1/RATE 秒ほどで大半が追いつく。プレイ画面の表示と同じ考え方)
 const COUNT_RATE := 3.5
@@ -22,6 +24,10 @@ var _t := 0.0                    # 開いてからの経過秒(スコアのカ�
 var _counters: Array = []         # 数字のカウントアップ: [Label, 目標値, 接尾辞]
 var _score_target := 0.0
 var _score_disp := 0.0
+var _score_done := false
+var _left: Control            # 左のランクのパネル(スタンプの衝撃で、ずんと揺れる)
+var _accent := Color.WHITE
+var _big: Label
 
 
 func setup(p_stats: Dictionary, p_net = null) -> void:
@@ -53,12 +59,14 @@ func _ready() -> void:
 	var score: int = int(round(stats.score))   # プレイ中の表示(四捨五入)と同じにする。切り捨てだと 1 ずれる
 	var rank := GameSim.rank_of(failed, int(stats.hits), float(stats.score), float(stats.get("score_base", 1000000.0)))
 	var accent := UiStyle.DANGER if failed else UiStyle.rank_color(rank)
+	_accent = accent
 
 	# --- 左: ランク / 到達度 ---
 	var left := Control.new()
 	left.position = Vector2(90, 110)
 	left.size = Vector2(420, 480)
 	add_child(left)
+	_left = left
 	var lp := PanelContainer.new()
 	lp.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	lp.add_theme_stylebox_override("panel", UiStyle.box(Color(accent.r, accent.g, accent.b, 0.05), Color(accent.r, accent.g, accent.b, 0.35), 1, 8))
@@ -81,12 +89,13 @@ func _ready() -> void:
 		lv.add_child(_centered(big))
 		lv.add_child(_centered(UiStyle.label("RANK", 16, UiStyle.TEXT_DIM)))
 
-	# 左パネルは左から滑り込み、ランク文字は弾んで現れる
+	# 左パネルは左から滑り込み、ランク文字は大きいところから叩きつけられる(衝撃波・粒・音つき)
 	UiStyle.pop_in(left, 0.05, Vector2(-40, 0), 0.5)
+	_big = big
 	if not failed:
-		big.pivot_offset = big.get_minimum_size() * 0.5
-		UiStyle.tween(big, "scale", Vector2(0.4, 0.4), Vector2.ONE, 0.6, 0.4, Tween.TRANS_BACK)
-		UiStyle.tween(big, "modulate:a", 0.0, 1.0, 0.3, 0.4)
+		_stamp(big, 0.55)
+	else:
+		UiSfx.play("deny", 0.9)   # (到達度は、数え上がるだけ)
 
 	# --- 右: 曲名 / スコア / 内訳 / 成績 ---
 	var right := VBoxContainer.new()
@@ -162,11 +171,20 @@ func _ready() -> void:
 	for c in right.get_children():
 		UiStyle.tween(c, "modulate:a", 0.0, 1.0, 0.35, 0.2 + 0.07 * j)
 		j += 1
-	UiStyle.tween(hint, "modulate:a", 0.0, 1.0, 0.5, 1.2)
+	var bk := 0
+	for b in hint.get_children():   # 下のボタンは、最後に弾んで現れる
+		UiStyle.pop_scale(b, 0.8, 0.4, 1.2 + 0.08 * bk)
+		bk += 1
 	for c in _counters:
 		var lab: Label = c[0]
 		var suffix: String = c[2]
-		var set_text := func(v: float): lab.text = str(int(round(v))) + suffix
+		var last_shown := {"v": -1}
+		var total := float(c[1])
+		var set_text := func(v: float):
+			lab.text = str(int(round(v))) + suffix
+			if UiStyle.animate and int(round(v)) != last_shown.v and v > 0.0:   # 数字が変わるたびに、音程が上がっていく小さな音
+				last_shown.v = int(round(v))
+				UiSfx.play("count", 0.9 + 0.7 * clampf(v / maxf(total, 1.0), 0.0, 1.0), 0.8)
 		UiStyle.tween_value(lab, 0.0, float(c[1]), float(c[4]), set_text, float(c[3]))
 
 
@@ -174,10 +192,44 @@ func _process(delta: float) -> void:
 	_t += delta
 	if _score_l == null or (UiStyle.animate and _t < 0.55):   # 右の列が現れてから数え始める
 		return
+	var before := int(round(_score_disp))
 	_score_disp += (_score_target - _score_disp) * (1.0 - exp(-delta * COUNT_RATE))
 	if absf(_score_target - _score_disp) < 0.5:
 		_score_disp = _score_target
-	_score_l.text = UiStyle.fmt(int(round(_score_disp)))
+	var now := int(round(_score_disp))
+	_score_l.text = UiStyle.fmt(now)
+	if UiStyle.animate and now != before and not _score_done:   # 数え上がる間、音程が上がる小さな音
+		UiSfx.play("count", 0.8 + 0.9 * clampf(_score_disp / maxf(_score_target, 1.0), 0.0, 1.0), 0.8)
+	if not _score_done and _score_disp == _score_target:   # 数え終わり: 数字がぽんと弾む
+		_score_done = true
+		if UiStyle.animate:
+			UiSfx.play("tick", 2.0, 1.0)
+			_score_l.pivot_offset = Vector2(0.0, _score_l.size.y * 0.5)
+			UiStyle.spring(_score_l, "scale", Vector2(1.07, 1.07), Vector2.ONE, 0.4)
+
+
+## ランクの文字を叩きつける: 大きく透明な状態から、加速しながら縮んで着地 → 衝撃波・粒・低い音・パネルがずんと沈む。
+func _stamp(big: Label, delay: float) -> void:
+	big.pivot_offset = big.get_minimum_size() * 0.5
+	if not UiStyle.animate or not is_inside_tree():
+		return
+	big.modulate.a = 0.0
+	big.scale = Vector2(2.8, 2.8)
+	var t := create_tween()
+	t.tween_interval(delay)
+	t.tween_callback(func(): big.modulate.a = 0.9)
+	t.tween_property(big, "scale", Vector2.ONE, 0.2).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_IN)
+	t.parallel().tween_property(big, "modulate:a", 1.0, 0.2)
+	t.tween_callback(func():
+		var at := big.get_global_rect().get_center()
+		UiFx.ring(self, at, _accent, 40.0, 330.0, 0.7, 4.0)
+		UiFx.ring(self, at, Color(1, 1, 1, 0.5), 20.0, 200.0, 0.5, 2.0)
+		UiFx.burst(self, at, _accent, 26, 560.0, 0.9, 4.6, 160.0, 1.9)
+		UiSfx.play("stamp")
+		_left.pivot_offset = _left.size * 0.5   # パネルが、ずんと沈んで戻る
+		var th := _left.create_tween()
+		th.tween_property(_left, "scale", Vector2(0.985, 0.985), 0.05).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		th.tween_property(_left, "scale", Vector2.ONE, 0.4).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
 
 
 ## MOD によるベーススコアの倍率の注記(なければ空)。

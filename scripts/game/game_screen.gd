@@ -15,6 +15,9 @@ const Sfx = preload("res://scripts/game/sfx.gd")
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
+const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
 
 const ARENA_POS := Vector2(160, 0)
@@ -97,6 +100,8 @@ var _mouse_mode := false
 ## いま木の中にあるプレイ画面の数(リトライでは、新しい画面が先に作られ、古い画面があとで消える)
 static var _alive := 0
 var _mouse_accum := Vector2.ZERO  # 未処理のカーソル移動量(相対)
+var _guiding := false             # 開始の演出中: カーソルが自機の位置へ飛んでいる間(マウスの移動は自機に効かせない)
+var _arrived := false             # 自機が現れて、操作が渡ったか
 var _mouse_capture_ms := 0
 var _dead := false
 var _hit_glow := 0.0  # 被弾中の赤み(なめらかに減衰。点滅させない)
@@ -262,11 +267,56 @@ func _ready() -> void:
 			_death_t = maxf(debug_death_t, 0.0)
 			_apply_death_fx()
 		_refresh()
-	elif _mouse_mode:
-		_capture_mouse()
+	else:
+		_begin_arrival()
 	if net != null:
 		# 全員が同じ弾幕を作れたかの確認用の要約(ホストと違う人は外される)。開始の合図(go)は、全員の準備が済んでから届く
 		net.report_loaded(sim.events.size() * 100003 + sim.bullets_total)
+
+
+## 自機の現れ具合(ArenaView の ship_in)を、2 つの描画層にそろえて設定する。
+func _set_ship_in(v: float) -> void:
+	_view_under.ship_in = v
+	_view_over.ship_in = v
+	_view_under.queue_redraw()
+	_view_over.queue_redraw()
+
+
+## ゲーム開始の「間」: メニューで見ていたカーソルが、自機の開始位置へ弧を描いて飛び、着いた瞬間に自機になる。
+## 自機が見えない間はマウスを捕まえず(移動は効かない)、着いたら OS のポインタも自機の位置へ移してから捕まえる
+## (ポーズでカーソルが戻るとき、自機のあった場所から出る)。キーボード操作・動きなしのときは、少し待って自機が現れる。
+func _begin_arrival() -> void:
+	if not UiStyle.animate:
+		if _mouse_mode:
+			_capture_mouse()
+		return
+	_set_ship_in(0.0)
+	if _mouse_mode:
+		_guiding = true
+		var to: Vector2 = ARENA_POS + sim.player_pos
+		if CursorOverlay.fly_to(to, 0.6, Callable(self, "_arrive")):
+			return
+	get_tree().create_timer(0.35).timeout.connect(_arrive)
+
+
+func _arrive() -> void:
+	if _arrived or not is_inside_tree():
+		return
+	_arrived = true
+	_guiding = false
+	CursorOverlay.cancel_fly()
+	if _mouse_mode and not _menu_open():
+		var at: Vector2 = ARENA_POS + sim.player_pos
+		Input.warp_mouse(get_viewport().get_screen_transform() * at)
+		_capture_mouse()
+	# 自機が、その場で弾んで現れる(輪が広がり、小さな音)
+	if UiStyle.animate and not _dead:
+		var t := create_tween()
+		t.tween_method(_set_ship_in, 0.0, 1.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		UiFx.ring(_arena, sim.player_pos, Color(0.32, 0.8, 1.0, 0.9), 10.0, 70.0, 0.55, 2.5)
+		UiSfx.play("select", 1.6)
+	else:
+		_set_ship_in(1.0)
 
 
 func _exit_tree() -> void:
@@ -465,6 +515,7 @@ func _process(delta: float) -> void:
 		if _now >= 0.0:
 			_audio.play(_now * _rate if _now > 0.1 else 0.0)   # 遅れて始まった人は、途中から
 			_audio_started = true
+			_arrive()   # 演出が間に合っていなくても、曲が始まるまでに操作を渡す
 			_fade_out_center()
 	else:
 		# 再生位置は曲の秒数(再生速度の倍で進む)。÷rate で、ゲーム内の時刻(実時間と同じ進み方)にする
@@ -1020,6 +1071,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 					_pause_sel = (_pause_sel + d + 5) % 5
 					if not (_mp != null and _pause_sel == 1):   # マルチプレイにリトライはない
 						break
+				UiSfx.play("select", 1.0 + 0.12 * _pause_sel)
+				if _pause_sel < _pause_btns.size():   # 選んだボタンが、ぴょこっと弾む
+					_pause_btns[_pause_sel].pivot_offset = _pause_btns[_pause_sel].size * 0.5
+					UiStyle.spring(_pause_btns[_pause_sel], "scale", Vector2(1.06, 1.06), Vector2.ONE, 0.3)
 				_refresh_pause()
 		KEY_LEFT, KEY_RIGHT:
 			if _menu_open():
@@ -1062,6 +1117,7 @@ func _skip_intro() -> void:
 	else:
 		_audio.play(pos)
 		_audio_started = true
+		_arrive()
 		_fade_out_center()
 	_now = target
 	_sim_t = target   # 判定側も一気に進める(イントロには弾がない)
@@ -1072,11 +1128,13 @@ func _set_paused(p: bool) -> void:
 	if _mp != null:   # マルチプレイ: 他の人がいるので、ゲームは止めない。メニューを重ねるだけ(自機は動かさない)
 		_mp_menu = p
 		_pause_layer.visible = p
+		UiSfx.play("open" if p else "close")
 		if p:
 			_pause_sel = 0
 			_refresh_pause()
 			_pause_panel.pivot_offset = _pause_panel.size * 0.5
 			UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
+			_pause_enter()
 		if _mouse_mode:
 			if p:
 				Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
@@ -1085,12 +1143,14 @@ func _set_paused(p: bool) -> void:
 		return
 	_paused = p
 	_pause_layer.visible = p
+	UiSfx.play("open" if p else "close")
 	if p:
 		_pause_sel = 0
 		_refresh_pause()
 		_pause_panel.pivot_offset = _pause_panel.size * 0.5
 		UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
-		UiStyle.tween(_pause_panel, "scale", Vector2(0.94, 0.94), Vector2.ONE, 0.24, 0.0, Tween.TRANS_BACK)
+		UiStyle.spring(_pause_panel, "scale", Vector2(0.9, 0.9), Vector2.ONE, 0.4)
+		_pause_enter()
 	if _audio_started:
 		_audio.stream_paused = p
 	if _mouse_mode:
@@ -1098,6 +1158,15 @@ func _set_paused(p: bool) -> void:
 			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		else:
 			_capture_mouse()
+
+
+## ポーズを開いたとき、ボタンが上から順に弾んで現れる。
+func _pause_enter() -> void:
+	var k := 0
+	for b in _pause_btns:
+		if b.visible:
+			UiStyle.pop_scale(b, 0.9, 0.32, 0.06 + 0.05 * k)
+			k += 1
 
 
 ## ポーズ(マルチプレイでは、ゲームを止めないメニュー)が開いているか。
@@ -1156,7 +1225,7 @@ func _refresh_pause() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if _mouse_mode and not _paused and not _mp_menu and not _dead and (_mp == null or _mp.started) and event is InputEventMouseMotion:
+	if _mouse_mode and not _guiding and not _paused and not _mp_menu and not _dead and (_mp == null or _mp.started) and event is InputEventMouseMotion:
 		# モード切替直後の初期イベント(カーソルの中央移動)は無視する
 		if Time.get_ticks_msec() - _mouse_capture_ms > 200:
 			_mouse_accum += event.relative
@@ -1173,8 +1242,14 @@ func _fade_out_center() -> void:
 	if not UiStyle.animate:
 		_center_label.visible = false
 		return
+	# 曲が始まる瞬間に READY が「GO」に変わり、少し膨らみながら消える
+	_center_label.text = "GO"
+	_center_label.modulate.a = 1.0
+	_center_label.pivot_offset = Vector2(PatternGen.ARENA.x * 0.5, 30)
+	UiStyle.spring(_center_label, "scale", Vector2(0.8, 0.8), Vector2(1.15, 1.15), 0.3)
 	var t := _center_label.create_tween()
-	t.tween_property(_center_label, "modulate:a", 0.0, 0.35)
+	t.tween_interval(0.12)
+	t.tween_property(_center_label, "modulate:a", 0.0, 0.4)
 	t.tween_callback(func(): _center_label.visible = false)
 
 

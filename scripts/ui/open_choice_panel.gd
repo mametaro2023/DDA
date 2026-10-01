@@ -5,6 +5,7 @@ extends Control
 signal chosen(kind: String, remember: bool)   # kind: "dda" | "osu" | "cancel"
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 
 var file_name := ""
 var _remember: Button
@@ -70,8 +71,9 @@ func _ready() -> void:
 	cancel.size_flags_horizontal = Control.SIZE_SHRINK_END
 	cancel.pressed.connect(func(): _choose("cancel"))
 	v.add_child(cancel)
+	UiSfx.play("open")
 	UiStyle.tween(_dim, "color:a", 0.0, 0.7, 0.2)
-	UiStyle.pop_in(_panel, 0.0, Vector2(0, 24), 0.28)
+	UiStyle.pop_scale(_panel, 0.93, 0.42)
 
 
 func _primary(text: String) -> Button:

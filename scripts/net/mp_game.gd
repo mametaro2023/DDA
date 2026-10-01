@@ -49,6 +49,14 @@ var _order: Array = []          # 順位表の並び(id)
 var _t_sort := 0.0
 var _sent_final := false
 
+## イントロのスキップ: 全員が押したら、全員で同時に飛ばす。ホストが押した人数を数えて、全員へ配る(g_skipn)。
+var skip_n := 0                 # 押した人数
+var skip_total := 1             # 押すべき人数(去った人は除く)
+var skip_mine := false          # 自分は押したか
+var skip_cb := Callable()       # 実際に飛ばす処理 (elapsed: float)。game_screen が渡す。elapsed = 全員が押してから経った秒
+var _skip_votes := {}           # ホスト: 押した人 id
+var _skip_done := false
+
 
 func setup(p_net, info: Dictionary, p_sim) -> void:
 	net = p_net
@@ -89,6 +97,50 @@ func my_color() -> Color:
 func on_go(start: float) -> void:
 	start_shared = start
 	started = true
+
+
+# --- イントロのスキップ ---
+
+## スキップを押した。全員が押すまで待つ(押した人数は skip_n / skip_total)。
+func request_skip() -> void:
+	if skip_mine or _skip_done:
+		return
+	skip_mine = true
+	if is_host:
+		_skip_votes[my_id] = true
+		_skip_eval()
+	else:
+		net.to_host({"t": "g_skipv"})
+
+
+## ホスト: 押した人数を数え直す。全員が押したら、合図を出す。
+func _skip_eval() -> void:
+	if _skip_done or not is_host:
+		return
+	var total := 0
+	var n := 0
+	for p in roster:
+		var id: int = p.id
+		if id != my_id and (not remotes.has(id) or remotes[id].gone):
+			continue
+		total += 1
+		if _skip_votes.has(id):
+			n += 1
+	if n != skip_n or total != skip_total:
+		skip_n = n
+		skip_total = maxi(total, 1)
+		net.broadcast({"t": "g_skipn", "n": n, "total": skip_total})
+	if total > 0 and n >= total and skip_mine:
+		_skip_done = true
+		var st: float = net.shared_time()
+		net.broadcast({"t": "g_skipgo", "st": st})
+		_skip_go(st)
+
+
+func _skip_go(st: float) -> void:
+	skip_n = 0
+	if skip_cb.is_valid():
+		skip_cb.call(maxf(net.shared_time() - st, 0.0))
 
 
 # --- 毎フレーム ---
@@ -132,7 +184,7 @@ func tick(delta: float, p_now: float) -> void:
 			_t_contact = CONTACT_INTERVAL
 			var c: Dictionary = sim.take_contact()
 			if not c.is_empty():
-				net.to_host({"t": "g_ct", "c": c.c, "z": c.z, "h": c.h})
+				net.to_host({"t": "g_ct", "c": c.c, "z": c.z, "h": c.h, "s": c.s})
 
 
 ## スロット順の全員の位置(去った人を除く。自分は今の自機の位置)。
@@ -179,6 +231,18 @@ func handle(from: int, msg: Dictionary) -> void:
 					var sc := NetCore._num(msg.get("sc", 0.0), 0.0, 0.0, 1e9)
 					_latest[from] = [p, bool(msg.get("sl", false)), sc]
 					_apply_remote(from, p, bool(msg.get("sl", false)), sc)
+		"g_skipv":   # ホスト: 参加者がスキップを押した
+			if is_host and remotes.has(from) and not remotes[from].gone:
+				_skip_votes[from] = true
+				_skip_eval()
+		"g_skipn":   # 参加者: 押した人数
+			if not is_host:
+				skip_n = int(NetCore._num(msg.get("n", 0), 0.0, 0.0, 8.0))
+				skip_total = maxi(int(NetCore._num(msg.get("total", 1), 1.0, 1.0, 8.0)), 1)
+		"g_skipgo":   # 参加者: 全員が押した。いっせいに飛ばす
+			if not is_host and not _skip_done:
+				_skip_done = true
+				_skip_go(NetCore._num(msg.get("st", 0.0), 0.0, -1e9, 1e9))
 		"g_sts":   # 参加者: ホストが集めた全員の状態
 			var d = msg.get("d")
 			if d is Dictionary:
@@ -189,7 +253,7 @@ func handle(from: int, msg: Dictionary) -> void:
 							_apply_remote(int(id), a[0], bool(a[1]), NetCore._num(a[2], 0.0, 0.0, 1e9))
 		"g_ct":   # ホスト(協力): 参加者の被弾の報告
 			if mode == "coop" and is_host and remotes.has(from) and not sim.finished:
-				sim.ext_report(NetCore._num(msg.get("c", 0.0), 0.0, 0.0, 0.5), int(NetCore._num(msg.get("z", 0), 0.0, 0.0, 1000.0)), int(NetCore._num(msg.get("h", 0), 0.0, 0.0, 100.0)))
+				sim.ext_report(NetCore._num(msg.get("c", 0.0), 0.0, 0.0, 0.5), int(NetCore._num(msg.get("z", 0), 0.0, 0.0, 1000.0)), int(NetCore._num(msg.get("h", 0), 0.0, 0.0, 100.0)), NetCore._num(msg.get("s", 0.0), 0.0, 0.0, 0.5))
 		"g_cs":   # 参加者(協力): 共有の状態
 			var st = msg.get("st")
 			if mode == "coop" and not is_host and st is Dictionary and not sim.finished:
@@ -238,6 +302,7 @@ func _gone(id: int) -> void:
 	if remotes.has(id):
 		remotes[id].gone = true
 		_latest.erase(id)
+		_skip_eval()   # 押していない人が去って、残りの全員が押し終わっていることがある
 
 
 # --- 表示用 ---

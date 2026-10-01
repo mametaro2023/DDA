@@ -49,9 +49,9 @@ func _init() -> void:
 	sim.step_relative(0.0, 1.0 / 60.0, Vector2.ZERO, false)
 	_check(sim.player_pos.is_equal_approx(start + Vector2(50, -40)), "入力が 0 なら自機は 1px も動かない(勝手に動かない)")
 	sim.step_relative(0.0, 1.0 / 60.0, Vector2(-5000, -5000), false)
-	_check(sim.player_pos.is_equal_approx(Vector2(GameSim.PLAYER_MARGIN, GameSim.PLAYER_MARGIN)), "アリーナ端でクランプされる")
+	_check(sim.player_pos.is_equal_approx(Vector2.ONE * GameSim.PLAYER_MARGIN * sim.player_scale), "アリーナ端でクランプされる")
 	sim.step_relative(0.0, 1.0 / 60.0, Vector2(300, 0), false)
-	_check(is_equal_approx(sim.player_pos.x, GameSim.PLAYER_MARGIN + 300.0), "最大速度の上限はなく 1 フレームで 300px 動ける")
+	_check(is_equal_approx(sim.player_pos.x, GameSim.PLAYER_MARGIN * sim.player_scale + 300.0), "最大速度の上限はなく 1 フレームで 300px 動ける")
 
 	f.free()
 	print("RESULT: ", "OK" if _fail == 0 else "%d FAILURES" % _fail)

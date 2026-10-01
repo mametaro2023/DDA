@@ -1,4 +1,4 @@
-DDA - osu! Danmaku Dodger   ベータ版 v0.4.1
+DDA - osu! Danmaku Dodger   ベータ版 v0.5.0
 ===========================================
 
 osu! の譜面(.osz)から弾幕を作って、よけて遊ぶゲームです。

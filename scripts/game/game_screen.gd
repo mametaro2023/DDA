@@ -101,6 +101,11 @@ var _mouse_mode := false
 static var _alive := 0
 var _mouse_accum := Vector2.ZERO  # 未処理のカーソル移動量(相対)
 var _guiding := false             # 開始の演出中: カーソルが自機の位置へ飛んでいる間(マウスの移動は自機に効かせない)
+var _skip_btn: Button            # イントロのスキップのボタン(スキップできる間だけ出る)
+var _skip_free := false           # スキップのボタンを押せるように、マウスを捕まえていない間
+var _skipped := false             # スキップした(もう出さない)
+var _debuff_l: Label              # 危険エリアのデバフの名前(左のパネル。盤面・自機には文字を出さない)
+var _debuff_shown := ""
 var _arrived := false             # 自機が現れて、操作が渡ったか
 var _mouse_capture_ms := 0
 var _dead := false
@@ -246,8 +251,10 @@ func _ready() -> void:
 		_view_over.own_color = _mp.my_color()
 		net.game_message.connect(_mp.handle)
 		net.go.connect(_mp.on_go)
+		_mp.skip_cb = func(elapsed: float): _skip_intro(elapsed)   # 全員がスキップを押したら、いっせいに飛ばす
 
 	_build_hud()
+	_build_skip_button()
 	if debug_seek >= 0.0:
 		_now = 0.0
 		var dt := 1.0 / 60.0
@@ -306,9 +313,13 @@ func _arrive() -> void:
 	_guiding = false
 	CursorOverlay.cancel_fly()
 	if _mouse_mode and not _menu_open():
-		var at: Vector2 = ARENA_POS + sim.player_pos
-		Input.warp_mouse(get_viewport().get_screen_transform() * at)
-		_capture_mouse()
+		if _can_skip():   # スキップのボタンを押せるように、まだ捕まえない(_update_skip_button が、できなくなったら捕まえる)
+			_skip_free = true
+			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+		else:
+			var at: Vector2 = ARENA_POS + sim.player_pos
+			Input.warp_mouse(get_viewport().get_screen_transform() * at)
+			_capture_mouse()
 	# 自機が、その場で弾んで現れる(輪が広がり、小さな音)
 	if UiStyle.animate and not _dead:
 		var t := create_tween()
@@ -386,6 +397,9 @@ func _build_left_panel() -> void:
 			var chip := UiStyle.chip(m.tag, m.color)
 			chip.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 			col.add_child(chip)
+	_debuff_l = UiStyle.label("", 15, UiStyle.TEXT, true)   # 危険エリアに入っている間だけ、デバフの名前を出す
+	_debuff_l.visible = false
+	col.add_child(_debuff_l)
 	if _mp != null:   # マルチプレイ: 参加者の一覧(対戦はスコア順)
 		var gap3 := Control.new()
 		gap3.custom_minimum_size = Vector2(0, 14)
@@ -545,6 +559,8 @@ func _process(delta: float) -> void:
 	_gauge_ghost = maxf(sim.gauge, _gauge_ghost - delta * 0.5)
 	_ease_score(delta)
 	_animate_hud(delta)
+	_update_skip_button()
+	_update_debuff_label()
 	_view_over.hit_glow = _hit_glow
 	_view_under.hit_glow = _hit_glow
 	if sim.failed and not _dead:
@@ -1060,7 +1076,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	match event.keycode:
 		KEY_SPACE:
 			if _can_skip():
-				_skip_intro()
+				_request_skip()
 		KEY_ESCAPE:
 			if _end_timer < 0.0 and _outro_t < 0.0:
 				_set_paused(not _menu_open())
@@ -1101,16 +1117,30 @@ func _skip_target() -> float:
 	return sim.first_fire_time - SKIP_LEAD
 
 
-## スキップできるか。最初のノーツの前で、進む幅が SKIP_MIN_GAIN 秒以上あるとき。
+## スキップできるか。最初のノーツの前で、進む幅が SKIP_MIN_GAIN 秒以上あるとき(マルチプレイは、開始の合図のあと)。
 func _can_skip() -> bool:
-	if sim == null or _mp != null or _paused or _dead or _end_timer >= 0.0 or _outro_t >= 0.0 or debug_seek >= 0.0 or sim.first_fire_time < 0.0:
+	if sim == null or _skipped or _paused or _mp_menu or _dead or _end_timer >= 0.0 or _outro_t >= 0.0 or debug_seek >= 0.0 or sim.first_fire_time < 0.0:
+		return false
+	if _mp != null and not _mp.started:
 		return false
 	return _skip_target() - maxf(_now, 0.0) >= SKIP_MIN_GAIN
 
 
+## スキップを押した(Space・ボタン)。ひとりなら、すぐ飛ばす。マルチプレイは、全員が押すまで待つ。
+func _request_skip() -> void:
+	if _mp == null:
+		_skip_intro()
+	else:
+		_mp.request_skip()
+
+
 ## 曲(と曲クロック)を最初のノーツの直前まで進める。READY 中に押した場合は、そこから再生を始める。
-func _skip_intro() -> void:
-	var target := _skip_target()
+## extra: マルチプレイで、全員が押してから経った秒(その分だけ先へ進める)。
+func _skip_intro(extra := 0.0) -> void:
+	if _skipped:
+		return
+	_skipped = true
+	var target := _skip_target() + extra
 	var pos := maxf(target - float(settings.get("offset_ms", 0)) / 1000.0, 0.0) * _rate   # 曲クロック = 再生位置 ÷ rate + オフセット
 	if _audio_started:
 		_audio.seek(pos)
@@ -1121,7 +1151,63 @@ func _skip_intro() -> void:
 		_fade_out_center()
 	_now = target
 	_sim_t = target   # 判定側も一気に進める(イントロには弾がない)
+	UiSfx.play("select", 1.3)
 	_refresh()
+
+
+# --- スキップのボタン ---
+
+## 左のパネルに、いま受けているデバフの名前(危険エリアの中にいる間)。
+func _update_debuff_label() -> void:
+	if _debuff_l == null or sim.zone_debuff == _debuff_shown:
+		return
+	_debuff_shown = sim.zone_debuff
+	_debuff_l.visible = _debuff_shown != ""
+	if _debuff_shown != "":
+		_debuff_l.text = "デバフ  " + GameSim.zone_name(_debuff_shown)
+		_debuff_l.add_theme_color_override("font_color", GameSim.zone_color(_debuff_shown))
+
+
+func _build_skip_button() -> void:
+	_skip_btn = Button.new()
+	_skip_btn.focus_mode = Control.FOCUS_NONE
+	_skip_btn.position = ARENA_POS + Vector2(PatternGen.ARENA.x * 0.5 - 130.0, 640.0)
+	_skip_btn.size = Vector2(260, 46)
+	_skip_btn.visible = false
+	_skip_btn.add_theme_font_size_override("font_size", 18)
+	_skip_btn.add_theme_stylebox_override("normal", UiStyle.box(Color(0.03, 0.035, 0.06, 0.85), Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.8), 2, 6, 14, 8))
+	_skip_btn.add_theme_stylebox_override("hover", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.22), UiStyle.ACCENT, 2, 6, 14, 8))
+	_skip_btn.add_theme_stylebox_override("pressed", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.4), UiStyle.ACCENT, 2, 6, 14, 8))
+	_skip_btn.pressed.connect(func(): if _can_skip(): _request_skip())
+	add_child(_skip_btn)
+
+
+## ボタンの表示と、マウスの扱いを合わせる。スキップできる間は、マウスを捕まえず(カーソルが見えて、ボタンを押せる)、
+## できなくなったら(飛ばした・間に合わなくなった)自機の位置へ戻して捕まえる。
+func _update_skip_button() -> void:
+	if _skip_btn == null:
+		return
+	var can := _can_skip()
+	if _skip_btn.visible != can:
+		_skip_btn.visible = can
+	if can:
+		var voted: bool = _mp != null and _mp.skip_mine
+		var cnt := ""
+		if _mp != null:
+			cnt = "  %d/%d" % [_mp.skip_n, _mp.skip_total]
+		_skip_btn.text = ("スキップ待ち" if voted else "スキップ") + cnt + "   [Space]"
+		_skip_btn.add_theme_stylebox_override("normal", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.35) if voted else Color(0.03, 0.035, 0.06, 0.85),
+			Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.8), 2, 6, 14, 8))
+	if not _mouse_mode or not _arrived or _menu_open() or _dead:
+		return
+	if can and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		_skip_free = true
+		_mouse_accum = Vector2.ZERO
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	elif not can and _skip_free:
+		_skip_free = false
+		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
+		_capture_mouse()
 
 
 func _set_paused(p: bool) -> void:
@@ -1225,7 +1311,7 @@ func _refresh_pause() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if _mouse_mode and not _guiding and not _paused and not _mp_menu and not _dead and (_mp == null or _mp.started) and event is InputEventMouseMotion:
+	if _mouse_mode and not _guiding and not _paused and not _mp_menu and not _dead and (_mp == null or _mp.started) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventMouseMotion:
 		# モード切替直後の初期イベント(カーソルの中央移動)は無視する
 		if Time.get_ticks_msec() - _mouse_capture_ms > 200:
 			_mouse_accum += event.relative

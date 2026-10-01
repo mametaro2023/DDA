@@ -7,37 +7,11 @@ extends RefCounted
 ## ゲージが 0 になったらゲームオーバー(練習モードでは 0 でも続行)。
 ## 当たっていないときは、ごくわずかに回復する(GAUGE_REGEN /秒)。
 ##
-## ## スコア
-##   ノーダメージなら SCORE_BASE(1,000,000)。これにグレイズのボーナス(SCORE_GRAZE = 最大 3%)を足し、
-##   被ダメージ係数を「掛け算」して最終点にする:
-##       最終点 = (SCORE_BASE + SCORE_GRAZE * (1 - exp(-グレイズ数 / graze_tau))) * 被ダメージ係数
-##   グレイズのボーナスは SCORE_GRAZE(3 万点)に漸近する: 増えるほど上乗せは小さくなり、無限にグレイズしても 3 万点には届かない
-##       被ダメージ係数 = exp(-累計ダメージ / damage_tau)     ← 1 から始まり 0 に漸近する(0 にはならない)
-##   damage_tau = DAMAGE_TAU × max(弾が飛んでいる時間 ÷ DAMAGE_REF_TIME, 1)。長い曲ほど累計ダメージの絶対値が大きくなるので、
-##   弾が飛んでいる時間(最初〜最後の発射の間から休憩地帯を除いたもの)に比例して τ を伸ばし、長い曲が不利にならないようにする
-##   (基準 DAMAGE_REF_TIME = 120 秒より短い譜面は従来どおり)。
-##   累計ダメージの単位は「ゲージ満タン = 1」。回復しても累計は減らない(いったん下がった係数は戻らない)。
-##   ゲームオーバーのときは常に 0 点(スコアなし)。クリアしたときだけスコアが残る。
-##   プレイ中の表示は、その「クリアした場合の点数(score_potential)」に「スコア進捗(score_progress)」を掛けたもの:
-##       score = score_potential * score_progress
-##   スコア進捗 = これまでに発射した弾数 / 曲全体で発射する弾数(0 → 1)。弾が発射されるたびに、弾 1 発ぶんずつ増える。
-##   最初のノーツまでのイントロでは増えず、休憩地帯(発射なし。念のため休憩中の発射も数えない)でも増えない。
-##   クリアした瞬間に 1 になり、score が最終点になる。
-##   被ダメージ係数は全体にかかるので、ダメージを受けるとその時点の score も下がる。
-##
-## ## 休憩地帯(譜面の Break)
-## スコアが上がる(グレイズ)ことも、ゲージが回復することもない。
-## 休憩に入って、自機の近くに弾がなく、自機に接近している弾もない状態(BulletField.is_calm。近く = SAFE_NEAR_R 以内)になったら、弾をすべて消す。
-## そのときから休憩が終わるまでのカウントダウンを出す(break_clear_t / break_end_t。表示は game_screen)。
-##
-## ## クリア
-## 最後の弾幕を撃ち終えたあと、自機の近くに弾がなく、接近している弾もない状態(休憩中と同じ)になったら、弾をすべて消してクリアにする
-## (弾が残り続ける場合の保険として、撃ち終えてから CLEAR_TIMEOUT 秒でクリア)。
-##
-## ## MOD
-## setup() の mods(Mods.params の結果)で、ゲージ満タンぶんの被弾時間(drain_time)、低体力の半減の有無(low_protect)、
-## ベーススコアの倍率(score_mul)、自機サイズ(player_scale)が変わる。弾サイズ・弾速・弾数・再生速度は、
-## 弾を作る側(Mods.apply)で events に掛けてから渡す。
+## ## 危険エリア(デバフ)
+## 盤面を 3×3 の 9 マスに分け、特定の小節ごとに、いくつかのマス(1〜8)が「危険エリア」になる(PatternGen が譜面から決めて、gen.zones で渡す。
+## 数・種類は難易度などに応じて変わる)。入っている間、そのマスのデバフを受ける:
+##   鈍足(slow): 移動が ZONE_SLOW 倍 / 脆弱(fragile): 被ダメージが ZONE_FRAGILE 倍 / 毒(poison): ゲージが ZONE_POISON_DRAIN(/秒)で減る / 巨大(big): 自機の当たり判定が ZONE_BIG 倍
+## 弾幕には手を入れない(自機が受けるものだけ)。休憩地帯では効かない。練習モードでは、毒のゲージ減少だけ効かない。
 
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
@@ -54,13 +28,20 @@ const SAFE_GRACE_PX := 140.0
 const GAUGE_DRAIN_TIME := 0.25   # ゲージ満タンぶんの被弾時間(通常時の被ダメージ速度)
 const GAUGE_LOW_THRESHOLD := 0.2 # ゲージがこれ以下のとき、
 const GAUGE_LOW_FACTOR := 0.5    # 被ダメージはこの倍率になる
-const GAUGE_REGEN := 0.02        # 被弾していないときの回復(ゲージ全体に対する割合 / 秒)
+const GAUGE_REGEN := 0.015       # 被弾していないときの回復(ゲージ全体に対する割合 / 秒)
+## 実際の弾・自機の大きさの倍率。難易度(Lv)の計算には入れない(表示する難易度に対して、体感が易しいため、見た目と当たり判定だけを大きくする)
+const BULLET_SIZE_MUL := 1.25
+const PLAYER_SIZE_MUL := 1.15
 const CLEAR_TIMEOUT := 8.0       # 最後の弾を撃ってからこの秒数たっても弾が残っていたら、消してクリアにする
 ## 自機の周りが「落ち着いている」とみなす範囲(休憩の一掃・クリア判定): 近くの弾は SAFE_NEAR_R 以内、接近中の弾は SAFE_LOOK_T 秒以内に自機から SAFE_APPROACH_R 以内を通る弾
 const SAFE_NEAR_R := 120.0
 const SAFE_APPROACH_R := 50.0
 const SAFE_LOOK_T := 3.0
 const EPISODE_GAP := 0.15       # これ以上被弾が途切れたら、次の被弾は「別の被弾」として数える
+const ZONE_SLOW := 0.45            # 鈍足: 移動の倍率
+const ZONE_FRAGILE := 2.0          # 脆弱: 被ダメージの倍率
+const ZONE_BIG := 1.8              # 巨大: 自機の当たり判定の倍率(見た目の当たり判定の点も大きくなる)
+const ZONE_POISON_DRAIN := 0.10    # 毒: ゲージの減る速さ(ゲージ全体に対する割合 / 秒)
 
 const SCORE_BASE := 1000000.0
 ## ランク(クリアしたときだけ)。被弾 0 回なら SS。それ以外は「達成率 = 最終点 ÷ ベーススコア(MOD の倍率を含む)」で決める。
@@ -84,6 +65,12 @@ var gizmos: Array = []
 var breaks: Array = []          # [[開始秒, 終了秒], ...] 休憩地帯
 var warn_lead := 0.6
 var practice := false
+var zones: Array = []              # 危険エリアの予定(gen.zones。時刻順)
+var zone_debuff := ""              # いま自機が受けているデバフ("" = なし)
+var hit_mult := 1.0                # 巨大のデバフ中の、当たり判定の倍率(描画の点の大きさにも使う)
+var contact_extra := 0.0           # 参加者: まだホストへ送っていない、デバフによる追加ダメージ(被弾時間に換算した秒)
+var _zone_i := 0
+var _last_fire := -1.0
 ## 発射地点の印を記録するか(暗闇 MOD。弾が見えなくても、どこから撃ったかを表示するため)
 var track_fires := false
 var recent_fires: Array = []     # {pos, t, color}: 発射から FIRE_MARK_TIME 秒だけ残る
@@ -163,6 +150,7 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 	field.clear()
 	events = gen.events
 	gizmos = gen.gizmos
+	zones = gen.get("zones", [])
 	breaks = gen.get("breaks", [])
 	warn_lead = gen.warn_lead
 	end_time = end_t
@@ -171,7 +159,7 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 	drain_time = float(mods.get("drain_time", GAUGE_DRAIN_TIME))
 	low_protect = bool(mods.get("low_protect", true))
 	score_base = SCORE_BASE * float(mods.get("score_mul", 1.0))
-	player_scale = float(mods.get("player_scale", 1.0))
+	player_scale = float(mods.get("player_scale", 1.0)) * PLAYER_SIZE_MUL
 	player_r = PLAYER_HIT_R * player_scale
 	_graze_tau = maxf(GRAZE_TAU_MIN, GRAZE_TAU_PER_EVENT * events.size())
 	bullets_total = 0
@@ -183,6 +171,7 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 		if first_fire_time < 0.0:
 			first_fire_time = e.t
 		last_fire = e.t
+		_last_fire = e.t
 		if not in_break(e.t):
 			for s in e.shots:
 				bullets_total += int(s.n)
@@ -208,9 +197,13 @@ func setup_coop(n: int, is_host: bool) -> void:
 
 
 ## ホスト: 参加者から届いた被弾の報告(被弾時間・グレイズ・被弾回数)を、共有のゲージとスコアに反映する。
-func ext_report(contact_s: float, graze_n: int, hit_n: int) -> void:
+func ext_report(contact_s: float, graze_n: int, hit_n: int, extra_s := 0.0) -> void:
 	if not authority or finished:
 		return
+	if extra_s > 0.0:   # 参加者のデバフ(脆弱・毒)による追加ダメージ
+		var sdmg := extra_s / drain_time
+		damage_total += sdmg
+		gauge -= sdmg
 	graze += maxi(graze_n, 0)
 	hits += maxi(hit_n, 0)
 	if contact_s > 0.0:
@@ -261,10 +254,11 @@ func apply_net_event(e: Dictionary, now: float) -> void:
 
 ## 参加者: まだ送っていない被弾の報告を取り出す(取り出すと 0 に戻る)。何もなければ空の辞書。
 func take_contact() -> Dictionary:
-	if contact_dt <= 0.0 and contact_graze == 0 and contact_hits == 0:
+	if contact_dt <= 0.0 and contact_graze == 0 and contact_hits == 0 and contact_extra <= 0.0:
 		return {}
-	var out := {"c": contact_dt, "z": contact_graze, "h": contact_hits}
+	var out := {"c": contact_dt, "z": contact_graze, "h": contact_hits, "s": contact_extra}
 	contact_dt = 0.0
+	contact_extra = 0.0
 	contact_graze = 0
 	contact_hits = 0
 	return out
@@ -299,8 +293,11 @@ func step(now: float, dt: float, move: Vector2, slow_mode: bool) -> void:
 		return
 	slow = slow_mode
 	_prev_pos = player_pos
+	_update_zone_debuff(now)
 	if move != Vector2.ZERO:
 		var spd := PLAYER_SLOW if slow else PLAYER_SPEED
+		if zone_debuff == "slow":
+			spd *= ZONE_SLOW
 		_move_player(player_pos + move.normalized() * spd * dt)
 	_update(now, dt)
 
@@ -311,6 +308,9 @@ func step_relative(now: float, dt: float, delta_px: Vector2, slow_mode: bool) ->
 		return
 	slow = slow_mode
 	_prev_pos = player_pos
+	_update_zone_debuff(now)
+	if zone_debuff == "slow":
+		delta_px *= ZONE_SLOW
 	_move_player(player_pos + delta_px)
 	_update(now, dt)
 
@@ -347,7 +347,7 @@ func _update(now: float, dt: float) -> void:
 		active_gizmos = active_gizmos.filter(func(g): return g.end + 0.3 > now)
 
 	# 弾(当たっている間は毎ステップダメージ。弾は消えない)
-	field.update(dt, player_pos, player_r, true, _prev_pos)
+	field.update(dt, player_pos, player_r * hit_mult, true, _prev_pos)
 	var resting := in_break(now)  # 休憩地帯: スコアは上がらず、ゲージも回復しない
 	if authority:
 		_update_break_wipe(now, resting)
@@ -375,15 +375,19 @@ func _update(now: float, dt: float) -> void:
 			hit_time += dt
 			# ゲージが少ないとき(20% 以下)は被ダメージが半分(MOD で無効になる)
 			var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
-			var dmg := dt / drain_time * factor
+			var dmg := dt / drain_time * factor * (ZONE_FRAGILE if zone_debuff == "fragile" else 1.0)
 			damage_total += dmg
 			gauge -= dmg
 		else:
 			contact_dt += dt
+			if zone_debuff == "fragile":
+				contact_extra += dt * (ZONE_FRAGILE - 1.0)
 	else:
 		_no_hit_time += dt
 		if not resting and authority and _ext_hit_t <= 0.0:
 			gauge = minf(gauge + GAUGE_REGEN * dt, 1.0)
+
+	_update_poison(dt, resting)
 
 	# 進行率: 曲の進行(時間)とは別に、スコア用の進行率は「発射した弾数」で進める
 	progress = clampf(now / maxf(end_time, 0.001), 0.0, 1.0)
@@ -413,6 +417,51 @@ func _update(now: float, dt: float) -> void:
 		_update_score()
 		if net_mode == "coop":
 			net_events.append({"k": "clear", "st": net_state()})
+
+
+## いまの時刻・自機の位置で受けるデバフを決める(動く前に呼ぶ。休憩では効かない)。
+func _update_zone_debuff(now: float) -> void:
+	zone_debuff = ""
+	hit_mult = 1.0
+	if zones.is_empty() or in_break(now):
+		return
+	while _zone_i < zones.size() and float(zones[_zone_i].end) <= now:
+		_zone_i += 1
+	if _zone_i >= zones.size() or float(zones[_zone_i].t) > now:
+		return
+	var cell := zone_cell(player_pos)
+	for c in zones[_zone_i].cells:
+		if int(c.c) == cell:
+			zone_debuff = str(c.type)
+			hit_mult = ZONE_BIG if zone_debuff == "big" else 1.0
+			return
+
+
+## 盤面の 3×3 のマス番号(0..8。左上から横に数える)。
+static func zone_cell(p: Vector2) -> int:
+	return clampi(int(p.y / (ARENA.y / 3.0)), 0, 2) * 3 + clampi(int(p.x / (ARENA.x / 3.0)), 0, 2)
+
+
+## デバフの名前と色(表示用)。
+static func zone_name(type: String) -> String:
+	return {"slow": "鈍足", "fragile": "脆弱", "poison": "毒", "big": "巨大"}.get(type, "")
+
+
+static func zone_color(type: String) -> Color:
+	return {"slow": Color(0.35, 0.68, 1.0), "fragile": Color(1.0, 0.62, 0.25), "poison": Color(0.62, 0.9, 0.35), "big": Color(0.92, 0.45, 0.92)}.get(type, Color.WHITE)
+
+
+## 毒: ゲージが減る(休憩・練習では減らない)。協力の参加者は、被弾時間に換算してホストへ報告する。
+func _update_poison(dt: float, resting: bool) -> void:
+	if zone_debuff != "poison" or resting or practice:
+		return
+	var sd := ZONE_POISON_DRAIN * GAUGE_DRAIN_TIME * dt
+	if authority:
+		var dmg := sd / drain_time
+		damage_total += dmg
+		gauge -= dmg
+	else:
+		contact_extra += sd
 
 
 ## 休憩中、残った弾が当たりえない状態になったら一掃して、カウントダウンを始める。休憩が終わったら状態を戻す。
@@ -476,18 +525,13 @@ func _fire(e: Dictionary, now: float) -> void:
 	var aims: Array = aim_targets_for(_ev_idx)   # 自機狙いの相手(協力では全員。ひとりでは自機)
 	aim_targets.erase(_ev_idx)
 	for s in e.shots:
-		if s.has("list"):   # 壁・収束リングなど、位置と速度を最初から決めた弾
-			for b in s.list:
-				var bg := SAFE_GRACE_PX if player_pos.distance_to(b[0]) < SAFE_RADIUS else 0.0
-				field.add(b[0] + b[1] * late, b[1], s.size, s.color, bg, s.turn)
-			continue
 		for at in (aims if s.aim else [Vector2.ZERO]):
 			var base: float = s.a0
 			if s.aim:
 				base += (at - pos).angle()
 			for i in range(s.n):
 				var v: Vector2 = Vector2.from_angle(PatternGen.shot_angle(s, base, i)) * s.speed
-				field.add(pos + v * late, v, s.size, s.color, grace, s.turn)
+				field.add(pos + v * late, v, s.size * BULLET_SIZE_MUL, s.color, grace, s.turn)
 	if track_fires and not e.shots.is_empty():
 		recent_fires.append({"pos": pos, "t": e.t, "color": e.shots[0].color})
 	if not e.shots.is_empty():

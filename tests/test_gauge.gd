@@ -458,17 +458,17 @@ func _init() -> void:
 	var g_all: Dictionary = Mods.apply(gen0, all4)
 	_check(g_all.level > g_hell.level and g_all.level > g_rush.level and g_all.level > g_gale.level, "重ねると Lv はさらに上がる (%.2f)" % g_all.level)
 
-	# 21) 自機サイズ: 当たり判定の半径が 3 倍になる。距離 8px の静止弾に、通常は当たらず、巨人なら当たる
+	# 21) 自機サイズ: 当たり判定の半径が 3 倍になる(標準も PLAYER_SIZE_MUL 倍)。距離 9px の静止弾に、通常は当たらず、巨人なら当たる
 	for mod_ids in [[], ["giant"]]:
 		a = _make(true, 10.0, [], [], Mods.params(mod_ids))
 		sim = a[0]
 		f = a[1]
-		f.add(sim.player_pos + Vector2(8, 0), Vector2.ZERO, 6.0, 0, 0.0)
+		f.add(sim.player_pos + Vector2(9, 0), Vector2.ZERO, 6.0, 0, 0.0)
 		now = _run(sim, 0.0, 2)
 		if mod_ids.is_empty():
-			_check(sim.player_r == 3.5 and sim.hits == 0, "MOD なし: 自機の当たり判定 3.5px、8px 先の弾には当たらない")
+			_check(absf(sim.player_r - 3.5 * GameSim.PLAYER_SIZE_MUL) < 1e-9 and sim.hits == 0, "MOD なし: 自機の当たり判定 %.2fpx、9px 先の弾には当たらない" % sim.player_r)
 		else:
-			_check(absf(sim.player_r - 10.5) < 1e-9 and sim.hits == 1, "巨人: 自機の当たり判定 10.5px(3 倍)、同じ弾に当たる")
+			_check(absf(sim.player_r - 10.5 * GameSim.PLAYER_SIZE_MUL) < 1e-9 and sim.hits == 1, "巨人: 自機の当たり判定 %.2fpx(3 倍)、同じ弾に当たる" % sim.player_r)
 
 	# --- イントロのスキップ ---
 	# 20) 最初に弾を撃つイベントの時刻を持つ(弾を撃たないイベントは飛ばす)

@@ -1,5 +1,5 @@
 extends SceneTree
-## 弾幕の「場所の偏り」と「居座り」の測定(開発用)。
+## 弾幕の「場所の偏り」と、居座るボットの比較の測定(開発用)。
 ##   godot --headless --path . --script tests/analyze_coverage.gd -- [osz] [難易度の一部 ...]
 ## 1) 弾の通過密度の地図(アリーナを 8×6 に区切り、平均を 100 とした相対値)
 ## 2) 居座るボット(隅 / 中央下に居続け、弾が近いときだけ避ける)と、普通のボットを走らせ、
@@ -92,7 +92,7 @@ func _run(bm, gen: Dictionary, home, want_map: bool) -> Dictionary:
 	var field := BulletField.new()
 	var sim := GameSim.new()
 	var end_t: float = bm.last_time() / 1000.0 + 2.0
-	sim.setup(field, gen, end_t, true, {})
+	sim.setup(field, gen, end_t, true, {})   # 練習モード(被弾数を数える。ゲームオーバーで途切れない)
 	var dt := 1.0 / 60.0
 	var now := 0.0
 	var steps := 0

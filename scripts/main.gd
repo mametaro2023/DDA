@@ -1041,6 +1041,19 @@ func _smoke_skip() -> void:
 		print("   +1.0s: now=%.2f bullets=%d (first note at %.2f)" % [g._now, g.field.count, first])
 		await get_tree().create_timer(1.2).timeout
 		print("   +2.2s: now=%.2f bullets=%d fired=%d" % [g._now, g.field.count, g.sim.bullets_fired])
+	# マウス操作: スキップできる間は、マウスを捕まえず、ボタンで飛ばせる。飛ばしたら、自機の位置で捕まえる
+	var fails := 0
+	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "mouse", "sfx_volume": 0})
+	var gm = _current
+	await get_tree().create_timer(1.6).timeout
+	var ok1: bool = gm._skip_btn.visible and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN
+	var now0: float = gm._now
+	gm._skip_btn.pressed.emit()
+	await get_tree().create_timer(0.3).timeout
+	var ok2: bool = not gm._skip_btn.visible and gm._now > now0 + 5.0 and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	print("[mouse] skip button visible & cursor free: %s | after click: jumped %.1f -> %.1f, button hidden, captured: %s" % ["OK" if ok1 else "FAIL", now0, gm._now, "OK" if ok2 else "FAIL"])
+	fails += (0 if ok1 else 1) + (0 if ok2 else 1)
+	print("smoke-skip: ", "OK" if fails == 0 else "%d FAILED" % fails)
 	get_tree().quit()
 
 
@@ -1488,6 +1501,11 @@ func _smoke_mp() -> void:
 	t0 = Time.get_ticks_msec()
 	while Time.get_ticks_msec() - t0 < play_s * 1000.0 and not (gs.a.sim.finished or gs.b.sim.finished):
 		await get_tree().process_frame
+	if not fail_test:   # 動かない a が被弾するまで待つ(譜面によって、発生源の近く(猶予の範囲)で、最初の弾が当たらないことがある)
+		var t1 := Time.get_ticks_msec()
+		while gs.a.sim.damage_total < 0.15 and not (gs.a.sim.finished or gs.b.sim.finished) and Time.get_ticks_msec() - t1 < 25000:
+			await get_tree().process_frame
+		await get_tree().create_timer(0.5).timeout   # 被弾の最中でなく、共有の状態が届いてから見る
 	var ga = gs.a
 	var gb = gs.b
 	print("  [%.1fs] a: now=%.2f gauge=%.3f hits=%d graze=%d score=%.0f bullets=%d | b: now=%.2f gauge=%.3f hits=%d graze=%d score=%.0f bullets=%d" % [

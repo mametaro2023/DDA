@@ -127,13 +127,6 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 			var s2: Dictionary = s.duplicate()
 			s2.size = float(s.size) * float(p.size_mul)
 			s2.speed = float(s.speed) * float(p.speed_mul)
-			if s.has("list"):   # 壁・収束リング: 弾数は変えず、速さと大きさだけ(速度ベクトルに倍率を掛ける)
-				var list2: Array = []
-				for b in s.list:
-					list2.append([b[0], b[1] * float(p.speed_mul)])
-				s2.list = list2
-				shots.append(s2)
-				continue
 			var want := float(s.n) * count_mul + carry
 			var n2 := maxi(int(floor(want + 0.000001)), 1)
 			carry = want - n2
@@ -151,6 +144,13 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 					g2[key] = float(g[key]) / rate
 			gizmos.append(g2)
 		out.gizmos = gizmos
+		var zones2: Array = []
+		for z in gen.get("zones", []):
+			var z2: Dictionary = z.duplicate()
+			for key in ["t", "end", "lead"]:
+				z2[key] = float(z[key]) / rate
+			zones2.append(z2)
+		out.zones = zones2
 		var breaks: Array = []
 		for b in gen.get("breaks", []):
 			breaks.append([float(b[0]) / rate, float(b[1]) / rate])

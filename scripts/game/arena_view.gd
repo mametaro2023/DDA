@@ -41,6 +41,7 @@ func _color(idx: int) -> Color:
 
 
 func _draw_under() -> void:
+	_draw_zones()
 	var lead: float = sim.warn_lead
 	for g in sim.active_gizmos:
 		var c := _color(g.color)
@@ -52,8 +53,6 @@ func _draw_under() -> void:
 				var ep := GameSim.slider_emitter(g, now)
 				draw_circle(ep, 9.0, Color(c.r, c.g, c.b, 0.9 * a))
 				draw_arc(ep, 13.0, 0.0, TAU, 24, Color(1, 1, 1, 0.8 * a), 2.0, true)
-		elif g.kind == "wall":
-			_draw_wall_mark(g, c, a)
 		else:
 			draw_arc(g.pos, 42.0, 0.0, TAU, 48, Color(c.r, c.g, c.b, 0.8 * a), 3.0, true)
 			draw_circle(g.pos, 8.0, Color(1, 1, 1, 0.7 * a))
@@ -80,36 +79,80 @@ func _draw_under() -> void:
 		_draw_player_body()
 
 
-## 壁の予兆: 弾が出てくる端に、隙間つきの線を引く(だんだん濃くなる。点滅はしない)。隙間の両端に短い印。
-func _draw_wall_mark(g: Dictionary, c: Color, a: float) -> void:
-	var edge: int = g.edge
-	var horizontal := (edge % 2 == 0)
-	var length := GameSim.ARENA.y if horizontal else GameSim.ARENA.x
-	var g0: float = float(g.gap) - float(g.gap_w) * 0.5
-	var g1: float = float(g.gap) + float(g.gap_w) * 0.5
-	var inset := 8.0
-	var col := Color(c.r, c.g, c.b, 0.5 * a)
-	for seg in [[0.0, g0], [g1, length]]:
-		var s0: float = seg[0]
-		var s1: float = seg[1]
-		if s1 - s0 < 1.0:
+## 危険エリア(文字は出さない。種類は色とマークで分かる):
+##   予告(発動の 2 小節前から): 薄い点線の枠とマークが、ふわっと現れ(フェードイン)、発動に近づくほど速く点滅する。
+##   発動: 枠が一瞬、広がりながら光り(合図)、そのあと、濃い面・実線の太い枠・はっきりしたマークで「効いている」ことを示す。点滅しない。
+##   終わる直前: ゆっくり消える。弾より奥に描く。
+func _draw_zones() -> void:
+	var cw := GameSim.ARENA.x / 3.0
+	var ch := GameSim.ARENA.y / 3.0
+	for z in sim.zones:
+		var t0: float = z.t
+		var t1: float = z.end
+		var lead: float = z.lead
+		if now < t0 - lead or now >= t1:
 			continue
-		var pa: Vector2
-		var pb: Vector2
-		match edge:
-			0:
-				pa = Vector2(inset, s0)
-				pb = Vector2(inset, s1)
-			1:
-				pa = Vector2(s0, inset)
-				pb = Vector2(s1, inset)
-			2:
-				pa = Vector2(GameSim.ARENA.x - inset, s0)
-				pb = Vector2(GameSim.ARENA.x - inset, s1)
-			_:
-				pa = Vector2(s0, GameSim.ARENA.y - inset)
-				pb = Vector2(s1, GameSim.ARENA.y - inset)
-		draw_line(pa, pb, col, 3.0, true)
+		var warn := now < t0
+		var fade_out := clampf((t1 - now) / 0.4, 0.0, 1.0)
+		var tau := now - (t0 - lead)               # 予告が始まってからの秒
+		var fade_in := clampf(tau / 0.6, 0.0, 1.0)  # 予告が始まったときの、フェードイン
+		var blink := 1.0
+		if warn:   # 点滅は、発動に近づくほど速い(1.5 Hz → 5 Hz)。なめらかに明暗を行き来する
+			var phase := TAU * (1.5 * tau + (5.0 - 1.5) * tau * tau / (2.0 * lead))
+			blink = 0.5 + 0.5 * sin(phase)
+		var since := now - t0                      # 発動してからの秒
+		for c in z.cells:
+			var idx: int = c.c
+			var r := Rect2(float(idx % 3) * cw, float(idx / 3) * ch, cw, ch).grow(-3.0)
+			var col := GameSim.zone_color(str(c.type))
+			var center := r.get_center()
+			if warn:
+				var a := fade_in * (0.25 + 0.75 * blink) * fade_out
+				draw_rect(r, Color(col.r, col.g, col.b, 0.08 * a), true)
+				_dashed_rect(r, Color(col.r, col.g, col.b, 0.8 * a), 2.0)
+				_draw_zone_icon(str(c.type), center, Color(col.r, col.g, col.b, 0.7 * a))
+			else:
+				var a := fade_out
+				draw_rect(r, Color(col.r, col.g, col.b, 0.26 * a), true)
+				draw_rect(r, Color(col.r, col.g, col.b, 0.95 * a), false, 4.0)
+				_draw_zone_icon(str(c.type), center, Color(col.r, col.g, col.b, 0.95 * a))
+				if since < 0.4:   # 発動の合図: 白い枠が、外へ広がりながら消える
+					var k := since / 0.4
+					draw_rect(r.grow(18.0 * k), Color(1, 1, 1, 0.9 * (1.0 - k) * a), false, 3.0)
+					draw_rect(r, Color(1, 1, 1, 0.35 * (1.0 - k) * a), true)
+
+
+## 点線の枠。
+func _dashed_rect(r: Rect2, col: Color, width: float) -> void:
+	var p0 := r.position
+	var p1 := r.position + Vector2(r.size.x, 0.0)
+	var p2 := r.end
+	var p3 := r.position + Vector2(0.0, r.size.y)
+	draw_dashed_line(p0, p1, col, width, 10.0)
+	draw_dashed_line(p1, p2, col, width, 10.0)
+	draw_dashed_line(p2, p3, col, width, 10.0)
+	draw_dashed_line(p3, p0, col, width, 10.0)
+
+
+## デバフの種類を示すマーク(文字の代わり)。鈍足: 下向きの山形 / 脆弱: 割れた輪 / 毒: しずく / 巨大: 広がる輪。
+func _draw_zone_icon(type: String, c: Vector2, col: Color) -> void:
+	match type:
+		"slow":
+			draw_polyline(PackedVector2Array([c + Vector2(-16, -16), c + Vector2(0, -2), c + Vector2(16, -16)]), col, 4.0, true)
+			draw_polyline(PackedVector2Array([c + Vector2(-16, 2), c + Vector2(0, 16), c + Vector2(16, 2)]), col, 4.0, true)
+		"fragile":
+			draw_arc(c, 20.0, 0.5, TAU - 0.5, 32, col, 4.0, true)
+			draw_polyline(PackedVector2Array([c + Vector2(4, -14), c + Vector2(-4, -3), c + Vector2(5, 4), c + Vector2(-3, 16)]), col, 3.0, true)
+		"poison":
+			draw_polyline(PackedVector2Array([c + Vector2(0, -22), c + Vector2(-13, -2)]), col, 4.0, true)
+			draw_polyline(PackedVector2Array([c + Vector2(0, -22), c + Vector2(13, -2)]), col, 4.0, true)
+			draw_arc(c + Vector2(0, 6), 13.0, -0.5, PI + 0.5, 24, col, 4.0, true)
+		"big":
+			draw_circle(c, 6.0, col)
+			draw_arc(c, 18.0, 0.0, TAU, 32, col, 3.5, true)
+			for i in range(4):
+				var d := Vector2.from_angle(PI * 0.25 + PI * 0.5 * i)
+				draw_line(c + d * 24.0, c + d * 32.0, col, 3.5, true)
 
 
 func _draw_over() -> void:
@@ -290,11 +333,15 @@ func _draw_player_marks_scaled() -> void:
 	if sim.gauge < 0.999:
 		var gc := UiStyle.hp_color(sim.gauge)
 		draw_arc(p, 27.0 * sc, -PI * 0.5, -PI * 0.5 + TAU * sim.gauge, 48, Color(gc.r, gc.g, gc.b, 0.85), 3.0, true)
+	# 危険エリアのデバフを受けている間は、その色の細い輪と名前を出す(点滅しない)
+	if sim.zone_debuff != "":
+		var zc := GameSim.zone_color(sim.zone_debuff)
+		draw_arc(p, 34.0 * sc, 0.0, TAU, 48, Color(zc.r, zc.g, zc.b, 0.85), 2.5, true)
 	if hit_glow > 0.01:
 		draw_arc(p, 17.0 * sc, 0.0, TAU, 32, Color(1.0, 0.35, 0.35, 0.7 * hit_glow), 2.5, true)
 	# 当たり判定の点(白い縁 + 赤い芯)
-	draw_circle(p, 4.5 * sc, Color(1, 1, 1, 1.0))
-	draw_circle(p, 2.5 * sc, Color(1.0, 0.25, 0.3, 1.0))
+	draw_circle(p, 4.5 * sc * sim.hit_mult, Color(1, 1, 1, 1.0))
+	draw_circle(p, 2.5 * sc * sim.hit_mult, Color(1.0, 0.25, 0.3, 1.0))
 
 
 ## 決まった疑似乱数(0..1)。i = 粒の番号、salt = 用途ごとにずらす値。毎回同じ配置になる。

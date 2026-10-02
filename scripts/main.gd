@@ -616,7 +616,7 @@ func _watch_poll() -> void:
 			ok += 1
 			last_title = "%s - %s" % [info.artist, info.title]
 		else:
-			failed = str(p).get_file()
+			failed = "%s(%s)" % [str(p).get_file(), info.error]   # 読めない理由(mania だけの曲など)を添える
 	SongLibrary.save_index()
 	var msg := ""
 	if ok == 1:

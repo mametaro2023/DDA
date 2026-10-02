@@ -16,7 +16,7 @@ static func import_file(src: String, dest_dir := "") -> Dictionary:
 		return {"ok": false, "error": "ファイルが見つかりません: " + src.get_file()}
 	var l = OszLoader.new()
 	if not l.open(src):
-		return {"ok": false, "error": "読み込めませんでした: " + src.get_file()}
+		return {"ok": false, "error": "%s を読み込めませんでした: %s" % [src.get_file(), l.error]}   # 理由(mania だけの曲・壊れた zip など)を添える
 	var first = l.difficulties[0]
 	var info := {"title": first.title, "artist": first.artist}
 	l.close()

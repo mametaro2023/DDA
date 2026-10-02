@@ -386,7 +386,7 @@ func _add_song(path: String) -> int:
 func _add_song_and_select(path: String) -> void:
 	var i := _add_song(path)
 	if i < 0:
-		_set_status("読み込めませんでした: " + path.get_file())
+		_set_status("%s を読み込めませんでした: %s" % [path.get_file(), SongLibrary.info(path).error])
 		return
 	_rebuild_song_cards()
 	_select_song(i)

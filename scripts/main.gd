@@ -11,6 +11,9 @@ const SongLibrary = preload("res://scripts/song_library.gd")
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
+const SfxBank = preload("res://scripts/sfx_bank.gd")
+const HpGraph = preload("res://scripts/ui/hp_graph.gd")
+const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
@@ -20,8 +23,6 @@ const OszImport = preload("res://scripts/osz_import.gd")
 const SingleInstance = preload("res://scripts/single_instance.gd")
 const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
 const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
-const OpenChoicePanel = preload("res://scripts/ui/open_choice_panel.gd")
-const FileAssoc = preload("res://scripts/file_assoc.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const Juice = preload("res://scripts/ui/juice.gd")
 const ScreenWipe = preload("res://scripts/ui/screen_wipe.gd")
@@ -31,8 +32,6 @@ var _ui_layer: CanvasLayer         # 設定・選択のパネルを、画面の�
 var _settings_panel: Control       # 開いている設定パネル(どの画面からでも開ける。プレイ中は除く)
 var _settings_dict: Dictionary = {}
 var _settings_btn: Button          # 画面の右上の「設定」(タイトル・選曲画面は、自分で設定を開く入口を持つので出さない)
-var _choice_panel: Control         # .osz を開くアプリの選択
-var _cold_osz := false             # .osz を開くために起動した(まだ最初のファイルの途中)
 var _watch_known := {}             # songs フォルダに、いま見えている .osz(名前|大きさ → パス)
 var _watch_pending := {}           # 見つけたが、コピーの途中かもしれないもの(大きさが落ち着くまで待つ)
 var _watch_ready := false
@@ -115,6 +114,15 @@ func _ready() -> void:
 	if args.has("--smoke-rush"):
 		_smoke_rush()
 		return
+	if args.has("--smoke-sfx"):
+		_smoke_sfx()
+		return
+	if args.has("--smoke-modscroll"):
+		_smoke_modscroll()
+		return
+	if args.has("--prof-play"):
+		_prof_play()
+		return
 	if args.has("--smoke-skip"):
 		_smoke_skip()
 		return
@@ -134,11 +142,14 @@ func _ready() -> void:
 		return
 	var ui_settings := Settings.load_all()
 	UiSfx.enabled = bool(ui_settings.ui_sound)
+	SfxBank.preload_all(["pop", "whistle", "clap", "boom", "tick", "hit", "explosion"])   # ゲーム中の効果音は、プレイ画面を開く前に読んでおく
+	Settings.apply_display(ui_settings)   # 垂直同期・ウィンドウの大きさ
 	add_child(UiSfx.new())   # UI の効果音(ホバー・クリック・開閉など)
 	add_child(Juice.new())   # すべてのボタン・スライダーに、弾む動きと音を自動でつける
 	_setup_fade()
 	overlay = HudOverlay.new()
 	add_child(overlay)
+	add_child(FpsOverlay.new())   # 右下の FPS 表示(設定の「画面」/ F3)
 	add_child(CursorOverlay.new())   # アプリ独自のマウスカーソル(OS のカーソルは、ウィンドウの中では隠す)
 	_setup_ui_layer()
 	_watch_sync()
@@ -154,8 +165,7 @@ func _ready() -> void:
 		updater.check()
 	get_window().files_dropped.connect(_on_files_dropped)
 	if osz != "":
-		_cold_osz = true
-		_on_open_osz(osz)   # 起動したので、取り込んで選曲画面へ(または、選んだアプリで開く)
+		_on_open_osz(osz)   # 起動したので、取り込んで選曲画面へ
 	else:
 		show_title()
 
@@ -212,70 +222,11 @@ func _on_open_osz(path: String) -> void:
 	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_MINIMIZED:
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
 	DisplayServer.window_move_to_foreground()
-	if _choice_panel != null:   # 選択の途中に、別の .osz が来た: 新しいほうを聞き直す
-		_choice_panel.queue_free()
-		_choice_panel = null
-	# osu! も入っているなら、どちらで開くかを選べる(設定の「.osz ファイルを開いたとき」。標準は毎回聞く)
-	var mode := str(Settings.load_all().osz_open)
-	if mode != "dda" and FileAssoc.osu_exe() == "":
-		mode = "dda"   # osu! が見つからなければ、選ぶものがない
-	if mode == "ask" and _current != null and _current.get_script() == GameScreen:
-		mode = "dda"   # プレイ中は、聞かない(取り込みだけして、通知を出す)
-	if mode == "osu":
-		_open_in_osu(path)
-	elif mode == "ask":
-		_ask_open(path)
-	else:
-		_open_in_dda(path)
-
-
-## 開くアプリを聞く。起動したばかりで画面がなければ、タイトル画面を背景に出す。
-func _ask_open(path: String) -> void:
-	if _current == null:
-		show_title()
-	close_settings()
-	var p := OpenChoicePanel.new()
-	p.setup(path.get_file())
-	p.chosen.connect(_on_open_chosen.bind(path, p))
-	_setup_ui_layer()
-	_ui_layer.add_child(p)
-	_choice_panel = p
-	_update_settings_button()
-
-
-func _on_open_chosen(kind: String, remember: bool, path: String, panel: Control) -> void:
-	_choice_panel = null
-	panel.queue_free()
-	_update_settings_button()
-	if remember and kind != "cancel":
-		var st := Settings.load_all()
-		st.osz_open = kind
-		Settings.save_all(st)
-	match kind:
-		"osu":
-			_open_in_osu(path)
-		"dda":
-			_open_in_dda(path)
-		_:
-			_cold_osz = false   # やめた(起動して開いたときは、タイトル画面のまま使える)
-
-
-## osu! で開く。起動できなければ、このアプリで開く。.osz を開くためだけに起動したアプリは、渡したら終わる。
-func _open_in_osu(path: String) -> void:
-	if FileAssoc.open_in_osu(path):
-		if overlay != null:
-			overlay.toast("osu! で開きます")
-		if _cold_osz:
-			get_tree().quit()
-		return
-	if overlay != null:
-		overlay.toast("osu! を起動できませんでした。このアプリで開きます")
 	_open_in_dda(path)
 
 
 ## このアプリで開く(取り込んで、選曲画面でその曲を選んだ状態にする)。
 func _open_in_dda(path: String) -> void:
-	_cold_osz = false
 	var r := OszImport.import_file(path)
 	if not r.ok:
 		if overlay != null:
@@ -301,7 +252,7 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 		return
 	for f in files:
 		if f.to_lower().ends_with(".osz"):
-			_open_in_dda(f.replace("\\", "/"))   # このアプリにドロップした = このアプリで開く(聞かない)
+			_open_in_dda(f.replace("\\", "/"))
 			return
 
 
@@ -351,10 +302,10 @@ func _update_settings_button() -> void:
 	if _settings_btn == null:
 		return
 	var s = _current.get_script() if _current != null else null
-	_settings_btn.visible = _current != null and s != GameScreen and s != TitleScreen and s != MenuScreen and _settings_panel == null and _choice_panel == null
+	_settings_btn.visible = _current != null and s != GameScreen and s != TitleScreen and s != MenuScreen and _settings_panel == null
 
 
-## 設定パネルを開く(section: 0=MOD 1=操作 2=音 3=ゲーム)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=ゲーム)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
 func open_settings(section := 0) -> void:
 	if _settings_panel != null or _current == null or _current.get_script() == GameScreen:
 		return
@@ -363,7 +314,7 @@ func open_settings(section := 0) -> void:
 	_settings_dict = st if st is Dictionary else Settings.load_all()
 	var p := OptionsPanel.new()
 	p.theme = UiStyle.make_theme()
-	p.setup(_settings_dict, _current._mod_preview_text if _current.has_method("_mod_preview_text") else Callable())
+	p.setup(_settings_dict)
 	p.changed.connect(func(kind: String):
 		if _current != null and _current.has_method("on_settings_changed"):
 			_current.on_settings_changed(kind))
@@ -432,7 +383,7 @@ func show_menu(pick := false) -> void:
 		m.song_picked.connect(_on_song_picked)
 		m.back_requested.connect(func(): show_multi())
 	else:
-		m.play_requested.connect(start_game)
+		m.play_requested.connect(func(l, b, st: Dictionary, pre: Dictionary): start_game(l, b, st, -1.0, -1.0, pre))
 		m.back_requested.connect(show_title)
 	_stop_music()
 	_swap(m)
@@ -496,15 +447,16 @@ func _on_mp_result_done() -> void:
 	show_multi()
 
 
-func start_game(loader, bm, settings: Dictionary, debug_seek := -1.0, debug_death_t := -1.0) -> void:
-	_last_play = {"loader": loader, "bm": bm, "settings": settings}
+func start_game(loader, bm, settings: Dictionary, debug_seek := -1.0, debug_death_t := -1.0, pre := {}) -> void:
+	_last_play = {"loader": loader, "bm": bm, "settings": settings, "pre": pre}
 	var g := GameScreen.new()
 	g.setup(loader, bm, settings)
+	g.pre = pre
 	g.debug_seek = debug_seek
 	g.debug_death_t = debug_death_t
 	g.finished.connect(func(stats, music): show_result(stats, music))
 	g.quit_requested.connect(show_menu)
-	g.retry_requested.connect(func(): start_game(loader, bm, settings))
+	g.retry_requested.connect(func(): start_game(loader, bm, settings, -1.0, -1.0, pre))
 	_stop_music()
 	_swap(g)
 
@@ -518,7 +470,7 @@ func show_result(stats: Dictionary, music: AudioStreamPlayer = null) -> void:
 	else:
 		r.menu_requested.connect(show_menu)
 		r.retry_requested.connect(func():
-			start_game(_last_play.loader, _last_play.bm, _last_play.settings))
+			start_game(_last_play.loader, _last_play.bm, _last_play.settings, -1.0, -1.0, _last_play.get("pre", {})))
 	if music != null:
 		_stop_music(0.0)
 		_music = music
@@ -620,19 +572,22 @@ func _dev_osz(path: String) -> String:
 func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 	match kind:
 		"title":
-			show_title()   # 例: --shot title out.png [howto|options 0..4]
+			show_title()   # 例: --shot title out.png [howto|options|quit] [fps]
 			if extra.size() > 0 and extra[0] == "howto":
 				_current._activate(2)
 				if extra.size() > 1 and extra[1].is_valid_int():
 					_current._overlay._show(int(extra[1]))
 			elif extra.size() > 0 and extra[0] == "options":
 				_current._activate(3)
+			elif extra.size() > 0 and extra[0] == "quit":
+				_current._activate(4)   # 終了の確認
+			if extra.has("fps"):   # FPS 表示つき
+				FpsOverlay.enabled = true
+				add_child(FpsOverlay.new())
+				await get_tree().create_timer(1.2).timeout
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
-		"choice":
-			show_title()   # .osz を開くアプリの選択。例: --shot choice out.png
-			_ask_open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 		"cursor":
 			show_menu()   # 独自カーソル(押せるもの・ふつうの場所)。例: --shot cursor out.png hover|idle
 			var cu := CursorOverlay.new()
@@ -643,8 +598,14 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			cu.debug_pos = at
 			for n in range(30):
 				await get_tree().process_frame
+		"mod":
+			show_menu()   # MOD パネル。例: --shot mod out.png rush storm
+			while _current._job_pending or _current._diff_cards.is_empty():   # 曲の読み込みを待つ
+				await get_tree().process_frame
+			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
+			_current.open_mods()
 		"options":
-			show_menu()   # 例: --shot options out.png 0 rush storm(先頭の数字はセクション 0=MOD 1=操作 2=音 3=ゲーム)
+			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=ゲーム)
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
 			_current.open_options(int(extra[0]) if extra.size() > 0 and extra[0].is_valid_int() else 0)
 		"game":
@@ -743,11 +704,13 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			_current.debug_move = func(): return _bot_dodge(_current)
 		"mpresult":
 			var nn = _get_net()
-			nn.results = {1: {"name": "Alice", "score": 903120.0, "hits": 0, "graze": 214, "hit_ms": 0}, 2: {"name": "Bob", "score": 871400.0, "hits": 3, "graze": 180, "hit_ms": 480}}
+			nn.results = {1: {"name": "Alice", "score": 903120.0, "hits": 0, "graze": 214, "hit_ms": 0}, 2: {"name": "Bob", "score": 871400.0, "hits": 3, "graze": 180, "hit_ms": 480,
+				"hp": HpGraph.downsample(HpGraph.points_from_log(_fake_hp(2, 118.0, false, 3).hp_log, 0.25, 118.0, 0.7), 48), "dur": 118.0}}
 			var mode_r := "coop" if extra.has("coop") else "versus"
 			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": false, "progress": 1.0, "hits": 3, "hit_ms": 480, "graze": 394, "score": 903120.0, "score_gross": 1013000.0,
 				"damage_factor": 0.89, "score_graze": 13000.0, "practice": false, "score_base": 1000000.0, "mod_ids": [], "mods": "",
-				"mp": {"mode": mode_r, "my_id": 1, "players": [{"id": 1, "name": "Alice", "slot": 0}, {"id": 2, "name": "Bob", "slot": 1}, {"id": 3, "name": "Carol", "slot": 2}]}})
+				"mp": {"mode": mode_r, "my_id": 1, "players": [{"id": 1, "name": "Alice", "slot": 0}, {"id": 2, "name": "Bob", "slot": 1}, {"id": 3, "name": "Carol", "slot": 2}]}}.merged(_fake_hp(1, 118.0, false, 3)))
+			_current.skip_animation()
 		"bullets":
 			_shot_bullets()
 		"result":
@@ -756,9 +719,8 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			var rbm = rl.difficulties[rl.difficulties.size() - 1]
 			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "graze": 123, "score": 1013000.0 if extra.has("ss") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
 				"score_base": 1060000.0, "mod_ids": ["hell", "rush"], "mods": "地獄 + 加速",
-				"bg": rl.load_image(rbm.background) if rbm.background != "" else null})
-			if not (extra.size() > 0 and extra[0] == "failed"):
-				_current._score_disp = _current._score_target   # スクリーンショットではカウントアップを待たない
+				"bg": rl.load_image(rbm.background) if rbm.background != "" else null}.merged(_fake_hp(1, 118.0, extra.size() > 0 and extra[0] == "failed", 3)))
+			_current.skip_animation()   # スクリーンショットでは、演出を待たない
 	_setup_ui_layer()   # 右上の「設定」ボタンも撮る
 	_update_settings_button()
 	if animated:
@@ -787,6 +749,29 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 	get_viewport().get_texture().get_image().save_png(out)
 	print("saved ", out)
 	get_tree().quit()
+
+
+## 開発用: 結果画面の見た目確認用の、作り物の体力の推移(0.25 秒ごと。被弾のたびに減り、少しずつ戻る)。
+func _fake_hp(seed_n: int, dur: float, fail: bool, n_hits: int) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_n
+	var hit_times := PackedFloat32Array()
+	for k in range(n_hits):
+		hit_times.append(rng.randf_range(12.0, dur - 12.0))
+	hit_times.sort()
+	var log := PackedFloat32Array()
+	var g := 1.0
+	var i := 0
+	var t := 0.0
+	var end_t := dur if not fail else dur * 0.63
+	while t <= end_t:
+		for h in hit_times:
+			if h >= t and h < t + 0.25:
+				g -= rng.randf_range(0.18, 0.3) * (2.2 if fail else 1.0)
+		g = clampf(g + 0.015 * 0.25, 0.0, 1.0)
+		log.append(g)
+		t += 0.25
+	return {"hp_log": log, "hp_step": 0.25, "hp_end": 0.0 if fail else g, "hp_t_end": end_t, "hit_log": hit_times, "breaks": [[48.0, 60.0]], "first_fire": 8.0}
 
 
 ## 開発用: 動かずに被弾するまで待ち、ゲームオーバー演出→リザルト遷移を確認する。-- --smoke-death
@@ -874,6 +859,15 @@ func _shot_bullets() -> void:
 	f.sync_render()
 
 
+## ノードの下から、題名の文字が name のラベルを持つカードを探す(開発用)。
+func _find_card(root: Node, name: String) -> Control:
+	for c in root.find_children("*", "PanelContainer", true, false):
+		for l in c.find_children("*", "Label", true, false):
+			if (l as Label).text.begins_with(name) and c.has_meta("state"):
+				return c
+	return null
+
+
 ## 開発用: 選曲・設定・ポーズの操作を、実際のキー入力で通しで確認する。-- --smoke-ui(ユーザーの設定ファイルは終了時に元へ戻す)
 func _smoke_ui() -> void:
 	var orig := Settings.load_all()
@@ -892,18 +886,24 @@ func _smoke_ui() -> void:
 	print("Tab, Down  -> focus_diff=%s song_sel %d -> %d (diffs=%d)" % [str(m._focus_diff), song_before, m._song_sel, m._diff_cards.size()])
 	await _key(KEY_TAB)
 	var lv_before: float = m._ratings[m._diff_sel].level
-	await _key(KEY_O)
-	print("O          -> options open=%s" % str(m._options != null))
+	await _key(KEY_M)
+	print("M          -> mod panel open=%s" % str(m._mod_panel != null))
 	var click := InputEventMouseButton.new()
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
-	m._options._mod_cards["storm"].gui_input.emit(click)
+	var storm_card: Control = _find_card(m._mod_panel, "暴風雨")
+	storm_card.gui_input.emit(click)
 	await get_tree().process_frame
-	print("click STORM-> mods=%s Lv %.2f -> %.2f | summary: %s" % [str(m.settings.mods), lv_before, m._ratings[m._diff_sel].level, m._options._mod_summary.text])
+	print("click STORM-> mods=%s Lv %.2f -> %.2f | mul: %s lv: %s" % [str(m.settings.mods), lv_before, m._ratings[m._diff_sel].level, m._mod_panel._mul_l.text, m._mod_panel._lv_l.text])
+	await _key(KEY_ESCAPE)
+	await get_tree().create_timer(0.4).timeout   # 閉じる動きのぶん待つ
+	print("Esc        -> mod panel open=%s (menu still %s)" % [str(m._mod_panel != null), str(_current == m)])
+	await _key(KEY_O)
+	print("O          -> options open=%s" % str(m._options != null))
 	await _key(KEY_TAB)
 	print("Tab in options -> page 1 visible=%s" % str(m._options._pages[1].visible))
 	await _key(KEY_ESCAPE)
-	await get_tree().create_timer(0.4).timeout   # 閉じる動きのぶん待つ
+	await get_tree().create_timer(0.4).timeout
 	print("Esc        -> options open=%s (menu still %s)" % [str(m._options != null), str(_current == m)])
 	await _key(KEY_ENTER)
 	await get_tree().create_timer(0.7).timeout   # 発進の演出(0.4 秒)のあとで、ゲーム画面になる
@@ -1010,6 +1010,148 @@ func _smoke_rush() -> void:
 		print("real=%.2f now=%.2f (%.2f/s) audio_pos=%.2f (pos/now=%.2f) fired=%d bullets=%d" % [real, g._now, (g._now - last_now) / (real - last_real), pos, pos / maxf(g._now, 0.001), g.sim.bullets_fired, g.field.count])
 		last_now = g._now
 		last_real = real
+	get_tree().quit()
+
+
+## 開発用: 効果音のファイルが(書き出した exe の中でも)読めて、鳴らせることを確かめる。-- --smoke-sfx
+func _smoke_sfx() -> void:
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	var game_names := ["pop", "whistle", "clap", "boom", "tick", "hit", "explosion"]
+	var counts := []
+	for nm in game_names:
+		counts.append("%s=%d" % [nm, SfxBank.variants(nm).size()])
+	chk.call(SfxBank.variants("pop").size() >= 4 and SfxBank.variants("explosion").size() == 1, "ゲームの効果音が読める: %s" % ", ".join(counts))
+	var ui := UiSfx.new()
+	add_child(ui)
+	chk.call(ui._streams.size() == UiSfx.SPECS.size(), "UI の効果音が全部読める(%d / %d)" % [ui._streams.size(), UiSfx.SPECS.size()])
+	var Sfx = load("res://scripts/game/sfx.gd")
+	var s = Sfx.new()
+	add_child(s)
+	for nm in game_names:
+		s.play(nm)
+	await get_tree().create_timer(0.3).timeout
+	var playing := 0
+	for p in s._players:
+		if p.playing:
+			playing += 1
+	chk.call(playing >= 3, "鳴らすと、プレイヤーが再生を始める(%d 個)" % playing)
+	# 弾に触れている間のダメージ音(ループ): 触れている間は鳴り続け、離れると消える
+	var loop_ok: bool = s._dmg_player != null and s._dmg_player.stream.loop_mode == AudioStreamWAV.LOOP_FORWARD
+	chk.call(loop_ok, "ダメージ音はループ再生の設定になっている")
+	var t_end := Time.get_ticks_msec() + 700
+	var was_playing := true
+	while Time.get_ticks_msec() < t_end:
+		s.touch_damage(0.5)
+		await get_tree().process_frame
+		if Time.get_ticks_msec() > t_end - 400 and not s._dmg_player.playing:
+			was_playing = false
+	chk.call(was_playing and s._dmg_level > 0.9, "触れている間は鳴り続ける(音の大きさ %.2f)" % s._dmg_level)
+	await get_tree().create_timer(0.5).timeout
+	chk.call(not s._dmg_player.playing, "離れると消える")
+	print("smoke-sfx: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## 開発用: MOD パネルの上でホイールを回すと、パネルの一覧が動き、後ろの難易度の一覧は動かないことを確かめる。-- --smoke-modscroll
+func _smoke_modscroll() -> void:
+	var orig := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	overlay = HudOverlay.new()
+	add_child(overlay)
+	show_menu()
+	await get_tree().create_timer(0.5).timeout
+	var m = _current
+	while m._job_pending:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.0).timeout
+	var diff_before: int = m._diff_scroll.scroll_vertical
+	var song_before: int = m._song_scroll.scroll_vertical
+	m.open_mods()
+	await get_tree().create_timer(0.8).timeout
+	var sc: ScrollContainer = m._mod_panel.find_children("*", "ScrollContainer", true, false)[0]
+	chk.call(sc.get_v_scroll_bar().max_value - sc.get_v_scroll_bar().page > 0.0, "MOD の一覧は、スクロールが必要な長さ")
+	# 難易度の一覧の真上でもある位置(パネルの中)にマウスを置いて、ホイールを回す
+	var at: Vector2 = sc.get_global_rect().get_center()
+	get_viewport().warp_mouse(at)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	for i in range(4):
+		var e := InputEventMouseButton.new()
+		e.button_index = MOUSE_BUTTON_WHEEL_DOWN
+		e.pressed = true
+		e.position = at
+		e.global_position = at
+		Input.parse_input_event(e)
+		await get_tree().process_frame
+		await get_tree().process_frame
+	await get_tree().create_timer(0.6).timeout
+	chk.call(sc.scroll_vertical > 0, "MOD の一覧がスクロールする(%d)" % sc.scroll_vertical)
+	chk.call(m._diff_scroll.scroll_vertical == diff_before and m._song_scroll.scroll_vertical == song_before, "後ろの難易度・曲の一覧は動かない(%d → %d)" % [diff_before, m._diff_scroll.scroll_vertical])
+	Settings.restore(orig)
+	print("smoke-modscroll: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## 開発用: 選曲画面で PLAY を押してから自機が出るまでの、フレームの間隔(止まりの長さ)を測る。-- --prof-play [曲名の一部]
+func _prof_play() -> void:
+	var orig := Settings.load_all()
+	var args := OS.get_cmdline_user_args()
+	var want := ""
+	for a in args:
+		if not str(a).begins_with("--") and str(a) != "nocache":
+			want = str(a)
+	var st := Settings.load_all()
+	for p in SongLibrary.find_all():
+		if want != "" and str(p).contains(want):
+			st.last_song = str(p)
+	st.last_diff = ""
+	st.mods = []
+	st.control = "mouse"
+	Settings.save_all(st)
+	overlay = HudOverlay.new()
+	add_child(overlay)
+	add_child(CursorOverlay.new())
+	_setup_ui_layer()
+	SfxBank.preload_all(["pop", "whistle", "clap", "boom", "tick", "hit", "explosion"])
+	FpsOverlay.enabled = true
+	var fps_node := FpsOverlay.new()
+	add_child(fps_node)
+	_setup_fade()
+	show_menu()
+	await get_tree().create_timer(0.5).timeout
+	var m = _current
+	while m._job_pending:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.0).timeout
+	m._diff_sel = m._diff_cards.size() - 1   # 一番難しい譜面
+	if args.has("nocache"):   # 比較用: 選曲で作った弾幕を渡さない(プレイ画面が作り直す)
+		m._gens[m._diff_sel] = {}
+	m._start()
+	var t0 := Time.get_ticks_usec()
+	var last := t0
+	var worst := 0.0
+	var log := []
+	while Time.get_ticks_usec() - t0 < 3000000:
+		await get_tree().process_frame
+		var now := Time.get_ticks_usec()
+		var dt := (now - last) / 1000.0
+		last = now
+		worst = maxf(worst, dt)
+		if dt > 22.0:
+			log.append("%.0fms@%.2fs" % [dt, (now - t0) / 1e6])
+	var g = _current
+	print("prof-play: FPS 表示 = ", fps_node._label.text.replace("
+", " / "))
+	print("prof-play: screen=%s worst frame %.1f ms | long frames (>22ms): %s" % [g.get_script().resource_path.get_file(), worst, ", ".join(log)])
+	Settings.restore(orig)
 	get_tree().quit()
 
 
@@ -1333,6 +1475,22 @@ func _smoke_net() -> void:
 	chk.call(a.start_game() != "", "曲を持っていない人がいると開始できない: '%s'" % a.start_game())
 	b.report_song(true)
 	await get_tree().create_timer(0.3).timeout
+	chk.call(a.start_game().contains("準備"), "参加者が準備完了を押すまで開始できない: '%s'" % a.start_game())
+	b.set_my_ready(true)
+	await get_tree().create_timer(0.3).timeout
+	chk.call(a.players[b.my_id].ready and b.players[b.my_id].ready, "準備完了が、ホストと本人の名簿に載る")
+	a.set_mode("coop")   # 部屋の設定が変わると、準備完了は全員外れる(確かめ直し)
+	await get_tree().create_timer(0.3).timeout
+	chk.call(not a.players[b.my_id].ready and not b.players[b.my_id].ready, "部屋の設定を変えると、準備完了が外れる")
+	b.report_song(false)   # 曲を持たない人は、準備完了にできない
+	await get_tree().create_timer(0.2).timeout
+	b.set_my_ready(true)
+	await get_tree().create_timer(0.2).timeout
+	chk.call(not a.players[b.my_id].ready, "曲を持っていない人は、準備完了にならない")
+	b.report_song(true)
+	await get_tree().create_timer(0.2).timeout
+	b.set_my_ready(true)
+	await get_tree().create_timer(0.3).timeout
 	var got := {"prep_a": false, "prep_b": false, "go_a": -1.0, "go_b": -1.0, "msg_a": "", "msg_b": ""}
 	a.prepare_game.connect(func(info): got.prep_a = true; a.report_loaded(7))
 	b.prepare_game.connect(func(info): got.prep_b = info.mode == "coop" and info.players.size() == 2; b.report_loaded(7))
@@ -1488,6 +1646,8 @@ func _smoke_mp() -> void:
 			add_child(g))
 	make.call(a, "a", false)   # ホストは動かない
 	make.call(b, "b", not fail_test)   # 参加者は避ける(fail のときは動かない)
+	b.set_my_ready(true)
+	await get_tree().create_timer(0.3).timeout
 	chk.call(a.start_game() == "", "開始できる(%s)" % mode)
 	var t0 := Time.get_ticks_msec()
 	while gs.size() < 2 or not (gs.a._audio_started and gs.b._audio_started):
@@ -1617,6 +1777,11 @@ func _mp_room(mode: String, nosong: bool, three: bool) -> void:
 		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": 4.62}, ["hell"] if mode == "versus" else [], 1.0, loader, bm)
 	n.set_mode(mode)
 	await get_tree().create_timer(0.4).timeout
+	if not nosong:
+		for k in range(_shot_nets.size()):
+			if not (three and k == _shot_nets.size() - 1):   # 3 人のときは、最後の 1 人だけ準備中のまま
+				_shot_nets[k].set_my_ready(true)
+		await get_tree().create_timer(0.4).timeout
 
 
 ## 開発用: マルチプレイの画面の流れを、ホスト側の実際の画面操作で通して確認する(参加者は同じプロセス内のボット)。-- --smoke-mp-ui
@@ -1662,7 +1827,10 @@ func _smoke_mp_ui() -> void:
 		if menu._songs[i].path.contains("Reol"):
 			idx = i
 	menu._select_song(idx)
-	await get_tree().create_timer(0.4).timeout
+	await get_tree().create_timer(0.2).timeout
+	while menu._job_pending:   # 曲の読み込み(別スレッド)を待つ
+		await get_tree().process_frame
+	await get_tree().create_timer(0.2).timeout
 	menu._select_diff(2)
 	var want_md5: String = menu._loader.difficulties[2].md5
 	menu._start()
@@ -1684,7 +1852,10 @@ func _smoke_mp_ui() -> void:
 		g.visible = false
 		add_child(g))
 	await get_tree().create_timer(0.5).timeout
-	chk.call(m._start_blocker() == "", "全員が曲を持てば、開始できる('%s')" % m._start_blocker())
+	chk.call(m._start_blocker().contains("準備"), "全員が曲を持っても、参加者が準備完了を押すまで開始できない('%s')" % m._start_blocker())
+	b.set_my_ready(true)
+	await get_tree().create_timer(0.4).timeout
+	chk.call(m._start_blocker() == "", "参加者が準備完了を押せば、開始できる('%s')" % m._start_blocker())
 	m._on_start()
 	var t0 := Time.get_ticks_msec()
 	while not (_current.get_script() == GameScreen and _current._audio_started) and Time.get_ticks_msec() - t0 < 8000:
@@ -1988,9 +2159,6 @@ func _smoke_new() -> void:
 ## 開発用: .osz を開いたときの流れ(取り込み → 選曲画面で選ぶ)と、別のプロセスから渡す動きを確認する。-- --smoke-open
 func _smoke_open() -> void:
 	var original := Settings.load_all()
-	var s0 := Settings.load_all()
-	s0.osz_open = "dda"   # 聞かずに開く(聞く動きは、最後に確かめる)
-	Settings.save_all(s0)
 	var st := {"fails": 0}
 	var chk := func(cond: bool, msg: String):
 		print(("  ok   " if cond else "  FAIL ") + msg)
@@ -2032,27 +2200,6 @@ func _smoke_open() -> void:
 	_on_open_osz("C:/Desktop/my_apps/DDA/README.md")
 	await get_tree().create_timer(0.5).timeout
 	chk.call(_current == g, "対応しないファイルでは、何も起きない")
-	# osu! も入っているとき: どちらで開くかを聞く(「今後もこの選択を使う」で固定できる)
-	if FileAssoc.osu_exe() != "":
-		var s1 := Settings.load_all()
-		s1.osz_open = "ask"
-		Settings.save_all(s1)
-		show_menu()
-		await get_tree().create_timer(0.6).timeout
-		var reol := "C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"
-		_on_open_osz(reol)
-		await get_tree().process_frame
-		chk.call(_choice_panel != null and not _settings_btn.visible, "osu! が入っていれば、開くアプリを聞く(%s)" % FileAssoc.osu_exe())
-		_choice_panel.chosen.emit("cancel", true)
-		await get_tree().process_frame
-		chk.call(_choice_panel == null and str(Settings.load_all().osz_open) == "ask", "「やめる」では、何も起きず、設定も変わらない")
-		_on_open_osz(reol)
-		await get_tree().process_frame
-		_choice_panel.chosen.emit("dda", true)
-		await get_tree().create_timer(1.0).timeout
-		chk.call(_choice_panel == null and str(Settings.load_all().osz_open) == "dda" and _current.get_script() == MenuScreen and _current._songs[_current._song_sel].path.contains("Reol"), "「このアプリで開く」+ 固定: 選曲画面でその曲が選ばれ、次からは聞かない")
-		_on_open_osz(reol)
-		chk.call(_choice_panel == null, "固定したあとは、聞かずに開く")
 	Settings.restore(original)
 	print("smoke-open: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()

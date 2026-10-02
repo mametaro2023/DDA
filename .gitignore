@@ -11,3 +11,6 @@ build/
 # 一時ファイル
 tmp_*
 *.tpz
+
+# 効果音を聴く用の WAV(tools/sfx_forge.gd -- --preview の出力を置く場所)
+sfx_preview/

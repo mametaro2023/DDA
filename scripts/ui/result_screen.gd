@@ -1,5 +1,6 @@
 extends Control
-## リザルト画面。左に大きなランク(ゲームオーバーなら到達度)、右にスコア(カウントアップ)と内訳・成績。
+## リザルト画面。左上にランクと、その周りの円状のメーター(点数の達成率まで伸びる)、右上にスコアと内訳・成績、下に体力の推移のグラフ。
+## ゲームオーバーなら、ランクの代わりに到達度(メーターも到達度まで伸びる)。マルチプレイは、右に参加者の成績の一覧、グラフに参加者の体力を重ねる。
 
 signal menu_requested
 signal retry_requested
@@ -11,23 +12,35 @@ const GameSim = preload("res://scripts/game/game_sim.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
+const RankMeter = preload("res://scripts/ui/rank_meter.gd")
+const HpGraph = preload("res://scripts/ui/hp_graph.gd")
 
-## スコア表示の ease-out(1/RATE 秒ほどで大半が追いつく。プレイ画面の表示と同じ考え方)
-const COUNT_RATE := 3.5
+## メーターが伸び始めるまでの間(右の列が現れるのを待つ)と、伸びきるまでの時間(秒)。スコアの数字も、これに合わせて数え上がる
+const FILL_DELAY := 0.55
+const FILL_TIME := 1.7
+## 体力グラフが描かれ始めるまでの間と、描ききるまでの時間(秒)
+const GRAPH_DELAY := 0.7
+const GRAPH_TIME := 1.9
 
 var stats: Dictionary
 var net                          # マルチプレイのとき: 通信層(他の人の最終成績が届くたびに、一覧を更新する)
 var _board: VBoxContainer         # マルチプレイの成績の一覧
 
 var _score_l: Label
-var _t := 0.0                    # 開いてからの経過秒(スコアのカウントアップの開始を遅らせる)
-var _counters: Array = []         # 数字のカウントアップ: [Label, 目標値, 接尾辞]
+var _counters: Array = []         # 数字のカウントアップ: [Label, 目標値, 接尾辞, 開始までの間, 時間]
 var _score_target := 0.0
-var _score_disp := 0.0
-var _score_done := false
+var _fill := 0.0                  # メーターの伸び 0..1(スコア・達成率の数字も、これに合わせる)
+var _ratio := 0.0                 # 最終的な達成率(ゲームオーバーなら到達度)
+var _fill_done := false
+var _last_tick := -1
 var _left: Control            # 左のランクのパネル(スタンプの衝撃で、ずんと揺れる)
 var _accent := Color.WHITE
-var _big: Label
+var _big: Label               # メーターの中央の大きな文字(ランク / 到達度)
+var _sub: Label               # その下の小さな文字(達成率)
+var _meter: Control
+var _graph: Control
+var _legend: HBoxContainer
+var _rank := "-"
 
 
 func setup(p_stats: Dictionary, p_net = null) -> void:
@@ -57,51 +70,67 @@ func _ready() -> void:
 	var failed: bool = stats.failed
 	# クリアしたときだけスコアが残る。ランクは、ノーミスなら SS、それ以外は達成率(スコア ÷ ベーススコア)で S〜F
 	var score: int = int(round(stats.score))   # プレイ中の表示(四捨五入)と同じにする。切り捨てだと 1 ずれる
-	var rank := GameSim.rank_of(failed, int(stats.hits), float(stats.score), float(stats.get("score_base", 1000000.0)))
-	var accent := UiStyle.DANGER if failed else UiStyle.rank_color(rank)
+	var score_base: float = float(stats.get("score_base", 1000000.0))
+	_rank = GameSim.rank_of(failed, int(stats.hits), float(stats.score), score_base)
+	var accent := UiStyle.DANGER if failed else UiStyle.rank_color(_rank)
 	_accent = accent
+	_ratio = clampf(float(stats.progress), 0.0, 1.0) if failed else clampf(float(stats.score) / maxf(score_base, 1.0), 0.0, 1.0)
 
-	# --- 左: ランク / 到達度 ---
+	# --- 左: ランク / 到達度と、周りのメーター ---
 	var left := Control.new()
-	left.position = Vector2(90, 110)
-	left.size = Vector2(420, 480)
+	left.position = Vector2(60, 56)
+	left.size = Vector2(460, 394)
 	add_child(left)
 	_left = left
 	var lp := PanelContainer.new()
 	lp.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	lp.add_theme_stylebox_override("panel", UiStyle.box(Color(accent.r, accent.g, accent.b, 0.05), Color(accent.r, accent.g, accent.b, 0.35), 1, 8))
 	left.add_child(lp)
-	var lv := VBoxContainer.new()
-	lv.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	lv.alignment = BoxContainer.ALIGNMENT_CENTER
-	lv.add_theme_constant_override("separation", 0)
-	left.add_child(lv)
-	lv.add_child(_centered(UiStyle.label("GAME OVER" if failed else "CLEAR", 26, accent, true)))
-	lv.add_child(_gap(6))
-	var big: Label
+	var head := UiStyle.label("GAME OVER" if failed else "CLEAR", 24, accent, true)
+	head.position = Vector2(0, 12)
+	head.size = Vector2(460, 34)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	left.add_child(head)
+	var meter := RankMeter.new()
+	meter.position = Vector2(60, 44)
+	meter.size = Vector2(340, 340)
+	meter.ratio = _ratio
+	meter.scale_score = score_base
+	meter.zones = not failed
+	meter.accent = accent
+	left.add_child(meter)
+	_meter = meter
+	var center := VBoxContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.alignment = BoxContainer.ALIGNMENT_CENTER
+	center.add_theme_constant_override("separation", -6)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	meter.add_child(center)
 	if failed:
-		big = UiStyle.label("%d%%" % int(round(stats.progress * 100.0)), 140, accent, true)
-		lv.add_child(_centered(big))
-		lv.add_child(_centered(UiStyle.label("到達", 18, UiStyle.TEXT_DIM)))
-		_counters.append([big, int(round(stats.progress * 100.0)), "%", 0.3, 0.9])
+		_big = UiStyle.label("0%", 100, accent, true)
+		_sub = UiStyle.label("到達", 18, UiStyle.TEXT_DIM)
 	else:
-		big = UiStyle.label(rank, 220, accent, true)
-		lv.add_child(_centered(big))
-		lv.add_child(_centered(UiStyle.label("RANK", 16, UiStyle.TEXT_DIM)))
-
-	# 左パネルは左から滑り込み、ランク文字は大きいところから叩きつけられる(衝撃波・粒・音つき)
-	UiStyle.pop_in(left, 0.05, Vector2(-40, 0), 0.5)
-	_big = big
+		_big = UiStyle.label(_rank, 124, accent, true)
+		_sub = UiStyle.label("0.0%", 20, UiStyle.TEXT_DIM)
+	center.add_child(_centered(_big))
+	center.add_child(_centered(_sub))
 	if not failed:
-		_stamp(big, 0.55)
-	else:
-		UiSfx.play("deny", 0.9)   # (到達度は、数え上がるだけ)
+		var note := UiStyle.label("ノーミスなら SS", 12, UiStyle.TEXT_FAINT)
+		note.position = Vector2(16, 18)
+		note.size = Vector2(150, 20)
+		left.add_child(note)
+		_big.modulate.a = 0.0   # ランクの文字は、メーターが伸びきってから叩きつける
+
+	# 左パネルは左から滑り込む
+	UiStyle.pop_in(left, 0.05, Vector2(-40, 0), 0.5)
+	if failed:
+		UiSfx.play("deny", 0.9)
 
 	# --- 右: 曲名 / スコア / 内訳 / 成績 ---
 	var right := VBoxContainer.new()
-	right.position = Vector2(560, 100)
-	right.size = Vector2(640, 500)
-	right.add_theme_constant_override("separation", 10)
+	right.position = Vector2(560, 50)
+	right.size = Vector2(660, 400)
+	right.add_theme_constant_override("separation", 8)
 	add_child(right)
 	var t := UiStyle.label(stats.title, 18, UiStyle.TEXT_DIM)
 	t.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -117,32 +146,28 @@ func _ready() -> void:
 		if not m.is_empty():
 			chips.add_child(UiStyle.chip(m.name, m.color))
 	right.add_child(chips)
-	right.add_child(_gap(6))
 
 	right.add_child(UiStyle.caption("SCORE"))
 	if failed:
-		right.add_child(UiStyle.label("---", 72, UiStyle.TEXT_FAINT, true))
+		right.add_child(UiStyle.label("---", 64, UiStyle.TEXT_FAINT, true))
 	else:
 		_score_target = float(score)
-		_score_l = UiStyle.label("0", 72, UiStyle.TEXT, true)
+		_score_l = UiStyle.label("0", 64, UiStyle.TEXT, true)
 		right.add_child(_score_l)
-		right.add_child(_gap(4))
-		right.add_child(UiStyle.hline())
-		if not (stats.has("mp") and stats.mp.mode == "versus"):   # 対戦は、内訳の代わりに参加者の成績を並べる
-			right.add_child(_row("ベーススコア", UiStyle.fmt(int(round(stats.get("score_base", 1000000.0)))), _mod_note()))
-			right.add_child(_row("グレイズボーナス", "+ " + UiStyle.fmt(int(stats.score_graze)), ""))
-			right.add_child(_row("被ダメージ係数", "× %.3f" % stats.damage_factor, ""))
-			right.add_child(UiStyle.hline())
-	right.add_child(_gap(6))
-
+	right.add_child(UiStyle.hline())
 	if stats.has("mp"):   # マルチプレイ: 参加者の成績の一覧(他の人が終えるたびに更新)
 		_board = VBoxContainer.new()
-		_board.add_theme_constant_override("separation", 8)
+		_board.add_theme_constant_override("separation", 6)
 		right.add_child(_board)
 		_rebuild_board()
 		if net != null:
-			net.results_changed.connect(_rebuild_board)
+			net.results_changed.connect(_on_results_changed)
 	else:
+		if not failed:
+			right.add_child(_row("ベーススコア", UiStyle.fmt(int(round(score_base))), _mod_note()))
+			right.add_child(_row("グレイズボーナス", "+ " + UiStyle.fmt(int(stats.score_graze)), ""))
+			right.add_child(_row("被ダメージ係数", "× %.3f" % stats.damage_factor, ""))
+			right.add_child(UiStyle.hline())
 		# 成績(3 つ並べる)
 		var grid := HBoxContainer.new()
 		grid.add_theme_constant_override("separation", 40)
@@ -151,10 +176,32 @@ func _ready() -> void:
 		grid.add_child(_stat("被弾時間", int(stats.hit_ms), " ms", 0.9))
 		right.add_child(grid)
 
+	# --- 下: 体力の推移 ---
+	var gp := PanelContainer.new()
+	gp.position = Vector2(60, 466)
+	gp.size = Vector2(1160, 152)
+	gp.add_theme_stylebox_override("panel", UiStyle.box(Color(0, 0, 0, 0.3), UiStyle.LINE, 1, 8, 16, 10))
+	add_child(gp)
+	var gv := VBoxContainer.new()
+	gv.add_theme_constant_override("separation", 2)
+	gp.add_child(gv)
+	var gh := HBoxContainer.new()
+	gh.add_theme_constant_override("separation", 16)
+	gh.add_child(UiStyle.caption("HP"))
+	_legend = HBoxContainer.new()
+	_legend.add_theme_constant_override("separation", 14)
+	gh.add_child(_legend)
+	gv.add_child(gh)
+	_graph = HpGraph.new()
+	_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_graph.custom_minimum_size = Vector2(0, 100)
+	gv.add_child(_graph)
+	_update_graph()
+
 	# 下部のボタン(Enter / R のキーでも同じ操作ができる)
 	var hint := HBoxContainer.new()
 	hint.add_theme_constant_override("separation", 12)
-	hint.position = Vector2(560, 626)
+	hint.position = Vector2(60, 634)
 	for spec in ([["ロビーへ", menu_requested]] if stats.has("mp") else [["メニューへ", menu_requested], ["リトライ", retry_requested]]):
 		var b := Button.new()
 		b.text = spec[0]
@@ -165,12 +212,13 @@ func _ready() -> void:
 		hint.add_child(b)
 	add_child(hint)
 
-	# 右の列は右から滑り込み、中身が上から順に現れ、数字が数え上がる
+	# 右の列は右から滑り込み、中身が上から順に現れ、数字が数え上がる。グラフは下から現れて、左から右へ描かれる
 	UiStyle.pop_in(right, 0.1, Vector2(40, 0), 0.5)
 	var j := 0
 	for c in right.get_children():
 		UiStyle.tween(c, "modulate:a", 0.0, 1.0, 0.35, 0.2 + 0.07 * j)
 		j += 1
+	UiStyle.pop_in(gp, 0.3, Vector2(0, 24), 0.5)
 	var bk := 0
 	for b in hint.get_children():   # 下のボタンは、最後に弾んで現れる
 		UiStyle.pop_scale(b, 0.8, 0.4, 1.2 + 0.08 * bk)
@@ -187,31 +235,53 @@ func _ready() -> void:
 				UiSfx.play("count", 0.9 + 0.7 * clampf(v / maxf(total, 1.0), 0.0, 1.0), 0.8)
 		UiStyle.tween_value(lab, 0.0, float(c[1]), float(c[4]), set_text, float(c[3]))
 
+	# メーターの伸び(ランクの周りの輪・スコア・達成率が一緒に進む)と、グラフの描き進み
+	UiStyle.tween_value(self, 0.0, 1.0, FILL_TIME, _set_fill, FILL_DELAY, Tween.TRANS_CUBIC, Tween.EASE_OUT)
+	UiStyle.tween_value(_graph, 0.0, 1.0, GRAPH_TIME, func(v: float): _graph.reveal = v, GRAPH_DELAY, Tween.TRANS_SINE, Tween.EASE_IN_OUT)
 
-func _process(delta: float) -> void:
-	_t += delta
-	if _score_l == null or (UiStyle.animate and _t < 0.55):   # 右の列が現れてから数え始める
-		return
-	var before := int(round(_score_disp))
-	_score_disp += (_score_target - _score_disp) * (1.0 - exp(-delta * COUNT_RATE))
-	if absf(_score_target - _score_disp) < 0.5:
-		_score_disp = _score_target
-	var now := int(round(_score_disp))
-	_score_l.text = UiStyle.fmt(now)
-	if UiStyle.animate and now != before and not _score_done:   # 数え上がる間、音程が上がる小さな音
-		UiSfx.play("count", 0.8 + 0.9 * clampf(_score_disp / maxf(_score_target, 1.0), 0.0, 1.0), 0.8)
-	if not _score_done and _score_disp == _score_target:   # 数え終わり: 数字がぽんと弾む
-		_score_done = true
-		if UiStyle.animate:
-			UiSfx.play("tick", 2.0, 1.0)
-			_score_l.pivot_offset = Vector2(0.0, _score_l.size.y * 0.5)
-			UiStyle.spring(_score_l, "scale", Vector2(1.07, 1.07), Vector2.ONE, 0.4)
+
+## メーターの伸び v(0..1)を、輪・スコア・達成率の数字に反映する。伸びきったら、ランクを叩きつける。
+func _set_fill(v: float) -> void:
+	_fill = v
+	_meter.fill = v
+	if _score_l != null:
+		var shown := int(round(_score_target * v))
+		_score_l.text = UiStyle.fmt(shown)
+	if bool(stats.failed):
+		_big.text = "%d%%" % int(round(_ratio * 100.0 * v))
+	else:
+		_sub.text = "%.1f%%" % (_ratio * 100.0 * v)
+	var tick := int(v * 60.0)   # 数え上がる間、音程が上がる小さな音(1/60 刻み)
+	if UiStyle.animate and tick != _last_tick and v > 0.0 and v < 1.0:
+		_last_tick = tick
+		UiSfx.play("count", 0.8 + 0.9 * v, 0.8)
+	if v >= 1.0 and not _fill_done:
+		_fill_done = true
+		_on_fill_done()
+
+
+func _on_fill_done() -> void:
+	if not bool(stats.failed):
+		_stamp(_big, 0.0)
+	if _score_l != null and UiStyle.animate:   # スコアの数字がぽんと弾む
+		UiSfx.play("tick", 2.0, 1.0)
+		_score_l.pivot_offset = Vector2(0.0, _score_l.size.y * 0.5)
+		UiStyle.spring(_score_l, "scale", Vector2(1.07, 1.07), Vector2.ONE, 0.4)
+
+
+## 開発用(スクリーンショット): 演出を待たず、最後の状態にする。
+func skip_animation() -> void:
+	_set_fill(1.0)
+	_big.modulate.a = 1.0
+	_big.scale = Vector2.ONE
+	_graph.reveal = 1.0
 
 
 ## ランクの文字を叩きつける: 大きく透明な状態から、加速しながら縮んで着地 → 衝撃波・粒・低い音・パネルがずんと沈む。
 func _stamp(big: Label, delay: float) -> void:
 	big.pivot_offset = big.get_minimum_size() * 0.5
 	if not UiStyle.animate or not is_inside_tree():
+		big.modulate.a = 1.0
 		return
 	big.modulate.a = 0.0
 	big.scale = Vector2(2.8, 2.8)
@@ -248,6 +318,7 @@ func _gap(h: float) -> Control:
 
 func _centered(c: Control) -> Control:
 	var w := CenterContainer.new()
+	w.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	w.add_child(c)
 	return w
 
@@ -289,8 +360,61 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 
 func _exit_tree() -> void:
-	if net != null and net.results_changed.is_connected(_rebuild_board):
-		net.results_changed.disconnect(_rebuild_board)
+	if net != null and net.results_changed.is_connected(_on_results_changed):
+		net.results_changed.disconnect(_on_results_changed)
+
+
+func _on_results_changed() -> void:
+	_rebuild_board()
+	_update_graph()
+
+
+## 体力のグラフを作り直す。ひとりと協力は自分の(チームの)体力の 1 本、対戦は参加者の体力を色分けして重ねる(他の人の分は届いたものから)。
+func _update_graph() -> void:
+	if _graph == null:
+		return
+	var series: Array = []
+	var own := HpGraph.points_from_log(stats.get("hp_log", PackedFloat32Array()), float(stats.get("hp_step", 0.25)),
+		float(stats.get("hp_t_end", 0.0)), float(stats.get("hp_end", 0.0)))
+	var failed: bool = stats.failed
+	var versus: bool = stats.has("mp") and stats.mp.mode == "versus"
+	for c in _legend.get_children():
+		c.queue_free()
+		_legend.remove_child(c)
+	if versus:
+		var res: Dictionary = net.results if net != null else {}
+		for p in stats.mp.players:
+			var col: Color = MpGame.SLOT_COLORS[int(p.slot) % MpGame.SLOT_COLORS.size()]
+			var me: bool = int(p.id) == int(stats.mp.my_id)
+			var pts := PackedVector2Array()
+			var dead := false
+			if me:
+				pts = own
+				dead = failed
+			elif res.has(p.id) and res[p.id].get("hp", []) is Array and (res[p.id].hp as Array).size() >= 2:
+				pts = HpGraph.points_from_samples(res[p.id].hp, float(res[p.id].get("dur", 0.0)))
+				dead = bool(res[p.id].get("failed", false))
+			if pts.size() >= 2:
+				series.append({"pts": pts, "color": col, "thick": 3.0 if me else 2.0, "fill": me, "end_mark": dead})
+			var item := HBoxContainer.new()
+			item.add_theme_constant_override("separation", 5)
+			var dot := Control.new()
+			dot.custom_minimum_size = Vector2(10, 10)
+			dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			dot.draw.connect(func(): dot.draw_circle(Vector2(5, 5), 5.0, col))
+			item.add_child(dot)
+			item.add_child(UiStyle.label(str(p.name), 12, UiStyle.TEXT if me else UiStyle.TEXT_DIM))
+			_legend.add_child(item)
+	else:
+		series.append({"pts": own, "color": UiStyle.ACCENT, "thick": 3.0, "by_hp": true, "end_mark": failed})
+		if stats.has("mp"):
+			_legend.add_child(UiStyle.label("チーム共通の体力", 12, UiStyle.TEXT_DIM))
+	var t1 := 1.0
+	for s in series:
+		t1 = maxf(t1, (s.pts as PackedVector2Array)[(s.pts as PackedVector2Array).size() - 1].x)
+	var ff: float = float(stats.get("first_fire", -1.0))
+	var t0 := maxf(ff - 1.0, 0.0) if ff >= 0.0 and ff < t1 - 5.0 else 0.0
+	_graph.set_data(series, t0, t1, stats.get("breaks", []), stats.get("hit_log", PackedFloat32Array()), GameSim.GAUGE_LOW_THRESHOLD)
 
 
 ## マルチプレイ: 参加者の成績の一覧。対戦はスコアの高い順(1 位に色。全員が終えたら WIN)、協力は 1 人ずつの GRAZE・被弾。
@@ -354,7 +478,7 @@ func _rebuild_board() -> void:
 			row.add_child(sc)
 			var rk := GameSim.rank_of(false, int(r.res.hits), float(r.res.score), base)
 			row.add_child(UiStyle.chip(rk, UiStyle.rank_color(rk)))
-			row.add_child(UiStyle.label("被弾 %d 回" % int(r.res.hits), 13, UiStyle.TEXT_DIM))
+			row.add_child(UiStyle.label("被弾 %d 回 / %d ms" % [int(r.res.hits), int(r.res.get("hit_ms", 0))], 13, UiStyle.TEXT_DIM))
 			if lead and all_done and rows.size() > 1:
 				row.add_child(UiStyle.chip("WIN", UiStyle.GOLD))
 		else:

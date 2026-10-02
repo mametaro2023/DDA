@@ -62,46 +62,6 @@ static func is_registered(exe: String, prog_id := PROG_ID) -> bool:
 	return registered_command(prog_id).contains(exe.replace("/", "\\"))
 
 
-## osu!(stable / lazer)の実行ファイル。.osz を開く登録(ProgID)から探し、なければ、標準の場所を見る。見つからなければ空文字。
-static func osu_exe() -> String:
-	if not supported():
-		return ""
-	for prog in ["osustable.File.osz", "osu.File.osz", "osu!"]:
-		var out: Array = []
-		if OS.execute("reg", ["query", "HKCR\\" + prog + "\\shell\\open\\command", "/ve"], out) != 0 or out.is_empty():
-			continue
-		var text := str(out[0])
-		var i := text.find("REG_")
-		if i < 0:
-			continue
-		var exe := parse_command_exe(text.substr(text.find(" ", i)).strip_edges())
-		if exe != "" and FileAccess.file_exists(exe):
-			return exe
-	var local := OS.get_environment("LOCALAPPDATA").replace("\\", "/")
-	for p in [local + "/osu!/osu!.exe", local + "/osulazer/current/osu!.exe"]:
-		if local != "" and FileAccess.file_exists(p):
-			return p.replace("/", "\\")
-	return ""
-
-
-## 「"C:\path\app.exe" "%1"」のような起動コマンドから、exe のパスを取り出す。
-static func parse_command_exe(cmd: String) -> String:
-	cmd = cmd.strip_edges()
-	if cmd.begins_with("\""):
-		var j := cmd.find("\"", 1)
-		return cmd.substr(1, j - 1) if j > 0 else ""
-	var k := cmd.to_lower().find(".exe")
-	return cmd.substr(0, k + 4) if k >= 0 else ""
-
-
-## .osz を osu! で開く(起動していなければ起動する)。開始できたら true。
-static func open_in_osu(path: String) -> bool:
-	var exe := osu_exe()
-	if exe == "":
-		return false
-	return OS.create_process(exe, [path.replace("/", "\\")]) > 0
-
-
 ## Windows の「既定のアプリ」の設定を開く。
 static func open_default_apps() -> void:
 	OS.shell_open("ms-settings:defaultapps")

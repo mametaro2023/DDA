@@ -1,12 +1,13 @@
 extends Control
-## 選曲画面。左に曲、右に難易度カード。MOD・操作・音・ゲームの設定は「OPTIONS」(options_panel.gd)に分けてある。
+## 選曲画面。左に曲、右に難易度カード。MOD は下の「MOD」ボタン(mod_panel.gd)、操作・音・画面・ゲームの設定は「設定」(options_panel.gd)に分けてある。
 ## .osz は、プロジェクト直下 / songs / 実行ファイルの隣 / user://songs を自動検出し、ドラッグ&ドロップや「開く」でも追加できる。
 ##
-## 操作: ↑↓ 選択、← → / Tab で「曲 ⇔ 難易度」の切替、Enter 開始、O で設定、Esc でタイトルへ。マウスでも全部できる(難易度のダブルクリックで開始)。
+## 操作: ↑↓ 選択、← → / Tab で「曲 ⇔ 難易度」の切替、Enter 開始、M で MOD、O で設定、Esc でタイトルへ。マウスでも全部できる(難易度のダブルクリックで開始)。
 
-signal play_requested(loader, bm, settings: Dictionary)
+## pre: 選曲のときに作っておいたもの {gen: 選んだ難易度の弾幕(MOD 適用前), audio: 曲全体の音声(あれば)}。プレイ画面が、作り直さず(読み直さず)に使う
+signal play_requested(loader, bm, settings: Dictionary, pre: Dictionary)
 signal back_requested
-## 設定を開く(パネルは main が持つ。どの画面でも開ける)。section: 0=MOD 1=操作 2=音 3=ゲーム
+## 設定を開く(パネルは main が持つ。どの画面でも開ける)。section: 0=操作 1=音 2=画面 3=ゲーム
 signal settings_requested(section: int)
 ## マルチプレイの部屋の曲を選ぶモード(pick_mode = true): 「決定」で、開始せずに選んだ内容を返す(level は MOD 適用後の Lv)
 signal song_picked(loader, bm, settings: Dictionary, level: float)
@@ -15,6 +16,7 @@ const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
+const ModPanel = preload("res://scripts/ui/mod_panel.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
@@ -73,6 +75,9 @@ var _status: Label
 var _audio: AudioStreamPlayer
 var _dialog: FileDialog
 var _options: Control            # 開いている設定パネル(main が持つ。開いている間だけ設定される)
+var _mod_panel: Control          # 開いている MOD パネル
+var _full_audio: AudioStream      # 選んでいる曲の、全体の音声(試聴用は途中から切り出したもの。プレイ画面へ渡す)
+var _full_audio_file := ""
 
 
 func _ready() -> void:
@@ -114,6 +119,7 @@ func _ready() -> void:
 	_song_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_place(_song_scroll, 32, 118, 404, 494)
 	_song_smooth = SmoothScroll.attach(_song_scroll)
+	_song_smooth.active = _lists_active
 	_song_box = VBoxContainer.new()
 	_song_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_song_box.add_theme_constant_override("separation", 6)
@@ -139,6 +145,7 @@ func _ready() -> void:
 	_diff_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_place(_diff_scroll, 468, 168, 780, 384)
 	_diff_smooth = SmoothScroll.attach(_diff_scroll)
+	_diff_smooth.active = _lists_active
 	_diff_box = VBoxContainer.new()
 	_diff_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_diff_box.add_theme_constant_override("separation", 6)
@@ -151,9 +158,16 @@ func _ready() -> void:
 	detail.add_child(_detail_l)
 
 	# --- 下部バー: MOD / OPTIONS / PLAY ---
+	var mod_btn := Button.new()
+	mod_btn.text = "MOD"
+	mod_btn.focus_mode = Control.FOCUS_NONE
+	mod_btn.pressed.connect(open_mods)
+	_intro_nodes.append(_place(mod_btn, 468, 626, 96, 40))
+	_buttons.append(mod_btn)
 	_mod_bar = HBoxContainer.new()
 	_mod_bar.add_theme_constant_override("separation", 8)
-	_intro_nodes.append(_place(_mod_bar, 468, 626, 520, 40))
+	_mod_bar.clip_contents = true
+	_intro_nodes.append(_place(_mod_bar, 576, 626, 412, 40))
 	var opt_btn := Button.new()
 	opt_btn.text = "設定"
 	opt_btn.focus_mode = Control.FOCUS_NONE
@@ -432,11 +446,12 @@ static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	var ratings: Array = gens.map(func(g): return PatternGen.summary(Mods.apply(g, mod_params)))
 	var audio: AudioStream = l.load_audio(first.audio_filename)
 	var from := maxf(first.preview_time / 1000.0, 0.0)
+	var full: AudioStream = audio
 	var cropped := _crop_mp3(audio, from)
 	if cropped != null:   # MP3 の途中から流すと、探す処理で数十 ms 止まる。あらかじめ、その位置から始まる音声にしておく
 		audio = cropped
 		from = 0.0
-	return {"ok": true, "loader": l, "gens": gens, "ratings": ratings, "image": image, "audio": audio, "audio_from": from}
+	return {"ok": true, "loader": l, "gens": gens, "ratings": ratings, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
 
 
 ## MP3 の、from 秒あたりから始まる音声(データの途中から切り出す。MP3 は、途中からでも読み始められる)。MP3 でない・先頭のとき・長さが分からないときは null。
@@ -482,6 +497,8 @@ func _on_song_loaded(res: Dictionary) -> void:
 		tex = ImageTexture.create_from_image(res.image)
 	_set_background(tex)
 	_gens = res.gens
+	_full_audio = res.audio_full
+	_full_audio_file = str(res.audio_file)
 	_ratings = res.ratings
 	_diff_sel = mini(2, _gens.size() - 1)
 	# 直前にプレイした曲に戻ったときは、そのとき選んだ難易度を選んだ状態にする
@@ -491,6 +508,8 @@ func _on_song_loaded(res: Dictionary) -> void:
 				_diff_sel = k2
 	_lv_shown.clear()
 	_rebuild_diff_cards(true)
+	if _mod_panel != null:   # MOD パネルを開いたまま曲が読み込まれた
+		_mod_panel.refresh_info()
 	_audio.stop()
 	if res.audio != null:
 		await get_tree().process_frame   # カードを作る処理と、同じフレームにしない(音の開始も、少し時間がかかる)
@@ -638,8 +657,8 @@ func _select_diff(i: int) -> void:
 	_restyle_all()
 	_diff_smooth.scroll_to_control(_diff_cards[i])
 	_update_detail()
-	if _options != null and old != i:
-		_options.refresh_mod_info()
+	if _mod_panel != null and old != i:
+		_mod_panel.refresh_info()
 
 
 ## 選択中の難易度の詳細(弾速・弾径・弾数・長さ)。
@@ -662,16 +681,21 @@ func _refresh_mod_bar() -> void:
 		c.queue_free()
 	var p := Mods.params(settings.mods)
 	if p.ids.is_empty():
-		_mod_bar.add_child(UiStyle.label("MOD なし", 13, UiStyle.TEXT_FAINT))
+		var none := UiStyle.label("MOD なし", 13, UiStyle.TEXT_FAINT)
+		none.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		_mod_bar.add_child(none)
 		return
 	var k := 0
 	for id in p.ids:
 		var m := Mods.find(id)
 		var chip := UiStyle.chip(m.name, m.color)
+		chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		_mod_bar.add_child(chip)
 		UiStyle.pop_scale(chip, 0.5, 0.35, 0.05 * k)   # チップは、弾んで現れる
 		k += 1
-	_mod_bar.add_child(UiStyle.label("ベーススコア ×%.4f" % p.score_mul, 13, UiStyle.TEXT_DIM))
+	var sc := UiStyle.label("ベーススコア ×%.4f" % p.score_mul, 13, UiStyle.TEXT_DIM)
+	sc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_mod_bar.add_child(sc)
 
 
 # --- 設定パネル ---
@@ -680,25 +704,48 @@ func open_options(section := 0) -> void:
 	settings_requested.emit(section)
 
 
-## 設定パネル(main が持つ)で、設定が変わった。MOD が変わったら、難易度を測り直す。
-func on_settings_changed(kind: String) -> void:
+## MOD パネルを開く。
+func open_mods() -> void:
+	if _mod_panel != null or _options != null or _launching:
+		return
+	var p := ModPanel.new()
+	p.theme = UiStyle.make_theme()
+	p.setup(settings, _mod_level)
+	p.changed.connect(_on_mods_changed)
+	p.closed.connect(_close_mods)
+	_mod_panel = p
+	add_child(p)
+
+
+## MOD が変わった: 難易度を測り直す。
+func _on_mods_changed() -> void:
 	if _loader == null:
 		return
-	if kind == "mods":
-		_rate_all()
-		_rebuild_diff_cards()
+	_rate_all()
+	_rebuild_diff_cards()
+	if _mod_panel != null:
+		_mod_panel.refresh_info()
 
 
-## 設定パネルの MOD 欄に出す、選択中の難易度の MOD 適用後 Lv。
-func _mod_preview_text() -> String:
+func _close_mods() -> void:
+	if _mod_panel == null:
+		return
+	var p := _mod_panel
+	_mod_panel = null
+	Settings.save_all(settings)
+	p.queue_free()
+
+
+## MOD パネルに出す、選択中の難易度の MOD 適用後 Lv(難易度がなければ -1)。
+func _mod_level() -> float:
 	if _diff_sel < 0 or _diff_sel >= _ratings.size():
-		return ""
-	var r: Dictionary = _ratings[_diff_sel]
-	var bm = _loader.difficulties[_diff_sel]
-	var s := "選択中の難易度  %s   Lv %.2f" % [bm.version, r.level]
-	if absf(r.level - r.base_level) >= 0.005:
-		s += "   (MODなし %.2f)" % r.base_level
-	return s
+		return -1.0
+	return float(_ratings[_diff_sel].level)
+
+
+## 曲・難易度の一覧がホイールを受け付けるか(MOD パネルや設定パネルが上に重なっているときは、受け付けない)。
+func _lists_active() -> bool:
+	return _mod_panel == null and _options == null
 
 
 # --- 開始 ---
@@ -722,7 +769,11 @@ func _start() -> void:
 	if pick_mode:
 		song_picked.emit(_loader, _loader.difficulties[_diff_sel], settings, float(_ratings[_diff_sel].level))
 		return
-	play_requested.emit(_loader, _loader.difficulties[_diff_sel], settings)
+	var bm = _loader.difficulties[_diff_sel]
+	var pre := {"gen": _gens[_diff_sel]}
+	if _full_audio != null and bm.audio_filename == _full_audio_file:
+		pre["audio"] = _full_audio
+	play_requested.emit(_loader, bm, settings, pre)
 
 
 ## 発進の演出。選んだ難易度のカードと曲名だけを残して、ほかをなめらかに退かせる。
@@ -762,7 +813,7 @@ func _launch_anim() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if _options != null or _launching or not (event is InputEventKey and event.pressed):
+	if _options != null or _mod_panel != null or _launching or not (event is InputEventKey and event.pressed):
 		return
 	match event.keycode:
 		KEY_UP, KEY_DOWN:
@@ -788,6 +839,10 @@ func _input(event: InputEvent) -> void:
 				UiSfx.play("back")
 				_audio.stop()
 				back_requested.emit()
+			get_viewport().set_input_as_handled()
+		KEY_M:
+			if not event.echo:
+				open_mods()
 			get_viewport().set_input_as_handled()
 		KEY_O:
 			if not event.echo:

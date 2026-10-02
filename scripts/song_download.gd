@@ -1,6 +1,6 @@
 extends Node
 ## 曲(.osz)のダウンロードと取り込み(マルチプレイで、部屋の曲を持っていないとき)。
-## osu! の公式サイトはログインが要るので、ログイン不要のミラーサイト(曲の ID だけで取れる)を順に試す。
+## osu! の公式サイトはログインが要るので、ログイン不要のミラーサイト(曲の ID だけで取れる)を順に試す。osu.direct を最優先にする(たいていの曲が取れるため)。
 ## ダウンロードしたファイルは、zip として読めること・osu!standard の譜面を含むこと・(指定があれば)部屋の譜面と同じ中身の難易度を含むことを確かめてから、
 ## ユーザーデータの songs に取り込む(OszImport)。確かめられなければ捨てて、次のミラーを試す。ボタンを押したときだけ通信する。
 
@@ -13,9 +13,9 @@ signal finished(result: Dictionary)
 
 ## ミラーの一覧。url の %d に曲の ID が入る(テストでは差し替える)
 var mirrors: Array = [
+	{"name": "osu.direct", "url": "https://osu.direct/api/d/%d"},
 	{"name": "Nerinyan", "url": "https://api.nerinyan.moe/d/%d?noVideo=true"},
 	{"name": "catboy.best", "url": "https://catboy.best/d/%dn"},
-	{"name": "osu.direct", "url": "https://osu.direct/api/d/%d"},
 ]
 const MAX_BYTES := 150 * 1024 * 1024
 const MIN_BYTES := 2000

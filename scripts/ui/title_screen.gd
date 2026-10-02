@@ -1,9 +1,9 @@
 extends Control
-## タイトル画面。「プレイ / マルチプレイ / 遊び方 / 設定」の 4 項目。背景は、ランダムに選んだ曲の画像で、その曲を流しておく
+## タイトル画面。「プレイ / マルチプレイ / 遊び方 / 設定 / 終了」の 5 項目。背景は、ランダムに選んだ曲の画像で、その曲を流しておく
 ## (曲が終わったら、別のランダムな曲へ)。遊び方と設定は、この画面の上に重ねるパネル(曲は流れ続ける)。
 ## 曲が 1 つもないときは、無音で暗い背景のまま。
 ##
-## 操作: ↑↓ で選び、Enter で決定。マウスでも操作できる。
+## 操作: ↑↓ で選び、Enter で決定。マウスでも操作できる。Esc で終了の確認(全画面のときはウィンドウの ✕ が見えないため、「終了」の項目もある)。
 
 signal play_requested
 signal multi_requested
@@ -15,20 +15,21 @@ const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
 const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
+const QuitPanel = preload("res://scripts/ui/quit_panel.gd")
 const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 const BG_TINT := Color(0.4, 0.4, 0.46)
-const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"]]
+const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"], ["終了", "QUIT"]]
 const MUSIC_DB := -4.0
 const ITEM_X := 104.0
-const ITEM_Y := 380.0
+const ITEM_Y := 340.0
 const ITEM_W := 360.0
-const ITEM_H := 58.0
-const ITEM_GAP := 12.0
-const PITCHES := [1.0, 1.122, 1.26, 1.5]   # 項目ごとの選択音の高さ(↑↓ で音階のように聞こえる)
+const ITEM_H := 54.0
+const ITEM_GAP := 10.0
+const PITCHES := [1.0, 1.122, 1.26, 1.5, 1.68]   # 項目ごとの選択音の高さ(↑↓ で音階のように聞こえる)
 
 var settings: Dictionary = {}
 var update_info: Dictionary = {}   # 新しいバージョンがあるとき、main が渡す(あとから見つかった場合は show_update)
@@ -312,6 +313,8 @@ func _activate(i: int) -> void:
 		3:
 			UiSfx.play("open")
 			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
+		4:
+			_open(QuitPanel.new())
 
 
 ## 決めた項目から、水色の輪と粒が広がる。
@@ -372,6 +375,10 @@ func _input(event: InputEvent) -> void:
 		KEY_ENTER, KEY_KP_ENTER:
 			if not event.echo:
 				_activate(_sel)
+			get_viewport().set_input_as_handled()
+		KEY_ESCAPE:
+			if not event.echo:
+				_activate(ITEMS.size() - 1)   # 終了の確認
 			get_viewport().set_input_as_handled()
 
 

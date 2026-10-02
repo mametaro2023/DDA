@@ -19,6 +19,10 @@ extends RefCounted
 
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const NetCore = preload("res://scripts/net/net.gd")
+const HpGraph = preload("res://scripts/ui/hp_graph.gd")
+
+## 最終成績に付ける体力グラフ用のサンプル数(NetCore.HP_SAMPLES_MAX 以下)
+const HP_SAMPLES := 48
 
 const STATE_INTERVAL := 1.0 / 30.0
 const COOP_INTERVAL := 1.0 / 20.0
@@ -345,7 +349,9 @@ func _score_of(id: int) -> float:
 func final_stats(stats: Dictionary) -> Dictionary:
 	return {"name": name_of(my_id), "score": float(stats.score), "failed": bool(stats.failed),
 		"hits": sim.own_hits, "graze": sim.own_graze, "hit_ms": int(round(sim.own_hit_time * 1000.0)),
-		"damage_factor": float(stats.damage_factor), "progress": float(stats.progress)}
+		"damage_factor": float(stats.damage_factor), "progress": float(stats.progress),
+		"hp": HpGraph.downsample(HpGraph.points_from_log(stats.get("hp_log", PackedFloat32Array()), float(stats.get("hp_step", 0.25)), float(stats.get("hp_t_end", 0.0)), float(stats.get("hp_end", 0.0))), HP_SAMPLES),
+		"dur": float(stats.get("hp_t_end", 0.0))}
 
 
 func send_final(stats: Dictionary) -> void:

@@ -11,6 +11,7 @@ const TEXT_DIM := Color(1, 1, 1, 0.58)
 const TEXT_FAINT := Color(1, 1, 1, 0.36)
 const DANGER := Color(1.0, 0.4, 0.42)
 const GOLD := Color(1.0, 0.88, 0.4)
+const GOOD := Color(0.5, 1.0, 0.7)
 
 ## 難易度(Lv)の色の停留点。Lv に応じて連続的に変わる。
 const LEVEL_STOPS := [

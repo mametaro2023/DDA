@@ -11,6 +11,8 @@ const STEP := 88.0        # ホイール 1 目盛りの距離(px)
 const RATE := 16.0        # 目標へ近づく速さ(大きいほど速い)
 
 var sc: ScrollContainer
+## false を返すとき、ホイールを受け付けない(上にパネルが重なっているときなど)。未設定なら常に受け付ける
+var active: Callable = Callable()
 var _pos := 0.0           # 今の位置(小数)
 var _target := 0.0
 var _last := 0           # こちらが最後に設定した scroll_vertical(ちがえば、つまみのドラッグなど外からの移動)
@@ -39,6 +41,8 @@ func _input(event: InputEvent) -> void:
 	if event.button_index != MOUSE_BUTTON_WHEEL_UP and event.button_index != MOUSE_BUTTON_WHEEL_DOWN:
 		return
 	if not sc.is_visible_in_tree() or _max_scroll() <= 0.0:
+		return
+	if active.is_valid() and not active.call():
 		return
 	if HudOverlay.meter_visible or Input.is_key_pressed(KEY_CTRL):   # 音量メーターが出ているとき・Ctrl は、音量に使う
 		return

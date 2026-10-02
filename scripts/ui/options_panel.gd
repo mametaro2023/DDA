@@ -1,30 +1,28 @@
 extends Control
-## 設定パネル(選曲画面の上に重ねる)。MOD / 操作 / 音 / ゲーム の 4 セクション。
+## 設定パネル(選曲画面の上に重ねる)。操作 / 音 / 画面 / ゲーム の 4 セクション(MOD は、難易度選択画面の MOD ボタンから)。
 ## settings(Settings.load_all の辞書)を直接書き換え、変えたら changed(kind) を出す。保存は閉じるときに呼び出し側が行う。
-##   kind: "mods" | "volume" | "control" | "misc"
+##   kind: "volume" | "control" | "misc"
 
 signal changed(kind: String)
 signal closed
 
-const Mods = preload("res://scripts/mods.gd")
 const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
 const FileAssoc = preload("res://scripts/file_assoc.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
-const UiFx = preload("res://scripts/ui/ui_fx.gd")
+const ToggleCard = preload("res://scripts/ui/toggle_card.gd")
+const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
 
-const SECTIONS := ["MOD", "操作", "音", "ゲーム"]
+const SECTIONS := ["操作", "音", "画面", "ゲーム"]
 
 var settings: Dictionary
-## MOD 適用後の Lv のプレビュー文(選択中の難易度)を返す Callable(-> String)
-var preview: Callable = Callable()
 
 var _pages: Array = []
 var _nav: Array = []
-var _mod_cards := {}
-var _mod_summary: Label
-var _mod_preview: Label
+var _size_label: Label
+var _size_btns: Array = []
+var _fullscreen_btn: Button
 var _dim: ColorRect
 var _panel: PanelContainer
 var _closing := false
@@ -34,9 +32,8 @@ var _nav_tween: Tween
 var _cur := -1               # 表示中のセクション
 
 
-func setup(p_settings: Dictionary, p_preview: Callable) -> void:
+func setup(p_settings: Dictionary) -> void:
 	settings = p_settings
-	preview = p_preview
 
 
 func _ready() -> void:
@@ -119,7 +116,7 @@ func _ready() -> void:
 	root.add_child(content_margin)
 	var stack := Control.new()
 	content_margin.add_child(stack)
-	_pages = [_build_mods(), _build_control(), _build_audio(), _build_game()]
+	_pages = [_build_control(), _build_audio(), _build_screen(), _build_game()]
 	for p in _pages:
 		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		stack.add_child(p)
@@ -154,8 +151,8 @@ func _show(i: int) -> void:
 			UiStyle.tween(c, "modulate:a", 0.0, 1.0, 0.3, 0.03 * j)
 			j += 1
 	_move_nav_indicator(prev < 0)
-	if i == 0:
-		refresh_mod_info()
+	if i == 2:
+		_refresh_size()
 
 
 ## 選択の枠を、選んだ項目の位置へ動かす(行き過ぎてから戻る。最初だけ、レイアウトが決まってから、その場に置く)。
@@ -234,69 +231,13 @@ func _page(title: String, sub: String) -> VBoxContainer:
 	return v
 
 
-## トグルのカード。タイトル・説明・(任意の)右端の文字。on_toggle(新しい状態) を呼ぶ。
+## トグルのカード(toggle_card.gd)。on_toggle(新しい状態) を呼ぶ。
 func _toggle_card(title: String, lines: String, color: Color, on: bool, right_text: String, on_toggle: Callable) -> PanelContainer:
-	var c := PanelContainer.new()
-	c.mouse_filter = Control.MOUSE_FILTER_STOP
-	var state := {"on": on}
-	var ind := PanelContainer.new()
-	ind.custom_minimum_size = Vector2(18, 18)
-	ind.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var apply := func():
-		var s := state.on as bool
-		c.add_theme_stylebox_override("panel", UiStyle.box(Color(color.r, color.g, color.b, 0.10 if s else 0.035),
-			Color(color.r, color.g, color.b, 0.8 if s else 0.09), 1, 6, 16, 12))
-		ind.add_theme_stylebox_override("panel", UiStyle.box(Color(color.r, color.g, color.b, 0.95) if s else Color(0, 0, 0, 0),
-			Color(color.r, color.g, color.b, 0.9 if s else 0.35), 1, 9))
-	apply.call()
-	var h := HBoxContainer.new()
-	h.add_theme_constant_override("separation", 14)
-	c.add_child(h)
-	var ind_wrap := CenterContainer.new()
-	ind_wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	ind_wrap.add_child(ind)
-	h.add_child(ind_wrap)
-	var col := VBoxContainer.new()
-	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col.add_theme_constant_override("separation", 3)
-	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_child(UiStyle.label(title, 18, color, true))
-	if lines != "":
-		var l := UiStyle.label(lines, 13, UiStyle.TEXT_DIM)
-		l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
-		col.add_child(l)
-	h.add_child(col)
-	if right_text != "":
-		var chip_wrap := CenterContainer.new()
-		chip_wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		chip_wrap.add_child(UiStyle.chip(right_text, color))
-		h.add_child(chip_wrap)
-	c.mouse_entered.connect(func(): UiSfx.play("hover", 0.95))
-	c.mouse_exited.connect(func(): UiStyle._card_press(c, 1.0, 0.2, false))
-	c.gui_input.connect(func(ev: InputEvent):
-		if not (ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT):
-			return
-		if not ev.pressed:
-			UiStyle._card_press(c, 1.0, 0.32, true)
-			return
-		UiStyle._card_press(c, 0.98, 0.06, false)
-		state.on = not state.on
-		apply.call()
-		ind.pivot_offset = ind.size * 0.5
-		UiStyle.spring(ind, "scale", Vector2(0.4, 0.4), Vector2.ONE, 0.42)
-		UiSfx.play("on" if state.on else "off")
-		if state.on:   # 入れたときは、つまみから粒が弾ける
-			UiFx.burst(self, ind.get_global_rect().get_center() - global_position, color, 9, 120.0, 0.5, 2.6)
-		on_toggle.call(state.on))
-	# 外から見た目を更新できるように、状態をメタに持たせる
-	c.set_meta("state", state)
-	c.set_meta("apply", apply)
-	return c
+	return ToggleCard.make(self, title, lines, color, on, right_text, on_toggle)
 
 
 func _set_toggle(c: PanelContainer, on: bool) -> void:
-	c.get_meta("state").on = on
-	c.get_meta("apply").call()
+	ToggleCard.set_on(c, on)
 
 
 ## スライダー 1 行: 見出し + スライダー + 値。値の表示は fmt(値) -> String。
@@ -328,61 +269,6 @@ func _slider_row(parent: Control, cap: String, lo: float, hi: float, step: float
 
 
 # --- 各セクション ---
-
-func _build_mods() -> Control:
-	var v := _page("MOD", "")
-	var mods: Array = settings.mods
-	# カードが増えても合計表示が隠れないよう、カード一覧だけをスクロールにする
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.custom_minimum_size = Vector2(0, 120)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	v.add_child(scroll)
-	var list := VBoxContainer.new()
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_theme_constant_override("separation", 10)
-	scroll.add_child(list)
-	for m in Mods.ALL:
-		var parts: PackedStringArray = (m.desc as String).split(" / ")
-		var effects: Array = []
-		for p in parts:
-			if not p.begins_with("ベーススコア"):
-				effects.append(p)
-		var pct := int(round((float(m.get("score_mul", 1.0)) - 1.0) * 100.0))
-		var card := _toggle_card("%s   %s" % [m.name, m.tag], "  /  ".join(effects), m.color, mods.has(m.id), "ベーススコア %+d%%" % pct,
-			func(on: bool): _on_mod_toggled(m.id, on))
-		list.add_child(card)
-		_mod_cards[m.id] = card
-	v.add_child(UiStyle.hline())
-	_mod_summary = UiStyle.label("", 16, UiStyle.TEXT)
-	v.add_child(_mod_summary)
-	_mod_preview = UiStyle.label("", 14, UiStyle.TEXT_DIM)
-	v.add_child(_mod_preview)
-	return v
-
-
-func _on_mod_toggled(id: String, on: bool) -> void:
-	var mods: Array = settings.mods
-	if on and not mods.has(id):
-		mods.append(id)
-	elif not on:
-		mods.erase(id)
-	settings.mods = mods
-	changed.emit("mods")
-	refresh_mod_info()
-
-
-## 合計ベーススコアと、選択中の難易度の MOD 適用後 Lv を更新する。
-func refresh_mod_info() -> void:
-	if _mod_summary == null:
-		return
-	var p := Mods.params(settings.mods)
-	if p.ids.is_empty():
-		_mod_summary.text = "MOD なし     ベーススコア 1,000,000"
-	else:
-		_mod_summary.text = "合計  ベーススコア ×%.4f  =  %s" % [p.score_mul, UiStyle.fmt(int(round(1000000.0 * p.score_mul)))]
-	_mod_preview.text = preview.call() if preview.is_valid() else ""
-
 
 func _build_control() -> Control:
 	var v := _page("操作", "")
@@ -442,6 +328,74 @@ func _build_audio() -> Control:
 	return v
 
 
+func _build_screen() -> Control:
+	var v := _page("画面", "")
+	v.add_child(_toggle_card("垂直同期", "画面の更新に合わせて描きます(ずれ・ちぎれを抑える)。切ると遅延が少し減りますが、ずれが出ることがあります", UiStyle.ACCENT,
+		bool(settings.vsync), "", func(on: bool):
+			settings.vsync = on
+			Settings.apply_vsync(on)))
+	v.add_child(_toggle_card("FPS を表示", "画面の右下に、描画と処理の FPS を出します(プレイ中は、弾の判定の計算回数も出ます)。F3 キーでも一時的に切り替えられます", UiStyle.ACCENT,
+		FpsOverlay.enabled, "", func(on: bool):
+			settings.show_fps = on
+			FpsOverlay.enabled = on))
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 8)
+	v.add_child(gap)
+	v.add_child(UiStyle.label("解像度(ウィンドウの大きさ)", 16, UiStyle.TEXT, true))
+	var seg := HBoxContainer.new()
+	seg.add_theme_constant_override("separation", 8)
+	var group := ButtonGroup.new()
+	for sz in Settings.WINDOW_SIZES:
+		var b := Button.new()
+		b.text = "%d × %d" % [sz.x, sz.y]
+		b.toggle_mode = true
+		b.button_group = group
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(130, 34)
+		var size: Vector2i = sz
+		b.pressed.connect(func():
+			settings.window_size = "%dx%d" % [size.x, size.y]
+			Settings.apply_window_size(size)
+			_refresh_size.call_deferred())
+		b.set_meta("size", size)
+		seg.add_child(b)
+		_size_btns.append(b)
+	var fs_btn := Button.new()
+	fs_btn.text = "全画面"
+	fs_btn.toggle_mode = true
+	fs_btn.button_group = group
+	fs_btn.focus_mode = Control.FOCUS_NONE
+	fs_btn.custom_minimum_size = Vector2(130, 34)
+	fs_btn.pressed.connect(func():
+		settings.window_size = "fullscreen"
+		Settings.apply_fullscreen()
+		_refresh_size.call_deferred())
+	seg.add_child(fs_btn)
+	_fullscreen_btn = fs_btn
+	v.add_child(seg)
+	_size_label = UiStyle.label("", 13, UiStyle.TEXT_DIM)
+	v.add_child(_size_label)
+	var hint := UiStyle.label("ウィンドウの枠をドラッグして、好きな大きさにもできます(縦横の比は保たれ、余白は黒くなります)。画面に入らない大きさは選べません。画面いっぱいにしたいときは「全画面」を選んでください(大きさを選び直すと、ウィンドウに戻ります)。", 12, UiStyle.TEXT_FAINT)
+	hint.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	v.add_child(hint)
+	return v
+
+
+## いまのウィンドウの大きさを表示し、候補のうち同じ大きさのものを選んだ状態にする。画面に入らない候補は押せなくする。
+func _refresh_size() -> void:
+	if _size_label == null:
+		return
+	var cur := DisplayServer.window_get_size()
+	var mode := DisplayServer.window_get_mode()
+	_size_label.text = "現在  %d × %d%s" % [cur.x, cur.y, "(全画面)" if mode == DisplayServer.WINDOW_MODE_FULLSCREEN or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN else ""]
+	var full: bool = mode == DisplayServer.WINDOW_MODE_FULLSCREEN or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
+	for b in _size_btns:
+		var sz: Vector2i = b.get_meta("size")
+		b.set_pressed_no_signal(sz == cur and not full)
+		b.disabled = not Settings.size_fits(sz)
+	_fullscreen_btn.set_pressed_no_signal(full)
+
+
 func _build_game() -> Control:
 	var v := _page("ゲーム", "")
 	var o := _slider_row(v, "オフセット", -300, 300, 5, float(settings.offset_ms), func(x): return "%+d ms" % int(x))
@@ -454,27 +408,12 @@ func _build_game() -> Control:
 	v.add_child(gap_u)
 	v.add_child(_toggle_card("起動時に更新を確認する", "新しいバージョンがあれば、タイトル画面でお知らせします(GitHub に問い合わせます)", UiStyle.ACCENT,
 		bool(settings.check_update), "", func(on: bool): settings.check_update = on))
-	# .osz を開くとき(Windows)。開いたときの動き + このアプリの関連付け(書き出した版のみ。既定のアプリは、Windows の設定で選ぶ)
+	# .osz を開くとき(Windows)。このアプリの関連付け(書き出した版のみ。既定のアプリは、Windows の設定で選ぶ)
 	if FileAssoc.supported():
 		var gap_a := Control.new()
 		gap_a.custom_minimum_size = Vector2(0, 8)
 		v.add_child(gap_a)
 		v.add_child(UiStyle.label(".osz ファイルを開いたとき", 16, UiStyle.TEXT, true))
-		var seg := HBoxContainer.new()
-		seg.add_theme_constant_override("separation", 8)
-		var group := ButtonGroup.new()
-		for m in [["ask", "毎回選ぶ"], ["dda", "このアプリで開く"], ["osu", "osu! で開く"]]:
-			var b := Button.new()
-			b.text = m[1]
-			b.toggle_mode = true
-			b.button_group = group
-			b.focus_mode = Control.FOCUS_NONE
-			b.custom_minimum_size = Vector2(150, 34)
-			b.button_pressed = str(settings.osz_open) == m[0]
-			var mode: String = m[0]
-			b.pressed.connect(func(): settings.osz_open = mode)
-			seg.add_child(b)
-		v.add_child(seg)
 		if OS.has_feature("template"):
 			var row := HBoxContainer.new()
 			row.add_theme_constant_override("separation", 12)

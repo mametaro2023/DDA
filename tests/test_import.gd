@@ -140,8 +140,6 @@ func _init() -> void:
 		_check(SL.find_by_md5(k0).size() > 0 and SL.find_by_md5("0".repeat(32)).is_empty(), "識別子から、その譜面を含む .osz を探せる(なければ空)")
 		var inf: Dictionary = SL.info("C:/Desktop/my_apps/DDA/22699 Len - U.N. Owen was her.osz")
 		_check(inf.ok and inf.title != "" and inf.ids.size() >= 3 and inf.md5 != "", "曲の索引: 題名・識別子を、曲を全部開かずに得る(%s / %d 譜面)" % [inf.title, inf.ids.size()])
-	var FA = load("res://scripts/file_assoc.gd")
-	_check(FA.parse_command_exe("\"C:\\Users\\A B\\AppData\\Local\\osu!\\osu!.exe\" \"%1\"") == "C:\\Users\\A B\\AppData\\Local\\osu!\\osu!.exe" and FA.parse_command_exe("C:\\osu\\osu!.exe %1") == "C:\\osu\\osu!.exe" and FA.parse_command_exe("") == "", "起動コマンドから exe を取り出す")
 
 	# アプリのバージョン比較(アプリ内アップデート)
 	var Up = load("res://scripts/updater.gd")

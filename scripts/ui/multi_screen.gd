@@ -432,8 +432,17 @@ func _refresh_lobby() -> void:
 		var start := _button("ゲーム開始", _on_start, true)
 		start.disabled = reason != ""
 		_place(start, 1088, 626, 160, 44)
-		_status = UiStyle.label(reason, 13, UiStyle.TEXT_DIM)
+		_status = UiStyle.label(reason if reason != "" else "全員の準備ができました", 13, UiStyle.TEXT_DIM if reason != "" else UiStyle.GOOD)
 		_place(_status, 668, 638, 400, 20)
+	elif not song.is_empty():
+		var mine: Dictionary = net.players.get(net.my_id, {})
+		var have_song: bool = bool(mine.get("has_song", false))
+		var is_ready: bool = bool(mine.get("ready", false))
+		var rb := _button("準備を取り消す" if is_ready else "準備完了", func(): net.set_my_ready(not is_ready), not is_ready)
+		rb.disabled = not have_song
+		_place(rb, 1088, 626, 160, 44)
+		var hint := "ホストが開始するのを待っています" if is_ready else ("準備ができたら「準備完了」を押してください" if have_song else "曲を入れると、準備完了にできます")
+		_place(UiStyle.label(hint, 13, UiStyle.GOOD if is_ready else UiStyle.TEXT_DIM), 668, 638, 400, 20)
 	_update_bg()
 	if not _lobby_built:   # 最初だけ、パネルが左右から滑り込む
 		_lobby_built = true
@@ -517,6 +526,12 @@ func _start_blocker() -> String:
 	for id in net.players:
 		if not net.players[id].has_song:
 			return "%s さんがこの曲を持っていません" % str(net.players[id].name)
+	var waiting := 0
+	for id in net.players:
+		if id != 1 and not bool(net.players[id].get("ready", false)):
+			waiting += 1
+	if waiting > 0:
+		return "全員の準備を待っています(あと %d 人)" % waiting
 	return ""
 
 
@@ -544,7 +559,15 @@ func _player_row(id: int, is_host: bool) -> Control:
 	row.add_child(sp)
 	var has: bool = bool(p.has_song)
 	if not net.room.get("song", {}).is_empty():
-		row.add_child(UiStyle.label("曲あり" if has else "曲なし", 13, UiStyle.TEXT_DIM if has else UiStyle.DANGER))
+		if not has:
+			row.add_child(UiStyle.label("曲なし", 13, UiStyle.DANGER))
+		elif int(p.slot) != 0:   # 参加者: 準備完了か(ホストは開始を押す人なので出さない)
+			if bool(p.get("ready", false)):
+				var rdy := UiStyle.chip("準備完了", UiStyle.GOOD)
+				rdy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+				row.add_child(rdy)
+			else:
+				row.add_child(UiStyle.label("準備中…", 13, UiStyle.TEXT_FAINT))
 	if is_host and id != 1:
 		var pl := UiStyle.label("%.0f ms" % float(p.ping) if float(p.ping) >= 0.0 else "- ms", 12, UiStyle.TEXT_FAINT)
 		pl.custom_minimum_size = Vector2(56, 0)

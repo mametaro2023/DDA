@@ -59,6 +59,12 @@ const SCORE_GRAZE := 30000.0     # グレイズのボーナスの最大(3%)
 const GRAZE_TAU_PER_EVENT := 0.15
 const GRAZE_TAU_MIN := 10.0
 
+## 結果画面の体力グラフ用の記録: 曲の時刻 0 から GAUGE_LOG_STEP 秒ごとのゲージ(0..1)。i 番目は i × GAUGE_LOG_STEP 秒のとき
+const GAUGE_LOG_STEP := 0.25
+
+## 判定の計算(_update)を行った回数の通算(FPS 表示の「判定 /s」用)
+static var steps_total := 0
+
 var field: Node2D
 var events: Array = []
 var gizmos: Array = []
@@ -112,6 +118,10 @@ var break_clear_t := -1.0
 var break_end_t := 0.0
 var death_pos := Vector2.ZERO
 var death_time := 0.0
+var gauge_log := PackedFloat32Array()   # ゲージの推移(GAUGE_LOG_STEP 秒ごと)
+var hit_log := PackedFloat32Array()     # 自分が新しく被弾した時刻(秒)
+var log_end_t := 0.0                    # 最後に記録した時刻(秒)
+var _log_i := 0                         # 次に記録するサンプルの番号
 
 ## このステップで起きたこと(描画/音声側が読む)
 var sfx_queue: Array = []
@@ -321,6 +331,7 @@ func _move_player(p: Vector2) -> void:
 
 
 func _update(now: float, dt: float) -> void:
+	steps_total += 1
 	sfx_queue.clear()
 	just_hit = false
 	# 予兆の開始
@@ -369,6 +380,7 @@ func _update(now: float, dt: float) -> void:
 			else:
 				contact_hits += 1
 			just_hit = true
+			hit_log.append(now)
 		_no_hit_time = 0.0
 		own_hit_time += dt
 		if authority:
@@ -388,6 +400,7 @@ func _update(now: float, dt: float) -> void:
 			gauge = minf(gauge + GAUGE_REGEN * dt, 1.0)
 
 	_update_poison(dt, resting)
+	_record_gauge(now)
 
 	# 進行率: 曲の進行(時間)とは別に、スコア用の進行率は「発射した弾数」で進める
 	progress = clampf(now / maxf(end_time, 0.001), 0.0, 1.0)
@@ -417,6 +430,16 @@ func _update(now: float, dt: float) -> void:
 		_update_score()
 		if net_mode == "coop":
 			net_events.append({"k": "clear", "st": net_state()})
+
+
+## ゲージの推移を GAUGE_LOG_STEP 秒ごとに記録する(曲の時刻が 0 になってから。時刻が飛んだときは、その間は同じ値で埋める)。
+func _record_gauge(now: float) -> void:
+	if now < 0.0:
+		return
+	log_end_t = now
+	while float(_log_i) * GAUGE_LOG_STEP <= now and _log_i < 20000:
+		gauge_log.append(clampf(gauge, 0.0, 1.0))
+		_log_i += 1
 
 
 ## いまの時刻・自機の位置で受けるデバフを決める(動く前に呼ぶ。休憩では効かない)。

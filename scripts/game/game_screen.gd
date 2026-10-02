@@ -162,6 +162,10 @@ var _kiai_a := 0.0        # キアイ中か(0..1。なめらかに出入りす�
 var _beat_glow := 0.0     # 今の光の強さ 0..1(キアイ中、拍の頭で立ち上がって、次の拍へ向けて消える)
 
 
+## 選曲で作っておいたもの {gen: 弾幕(MOD 適用前), audio: 曲全体の音声}。ないものは、ここで作る・読む
+var pre: Dictionary = {}
+
+
 func setup(p_loader, p_bm, p_settings: Dictionary) -> void:
 	loader = p_loader
 	bm = p_bm
@@ -222,7 +226,7 @@ func _ready() -> void:
 	# 音声
 	_audio = AudioStreamPlayer.new()
 	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
-	_audio.stream = loader.load_audio(bm.audio_filename)
+	_audio.stream = pre.audio if pre.has("audio") else loader.load_audio(bm.audio_filename)
 	add_child(_audio)
 	_sfx = Sfx.new()
 	_sfx.volume = int(settings.get("sfx_volume", 70)) / 100.0
@@ -230,7 +234,9 @@ func _ready() -> void:
 	add_child(_sfx)
 
 	# 弾幕生成 + シミュ
-	gen = PatternGen.generate(bm, {"density_mul": settings.get("density_mul", 1.0)})
+	# 弾幕: 選曲のときに作ったもの(MOD 適用前)があれば、それを使う(作り直すと、曲によっては 0.3 秒ほど止まる)
+	var dm := float(settings.get("density_mul", 1.0))
+	gen = pre.gen if (not pre.get("gen", {}).is_empty() and is_equal_approx(dm, 1.0)) else PatternGen.generate(bm, {"density_mul": dm})
 	_mods = Mods.params(settings.get("mods", []))
 	gen = Mods.apply(gen, _mods)   # MOD を掛け、その弾幕で難易度(Lv)を測り直す
 	_rate = _mods.rate
@@ -552,7 +558,9 @@ func _process(delta: float) -> void:
 		for s in _sfx_pending:
 			_sfx.play(s)
 		if _hit_started:
-			_sfx.play("hit")  # 新しい被弾の開始時に 1 回
+			_sfx.play("hit")  # 新しい被弾の開始時に 1 回(触れている間は、下の touch_damage がジジジと鳴らし続ける)
+		if _hit_any:
+			_sfx.touch_damage(1.0 - sim.gauge)
 	_sfx_pending.clear()
 	_hit_started = false
 	_hit_glow = 1.0 if _hit_any else _hit_glow * exp(-delta * 5.0)
@@ -717,6 +725,14 @@ func _stats() -> Dictionary:
 		"score": sim.score,
 		"practice": _mods.practice,
 		"bg": _bg_tex,
+		# 結果画面の体力グラフ用
+		"hp_log": sim.gauge_log,
+		"hp_step": GameSim.GAUGE_LOG_STEP,
+		"hp_end": sim.gauge,
+		"hp_t_end": sim.log_end_t,
+		"hit_log": sim.hit_log,
+		"breaks": sim.breaks,
+		"first_fire": sim.first_fire_time,
 	}
 	if _mp != null:   # マルチプレイ: 結果画面が、参加者の成績を並べるのに使う
 		d["mp"] = {"mode": _mp.mode, "my_id": _mp.my_id, "players": _mp.roster.duplicate(true)}

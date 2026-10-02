@@ -20,6 +20,7 @@ const InviteCode = preload("res://scripts/net/invite_code.gd")
 
 const PROTOCOL := 1
 const MAX_PLAYERS := 4
+const HP_SAMPLES_MAX := 64   # 最終成績に付ける体力グラフ用のサンプルの上限
 const CH_CTRL := 0
 const CH_STATE := 1
 const CONNECT_TIMEOUT := 3.5    # 1 つの行き先への接続を待つ秒数
@@ -50,7 +51,8 @@ var debug_jitter_ms := 0.0
 var role := ""                    # "" / "host" / "client"
 var my_id := 0
 var my_name := "PLAYER"
-## id → {id, name, slot, has_song, ping}。slot は 0..3(ホストが 0。色・自機の並び順に使う)
+## id → {id, name, slot, has_song, ready, ping}。slot は 0..3(ホストが 0。色・自機の並び順に使う)。
+## ready: 参加者が「準備完了」を押したか(ホストは、開始を押す人なので数えない。曲・モード・MOD が変わるたび、ロビーに戻るたびに全員が外れる)
 var players: Dictionary = {}
 ## 部屋の設定(ホストが決めて、全員へ送る): mode("versus" / "coop")、song({md5, title, artist, version, level})、mods、density_mul、phase("lobby" / "loading" / "playing")
 var room: Dictionary = {"mode": "versus", "song": {}, "mods": [], "density_mul": 1.0, "phase": "lobby"}
@@ -205,7 +207,7 @@ func host_room(mode: String, p_name: String) -> bool:
 
 
 func _new_player(id: int, p_name: String, slot: int) -> Dictionary:
-	return {"id": id, "name": p_name, "slot": slot, "has_song": false, "ping": -1.0}
+	return {"id": id, "name": p_name, "slot": slot, "has_song": false, "ready": false, "ping": -1.0}
 
 
 ## UPnP でポートを開けて、ルーターが知っているグローバル IP を得る(別スレッド。数秒かかることがある)。
@@ -431,7 +433,9 @@ func set_mode(mode: String) -> void:
 	if role != "host" or room.phase != "lobby":
 		return
 	room.mode = mode
+	_clear_ready()
 	_push_room()
+	_push_roster()
 
 
 ## 曲・MOD・密度を設定する(選曲画面のあと)。song: {md5, title, artist, version, level}
@@ -444,8 +448,21 @@ func set_song(song: Dictionary, mods: Array, density_mul: float, loader, bm) -> 
 	song_loader = loader
 	song_bm = bm
 	players[1].has_song = true
+	_clear_ready()
 	_push_room()
 	_push_roster()
+
+
+## 参加者の「準備完了」を全員外す(ホストが部屋の設定を変えたとき・ロビーに戻ったとき。内容を確かめ直してもらう)。
+func _clear_ready() -> void:
+	for id in players:
+		players[id].ready = false
+
+
+## 自分の「準備完了」を切り替える(参加者。ホストは、開始を押す人なので使わない)。
+func set_my_ready(on: bool) -> void:
+	if role == "client":
+		_send(1, {"t": "ready", "r": on})
 
 
 func _push_room() -> void:
@@ -495,6 +512,9 @@ func start_game() -> String:
 	for id in players:
 		if not players[id].has_song:
 			return "曲を持っていない人がいます"
+	for id in players:
+		if id != 1 and not players[id].ready:
+			return "準備ができていない人がいます"
 	room.phase = "loading"
 	results.clear()
 	_loaded.clear()
@@ -550,7 +570,9 @@ func return_to_lobby() -> void:
 		room.phase = "lobby"
 		_load_t = -1.0
 		_started = false
+		_clear_ready()
 		_push_room()
+		_push_roster()
 
 
 ## ゲームの最終成績を伝える(全員に配られる)。
@@ -652,7 +674,14 @@ func _host_msg(from: int, msg: Dictionary) -> void:
 	match t:
 		"song_status":
 			players[from].has_song = bool(msg.get("has", false))
+			if not players[from].has_song:
+				players[from].ready = false
 			_push_roster()
+		"ready":
+			var on: bool = bool(msg.get("r", false)) and players[from].has_song and room.phase == "lobby" and not room.song.is_empty()
+			if players[from].ready != on:
+				players[from].ready = on
+				_push_roster()
 		"name":
 			players[from].name = _clean_name(str(msg.get("name", "")))
 			_push_roster()
@@ -771,7 +800,7 @@ func _clean_roster(d: Dictionary) -> Dictionary:
 		if not (p is Dictionary) or out.size() >= MAX_PLAYERS:
 			continue
 		out[int(k)] = {"id": int(k), "name": _clean_name(str(p.get("name", ""))), "slot": clampi(int(p.get("slot", 0)), 0, MAX_PLAYERS - 1),
-			"has_song": bool(p.get("has_song", false)), "ping": _num(p.get("ping", -1.0), -1.0, 0.0, 100000.0)}
+			"has_song": bool(p.get("has_song", false)), "ready": bool(p.get("ready", false)), "ping": _num(p.get("ping", -1.0), -1.0, 0.0, 100000.0)}
 	return out
 
 
@@ -811,7 +840,20 @@ func _clean_result(r) -> Dictionary:
 	var d: Dictionary = r if r is Dictionary else {}
 	return {"name": _clean_name(str(d.get("name", ""))), "score": _num(d.get("score", 0.0), 0.0, 0.0, 1e9), "failed": bool(d.get("failed", false)),
 		"hits": int(_num(d.get("hits", 0), 0.0, 0.0, 1e6)), "graze": int(_num(d.get("graze", 0), 0.0, 0.0, 1e7)), "hit_ms": int(_num(d.get("hit_ms", 0), 0.0, 0.0, 1e9)),
-		"damage_factor": _num(d.get("damage_factor", 1.0), 1.0, 0.0, 1.0), "progress": _num(d.get("progress", 0.0), 0.0, 0.0, 1.0)}
+		"damage_factor": _num(d.get("damage_factor", 1.0), 1.0, 0.0, 1.0), "progress": _num(d.get("progress", 0.0), 0.0, 0.0, 1.0),
+		"hp": _clean_hp(d.get("hp")), "dur": _num(d.get("dur", 0.0), 0.0, 0.0, 36000.0)}
+
+
+## 体力グラフ用の間引いたサンプル(0..100 の整数が HP_SAMPLES 個まで)。形が違えば空。
+static func _clean_hp(v) -> Array:
+	var out: Array = []
+	if not v is Array:
+		return out
+	for x in v:
+		if out.size() >= HP_SAMPLES_MAX:
+			break
+		out.append(int(_num(x, 0.0, 0.0, 100.0)))
+	return out
 
 
 ## 数値として読み、範囲に収める(数値でない・NaN・無限大なら既定値)。

@@ -12,6 +12,8 @@ extends RefCounted
 ##   low_protect  … ゲージ 20% 以下で被ダメージ半減するか。1 つでも false なら false
 ##   practice     … ゲージが 0 になってもゲームオーバーにならない(練習)。1 つでも true なら true
 ##   dark         … 自機の周囲しか弾が見えない(描画だけ。判定・難易度は変わらない)。1 つでも true なら true
+##   field_scale  … 自機が動ける範囲(盤面の中央の長方形)の縦横の倍率。発射位置は変わらない。複数なら小さいほう
+##   boss         … 発射位置へ動くボスを、自機の自動の連射で倒す(scripts/game/boss.gd)。倒すまで曲が繰り返し、危険エリアは出ない。ひとり用。1 つでも true なら true
 ## MOD を足すときは ALL に 1 件足すだけ(メニュー・HUD・リザルトは ALL を見て表示する)。
 ##
 ## ## 難易度は MOD を適用した弾幕で計算し直す
@@ -50,12 +52,28 @@ const ALL := [
 		"desc": "自機の周囲しか弾が見えない(離れるほど消える。発射地点は見える) / ベーススコア +5%",
 		"dark": true, "score_mul": 1.05,
 	},
+	# 小型化・撃破のベーススコアの加算は仮の値(弾幕を変えないので Lv には出ない。遊んで見直す)
+	{
+		"id": "shrink", "name": "小型化", "tag": "SHRINK", "color": Color(0.45, 0.95, 0.75),
+		"desc": "自機が動ける範囲が、盤面の中央の縦横 50% になる(発射位置は今までどおり。危険エリアも範囲の中) / ベーススコア +10%",
+		"field_scale": 0.5, "score_mul": 1.10,
+	},
+	{
+		"id": "boss", "name": "撃破", "tag": "BOSS", "color": Color(1.0, 0.5, 0.42),
+		"desc": "発射位置を追って動くボスを連射で倒す / 倒すまで曲が繰り返す・当てると回復・危険エリアなし(ひとり用) / ベーススコア +5%",
+		"boss": true, "score_mul": 1.05, "solo": true,
+	},
 	{
 		"id": "practice", "name": "練習", "tag": "PRACTICE", "color": Color(1.0, 0.82, 0.35),
 		"desc": "ゲージが 0 になってもゲームオーバーにならず、最後まで続けられる / ベーススコア −50%",
 		"practice": true, "score_mul": 0.5,
 	},
 ]
+
+
+## マルチプレイで使えない MOD(solo)を除いた id の配列。
+static func multi_ok(ids: Array) -> Array:
+	return ids.filter(func(id): return not bool(find(str(id)).get("solo", false)))
 
 
 ## MOD の id から定義を引く(なければ空の辞書)。
@@ -80,6 +98,8 @@ static func params(ids: Array) -> Dictionary:
 		"low_protect": true,
 		"practice": false,
 		"dark": false,
+		"field_scale": 1.0,
+		"boss": false,
 	}
 	for id in ids:
 		var m := find(str(id))
@@ -92,6 +112,8 @@ static func params(ids: Array) -> Dictionary:
 		p.low_protect = p.low_protect and bool(m.get("low_protect", true))
 		p.practice = p.practice or bool(m.get("practice", false))
 		p.dark = p.dark or bool(m.get("dark", false))
+		p.field_scale = minf(p.field_scale, float(m.get("field_scale", 1.0)))
+		p.boss = p.boss or bool(m.get("boss", false))
 	return p
 
 

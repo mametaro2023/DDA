@@ -12,9 +12,23 @@ extends RefCounted
 ## 数・種類は難易度などに応じて変わる)。入っている間、そのマスのデバフを受ける:
 ##   鈍足(slow): 移動が ZONE_SLOW 倍 / 脆弱(fragile): 被ダメージが ZONE_FRAGILE 倍 / 毒(poison): ゲージが ZONE_POISON_DRAIN(/秒)で減る / 巨大(big): 自機の当たり判定が ZONE_BIG 倍
 ## 弾幕には手を入れない(自機が受けるものだけ)。休憩地帯では効かない。練習モードでは、毒のゲージ減少だけ効かない。
+##
+## ## 小型化・撃破(MOD)
+## 小型化: 自機が動ける範囲(move_rect)が、盤面の中央の縦横 field_scale 倍になる。発射位置は変わらない。危険エリアの 3×3 のマスも、この範囲を分ける。
+## 撃破: ボス(scripts/game/boss.gd)を倒すまで、譜面を loop_len 秒ごとに繰り返す(周回ごとに、時刻をずらした弾幕を足していく)。
+##   1 周 = 繰り返しの始まり loop_from(最初のノーツの LOOP_LEAD 秒前)〜 最後のノーツ loop_end + ボーナスタイム(Boss.BONUS_TIME 秒)。
+##   1 周目だけは、時刻 0(曲の頭)から始まる。ボーナスタイムの間は弾が来ず、ボスは止まる(曲は game_screen が、その間に次の周の頭へ早送りする)。
+##   ボスに当てるとゲージが回復する(1 発 HIT_HEAL。速さは毎秒 HIT_HEAL_MAX まで。強化で当たる数が増えても強くなりすぎないように)。
+## ボスを倒したら弾を消し、BOSS_CLEAR_DELAY 秒の演出のあとクリア。ゲージが 0 ならゲームオーバー(今までどおり)。危険エリアは出さない。
+## スコア(撃破だけ、曲の繰り返しに合わせて変える。ベーススコア・グレイズ・被ダメージ係数・ランクの仕組みは同じ):
+##   進行率 = ボスに与えたダメージの割合(1 − 残り HP ÷ 最大 HP)。削るほど伸び、倒した時点で最終点(1 周で止まらない)
+##   被ダメージ係数の時定数 = 想定の戦いの長さ(Boss.HP_CHASE_SECONDS)で決める(1 周の長さではなく。長い戦いで、普通の曲より下がりすぎない)
+##   撃破タイムボーナス = SCORE_BOSS_TIME × exp(−倒すまでの秒 ÷ BOSS_TIME_TAU)(最大 3 万点。想定の 240 秒で約 1 万点。倒したときに入る)
+##     グレイズのボーナスと同じく、MOD の倍率はかからず、被ダメージ係数はかかる
 
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
+const Boss = preload("res://scripts/game/boss.gd")
 
 const ARENA := PatternGen.ARENA
 const PLAYER_SPEED := 380.0      # キーボード
@@ -62,6 +76,9 @@ const DAMAGE_TAU := 3.0
 ## damage_tau を伸ばし始める、弾が飛んでいる時間の基準(秒)。これ以下の譜面の τ は DAMAGE_TAU のまま
 const DAMAGE_REF_TIME := 120.0
 const SCORE_GRAZE := 30000.0     # グレイズのボーナスの最大(3%)
+## 撃破: 倒すまでの時間のボーナスの最大(3%)と、その減り方の時定数(秒。想定の戦いの長さで 1/3 = 約 1 万点になる)
+const SCORE_BOSS_TIME := 30000.0
+const BOSS_TIME_TAU := 240.0 / 1.0986123   # 240 ÷ ln 3
 ## グレイズのボーナスの立ち上がりの目安 graze_tau = 発射イベント数 × この係数(下限 GRAZE_TAU_MIN)。
 ## グレイズ数が graze_tau で最大の約 63%、2 倍で約 86%、3 倍で約 95%(3 万点には漸近するだけで届かない)
 const GRAZE_TAU_PER_EVENT := 0.15
@@ -69,6 +86,13 @@ const GRAZE_TAU_MIN := 10.0
 
 ## 結果画面の体力グラフ用の記録: 曲の時刻 0 から GAUGE_LOG_STEP 秒ごとのゲージ(0..1)。i 番目は i × GAUGE_LOG_STEP 秒のとき
 const GAUGE_LOG_STEP := 0.25
+## 撃破: ボスを倒してから、クリアにするまでの秒(撃破の演出を見せる)
+const BOSS_CLEAR_DELAY := 2.4
+## 撃破: 次の周は、最初のノーツのこの秒数前から始まる(予兆と、ボスの移動が間に合うように)
+const LOOP_LEAD := 1.0
+## 撃破: ボスに当てたときの回復(1 発あたり)と、その回復の速さの上限(/秒。どちらもゲージ全体に対する割合)
+const HIT_HEAL := 0.001
+const HIT_HEAL_MAX := 0.03
 
 ## 判定の計算(_update)を行った回数の通算(FPS 表示の「判定 /s」用)
 static var steps_total := 0
@@ -97,6 +121,19 @@ var low_protect := true               # ゲージ 20% 以下で被ダメージ�
 var score_base := SCORE_BASE          # ベーススコア(MOD で増える)
 var player_scale := 1.0                # 自機サイズの倍率(MOD)
 var player_r := PLAYER_HIT_R          # 自機の当たり判定半径(= PLAYER_HIT_R × player_scale)
+var move_rect := Rect2(Vector2.ZERO, ARENA)   # 自機が動ける範囲(小型化 MOD で中央の長方形になる)
+var boss = null                       # 撃破 MOD のボス(Boss。なければ null)
+var loop_len := 0.0                   # > 0 なら、譜面をこの秒ごとに繰り返す(撃破 MOD)
+var loop_from := 0.0                  # 撃破: 2 周目以降の、周の始まり(1 周目の時刻で。最初のノーツの LOOP_LEAD 秒前)
+var loop_end := 0.0                   # 撃破: 周の最後のノーツ(1 周目の時刻で)。ここからボーナスタイム
+var _heal_pool := 0.0                 # 撃破: まだゲージに足していない、当てたぶんの回復
+var _hits_seen := 0
+var loops_added := 1                  # 弾幕に足してある周の数(1 = 1 周目だけ)
+var _base_events: Array = []          # 1 周目の弾幕(周回で、時刻をずらして足す元)
+var _base_gizmos: Array = []
+var _base_breaks: Array = []
+var _pick_i := 0                      # boss.pick_events をどこまで反映したか
+var _boss_cleared := false            # 撃破のあと、弾を消した
 ## 最初に弾を撃つイベントの時刻(なければ -1)。イントロのスキップ先の基準
 var first_fire_time := -1.0
 
@@ -116,6 +153,7 @@ var bullets_fired := 0          # ここまでに発射した弾数(休憩地帯
 var bullets_total := 0          # 曲全体で発射する弾数(同上)
 var score_gross := 0.0          # 被ダメージ係数を掛ける前の点数(score_base + グレイズのボーナス)
 var score_graze := 0.0          # グレイズのボーナス
+var score_boss_time := 0.0      # 撃破: 倒すまでの時間のボーナス(倒したときに決まる)
 var damage_factor := 1.0        # 被ダメージ係数(1 → 0 に漸近)
 var damage_tau := DAMAGE_TAU   # 被ダメージ係数の時定数(曲の長さに応じて伸びる。setup で決まる)
 var active_time := 0.0          # 弾が飛んでいる時間(秒)= 最初〜最後の発射の間から休憩地帯を除いたもの
@@ -183,6 +221,9 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 	score_base = SCORE_BASE * float(mods.get("score_mul", 1.0))
 	player_scale = float(mods.get("player_scale", 1.0)) * PLAYER_SIZE_MUL
 	player_r = PLAYER_HIT_R * player_scale
+	var fs := clampf(float(mods.get("field_scale", 1.0)), 0.1, 1.0)
+	move_rect = Rect2(ARENA * (1.0 - fs) * 0.5, ARENA * fs)
+	player_pos = Vector2(move_rect.get_center().x, move_rect.position.y + move_rect.size.y * 0.85)
 	_graze_tau = maxf(GRAZE_TAU_MIN, GRAZE_TAU_PER_EVENT * events.size())
 	bullets_total = 0
 	first_fire_time = -1.0
@@ -204,7 +245,67 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 		for b in breaks:
 			active_time -= maxf(minf(float(b[1]), last_fire) - maxf(float(b[0]), first_fire_time), 0.0)
 	damage_tau = DAMAGE_TAU * maxf(active_time / DAMAGE_REF_TIME, 1.0)
+	boss = null
+	loop_len = 0.0
+	if bool(mods.get("boss", false)):
+		zones = []   # 撃破では危険エリアを出さない
+		# 周回で足していくので、元の弾幕(選曲画面が覚えているもの)を書き換えないよう、写しを使う
+		events = events.duplicate()
+		gizmos = gizmos.duplicate()
+		breaks = breaks.duplicate()
+		_base_events = events.duplicate()
+		_base_gizmos = gizmos.duplicate()
+		_base_breaks = breaks.duplicate()
+		loops_added = 1
+		loop_end = maxf(last_fire, 0.0)
+		for g in gizmos:
+			loop_end = maxf(loop_end, float(g.end))
+		loop_from = maxf(first_fire_time - LOOP_LEAD, 0.0)
+		loop_len = maxf(loop_end - loop_from + Boss.BONUS_TIME, 1.0)
+		damage_tau = DAMAGE_TAU * maxf(Boss.HP_CHASE_SECONDS / DAMAGE_REF_TIME, 1.0)   # 1 周ではなく、想定の戦いの長さで
+		boss = Boss.new()
+		boss.setup(events, gizmos, breaks, move_rect, first_fire_time, last_fire)
 	_update_score()
+
+
+## 撃破: 時刻 now が何周目か(0 = 1 周目。ボーナスタイムは、その周に入る)。
+func loop_index(now: float) -> int:
+	if loop_len <= 0.0:
+		return 0
+	return maxi(int(floor((now - loop_from) / loop_len)), 0)
+
+
+## 撃破: ボーナスタイムの残り秒(ボーナスタイムでなければ -1)。
+func bonus_left(now: float) -> float:
+	if loop_len <= 0.0:
+		return -1.0
+	var b0 := float(loop_index(now)) * loop_len + loop_end
+	if now >= b0 and now < b0 + Boss.BONUS_TIME:
+		return b0 + Boss.BONUS_TIME - now
+	return -1.0
+
+
+## 撃破: 次の周の弾幕を足しておく(いまの周が始まったら、次の周を足す。いつも 1 周先まである)。
+func _extend_loop(now: float) -> void:
+	while now >= float(loops_added - 1) * loop_len and loops_added < 100000:
+		var off := float(loops_added) * loop_len
+		var ev: Array = []
+		for e in _base_events:
+			var e2: Dictionary = e.duplicate()
+			e2.t = float(e.t) + off
+			ev.append(e2)
+		var gz: Array = []
+		for g in _base_gizmos:
+			var g2: Dictionary = g.duplicate()
+			g2.t = float(g.t) + off
+			g2.end = float(g.end) + off
+			gz.append(g2)
+		events.append_array(ev)
+		gizmos.append_array(gz)
+		for b in _base_breaks:
+			breaks.append([float(b[0]) + off, float(b[1]) + off])
+		boss.append_loop(ev, gz)
+		loops_added += 1
 
 
 ## 協力モードにする(setup のあとに呼ぶ)。体力は全員で 1 本を共有し、人数に応じて増える(満タン = 1 人ぶんの被弾時間 × 人数)。
@@ -338,8 +439,8 @@ func step_relative(now: float, dt: float, delta_px: Vector2, slow_mode: bool) ->
 
 
 func _move_player(p: Vector2) -> void:
-	var m := PLAYER_MARGIN * player_scale
-	player_pos = p.clamp(Vector2(m, m), ARENA - Vector2(m, m))
+	var m := Vector2.ONE * PLAYER_MARGIN * player_scale
+	player_pos = p.clamp(move_rect.position + m, move_rect.end - m)
 
 
 func _update(now: float, dt: float) -> void:
@@ -347,19 +448,24 @@ func _update(now: float, dt: float) -> void:
 	sfx_queue.clear()
 	sfx_pan.clear()
 	just_hit = false
+	if loop_len > 0.0:
+		_extend_loop(now)
+	var quiet: bool = boss != null and boss.defeated   # 撃破のあとは、もう撃たない
 	# 予兆の開始
 	while _warn_idx < events.size() and events[_warn_idx].t - warn_lead <= now:
 		var e: Dictionary = events[_warn_idx]
-		if e.warn and e.t > now:
+		if e.warn and e.t > now and not quiet:
 			active_warns.append(e)
 		_warn_idx += 1
 	# ギズモ(スライダー軌道/スピナー)の開始
 	while _giz_idx < gizmos.size() and gizmos[_giz_idx].t - warn_lead <= now:
-		active_gizmos.append(gizmos[_giz_idx])
+		if not quiet:
+			active_gizmos.append(gizmos[_giz_idx])
 		_giz_idx += 1
 	# 発射
 	while _ev_idx < events.size() and events[_ev_idx].t <= now:
-		_fire(events[_ev_idx], now)
+		if not quiet:
+			_fire(events[_ev_idx], now)
 		_ev_idx += 1
 	# 発射地点の印の掃除
 	if not recent_fires.is_empty():
@@ -419,10 +525,16 @@ func _update(now: float, dt: float) -> void:
 
 	_update_poison(dt, resting)
 	_record_gauge(now)
+	if boss != null:
+		boss.update(now, dt, player_pos, resting)
+		_apply_boss_picks()
+		_heal_by_hits(dt)
 
 	# 進行率: 曲の進行(時間)とは別に、スコア用の進行率は「発射した弾数」で進める
 	progress = clampf(now / maxf(end_time, 0.001), 0.0, 1.0)
 	score_progress = clampf(float(bullets_fired) / float(maxi(bullets_total, 1)), 0.0, 1.0) if bullets_total > 0 else 0.0
+	if boss != null:   # 撃破: 進行率はボスに与えたダメージの割合
+		score_progress = clampf(1.0 - float(boss.hp) / maxf(float(boss.max_hp), 1.0), 0.0, 1.0)
 	_update_score()
 
 	if not authority:
@@ -439,6 +551,21 @@ func _update(now: float, dt: float) -> void:
 			if net_mode == "coop":
 				net_events.append({"k": "fail", "st": net_state()})
 			return
+	if boss != null:   # 撃破: ボスを倒したら弾を消し、少し待ってクリア(倒すまでは、曲が繰り返すので終わらない)
+		if boss.defeated:
+			if not _boss_cleared:
+				_boss_cleared = true
+				field.clear()
+				active_warns.clear()
+				score_boss_time = SCORE_BOSS_TIME * exp(-maxf(float(boss.defeat_t) - maxf(first_fire_time, 0.0), 0.0) / BOSS_TIME_TAU)
+				_update_score()
+			if now - float(boss.defeat_t) >= BOSS_CLEAR_DELAY:
+				finished = true
+				progress = 1.0
+				score_progress = 1.0
+				break_clear_t = -1.0
+				_update_score()
+		return
 	if _check_clear(now):
 		field.clear()
 		finished = true
@@ -470,7 +597,7 @@ func _update_zone_debuff(now: float) -> void:
 		_zone_i += 1
 	if _zone_i >= zones.size() or float(zones[_zone_i].t) > now:
 		return
-	var cell := zone_cell(player_pos)
+	var cell := cell_of(player_pos)
 	for c in zones[_zone_i].cells:
 		if int(c.c) == cell:
 			zone_debuff = str(c.type)
@@ -478,7 +605,19 @@ func _update_zone_debuff(now: float) -> void:
 			return
 
 
-## 盤面の 3×3 のマス番号(0..8。左上から横に数える)。
+## 自機が動ける範囲(小型化 MOD なら中央の長方形)を 3×3 に分けたマス番号(0..8。左上から横に数える)。危険エリアはこのマス。
+func cell_of(p: Vector2) -> int:
+	var q := p - move_rect.position
+	return clampi(int(q.y / (move_rect.size.y / 3.0)), 0, 2) * 3 + clampi(int(q.x / (move_rect.size.x / 3.0)), 0, 2)
+
+
+## 自機が動ける範囲の、マス c(0..8)の長方形。
+func cell_rect(c: int) -> Rect2:
+	var cs := move_rect.size / 3.0
+	return Rect2(move_rect.position + Vector2(float(c % 3) * cs.x, float(c / 3) * cs.y), cs)
+
+
+## 盤面全体の 3×3 のマス番号(0..8。左上から横に数える)。
 static func zone_cell(p: Vector2) -> int:
 	return clampi(int(p.y / (ARENA.y / 3.0)), 0, 2) * 3 + clampi(int(p.x / (ARENA.x / 3.0)), 0, 2)
 
@@ -490,6 +629,29 @@ static func zone_name(type: String) -> String:
 
 static func zone_color(type: String) -> Color:
 	return {"slow": Color(0.35, 0.68, 1.0), "fragile": Color(1.0, 0.62, 0.25), "poison": Color(0.62, 0.9, 0.35), "big": Color(0.92, 0.45, 0.92)}.get(type, Color.WHITE)
+
+
+## 撃破: ボスに当てた数に応じて、ゲージを回復する(速さは毎秒 HIT_HEAL_MAX まで。ためすぎない)。
+func _heal_by_hits(dt: float) -> void:
+	var n: int = boss.hits_total - _hits_seen
+	_hits_seen = boss.hits_total
+	_heal_pool = minf(_heal_pool + float(n) * HIT_HEAL, HIT_HEAL_MAX * 0.5)
+	var take := minf(_heal_pool, HIT_HEAL_MAX * dt)
+	_heal_pool -= take
+	if authority and take > 0.0:
+		gauge = minf(gauge + take, 1.0)
+
+
+## 撃破: 取ったアイテムのうち、回復(ゲージ)とボム(弾を消す)を反映する。
+func _apply_boss_picks() -> void:
+	while _pick_i < boss.pick_events.size():
+		var k: String = boss.pick_events[_pick_i].kind
+		_pick_i += 1
+		if k == "heal" and authority:
+			gauge = minf(gauge + Boss.HEAL_AMOUNT, 1.0)
+		elif k == "bomb":
+			field.clear()
+			active_warns.clear()
 
 
 ## 毒: ゲージが減る(休憩・練習では減らない)。協力の参加者は、被弾時間に換算してホストへ報告する。
@@ -550,11 +712,12 @@ func _update_score() -> void:
 	if failed:
 		score_gross = 0.0
 		score_graze = 0.0
+		score_boss_time = 0.0
 		score_potential = 0.0
 		score = 0.0
 		return
 	score_graze = SCORE_GRAZE * (1.0 - exp(-float(graze) / graze_div / _graze_tau))   # 3 万点に漸近(届かない)
-	score_gross = score_base + score_graze
+	score_gross = score_base + score_graze + score_boss_time
 	score_potential = score_gross * damage_factor
 	score = score_potential * score_progress
 

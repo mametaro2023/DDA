@@ -18,6 +18,8 @@ const Volume = preload("res://scripts/volume.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
+const BossGauge = preload("res://scripts/ui/boss_gauge.gd")
+const Boss = preload("res://scripts/game/boss.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
 const SpeedStudy = preload("res://scripts/speed_study.gd")
 
@@ -25,6 +27,13 @@ const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
 const HP_X := 188.0
 const HP_Y := 28.0
+## 撃破 MOD: 体力バーは左下へ(上部はボスのゲージ)。スコアは、ボスのゲージの下へずらす
+const HP_Y_BOSS := 684.0
+const SCORE_DY_BOSS := 52.0
+## 撃破 MOD: ボーナスタイム(各周の最後のノーツのあと)の間に、曲をテープの早送りのように次の周の頭へ進める。
+## 速さ(と音程)は sin の形で 1 → FF_PEAK → 1 倍に上がって下がり、いちばん速いところ(半分)で曲の位置を飛ばす(早送りの音にまぎれる)。
+## 残り半分で進む分を見込んで飛ばすので、終わりに、ちょうど次の周の始まり(最初のノーツの GameSim.LOOP_LEAD 秒前)に着く。
+const FF_PEAK := 6.0
 const HP_W := 360.0
 const HP_H := 16.0
 const HP_SL := 12.0
@@ -132,6 +141,18 @@ var _pause_panel: PanelContainer
 var _graze_pop := 0.0     # グレイズが増えたときの数字の弾み(1 → 0 へ減衰)
 var _last_graze := 0
 var _dark_scale := 1.0     # 暗闇 MOD の可視範囲の倍率(低速で DARK_SLOW_SCALE へ、なめらかに追従)
+## 撃破 MOD: 右パネルのボスの欄(HP の割合・バー・攻撃力)と、前のフレームで見た状態(変わったときに音・演出を出す)
+var _boss_gauge             # 上部のボスのゲージ(BossGauge)
+var _weapon_ls: Dictionary = {}   # 右パネルの強化の段階(power / rate / wide → Label)
+var _weapon_seen := ""
+var _pick_seen := 0         # boss.pick_events をどこまで演出したか
+var _boss_down_seen := false
+var _hp_x := HP_X           # 体力バーの位置(撃破 MOD では左下)
+var _hp_y := HP_Y
+var _score_dy := 0.0        # スコアを下へずらす量(撃破 MOD)
+var _loop_k := 0           # 撃破 MOD: 曲の再生がいま何周目か(曲クロック = 再生位置 ÷ rate + 周 × sim.loop_len)
+var _ff_t := -1.0           # 撃破 MOD: 早送り(ボーナスタイム)の経過秒(-1 = 早送りしていない)
+var _ff_jumped := false
 var _break_a := 0.0       # 休憩のカウントダウンの表示度(なめらかに出入りする)
 var _break_left := 0.0    # 休憩が終わるまでの残り秒
 var _break_frac := 0.0    # カウントダウンバーの残り割合(1 → 0)
@@ -195,7 +216,7 @@ func setup_multi(p_net, info: Dictionary, p_loader, p_bm, p_settings: Dictionary
 	loader = p_loader
 	bm = p_bm
 	settings = p_settings.duplicate()
-	settings["mods"] = info.mods.duplicate()
+	settings["mods"] = Mods.multi_ok(info.mods)   # 撃破はひとり用(部屋に入っていても外す)
 	settings["density_mul"] = float(info.density_mul)
 
 
@@ -267,6 +288,9 @@ func _ready() -> void:
 	_end_time = bm.last_time() / 1000.0 / _rate + 2.0   # 再生速度が上がると、曲は短くなる
 	# 対戦は、体力が 0 でもゲームオーバーにならない(最後まで続く)。協力は、体力を全員で共有する(ホストが決める)
 	sim.setup(field, gen, _end_time, _mods.practice or (net != null and mp_info.mode == "versus"), _mods)
+	if sim.boss != null:
+		_hp_y = HP_Y_BOSS
+		_score_dy = SCORE_DY_BOSS
 	_view_under.sim = sim
 	_view_over.sim = sim
 	if net != null:
@@ -384,6 +408,8 @@ func _build_hud() -> void:
 	_sc_node = Node2D.new()
 	_sc_node.draw.connect(_draw_score)
 	_hud.add_child(_sc_node)
+	if sim.boss != null:
+		_build_boss_gauge()
 	_build_pause()
 	# 始まりの動き: 左右のパネルが外から滑り込み、HP・スコアがフェードインし、READY が弾んで現れる
 	UiStyle.pop_in(_left_col, 0.1, Vector2(-26, 0), 0.5)
@@ -456,6 +482,16 @@ func _build_right_panel() -> void:
 	col.add_child(UiStyle.caption("DAMAGE"))
 	_hit_l = UiStyle.label("0%", 26, UiStyle.TEXT, true)
 	col.add_child(_hit_l)
+	if sim.boss != null:   # 撃破 MOD: 自機の弾の強化(アイテムで上がる段階)
+		var gap2 := Control.new()
+		gap2.custom_minimum_size = Vector2(0, 12)
+		col.add_child(gap2)
+		col.add_child(UiStyle.caption("WEAPON"))
+		for k in ["power", "rate", "wide"]:
+			var l := UiStyle.label("", 15, UiStyle.TEXT_DIM, true)
+			col.add_child(l)
+			_weapon_ls[k] = l
+		_update_weapon_labels()
 
 
 ## ポーズ画面(暗転 + 中央パネル)。項目は 6 行: 再開 / リトライ / メニューへ / 全体音量 / 音楽 / 効果音(設定・音量メーターと同じ名前と並び)。
@@ -594,10 +630,16 @@ func _process(delta: float) -> void:
 		# 再生位置は曲の秒数(再生速度の倍で進む)。÷rate で、ゲーム内の時刻(実時間と同じ進み方)にする
 		var t: float = _audio.get_playback_position() / _rate + AudioServer.get_time_since_last_mix() \
 			- AudioServer.get_output_latency() + settings.get("offset_ms", 0) / 1000.0
-		if _audio.playing:
-			_advance_clock(t, delta)
+		if _ff_t >= 0.0:   # 撃破: ボーナスタイムの早送り中は、曲クロックを実時間で進める
+			_tick_ff(delta)
 		else:
-			_now += delta  # 曲が先に終わっても進行を続ける
+			t += float(_loop_k) * sim.loop_len   # 撃破: 2 周目以降は、周の分を足す
+			if _audio.playing:
+				_advance_clock(t, delta)
+			else:
+				_now += delta  # 曲が先に終わっても進行を続ける
+			if sim.loop_len > 0.0 and not _dead and not sim.finished and _now >= float(_loop_k) * sim.loop_len + sim.loop_end:
+				_begin_ff()
 
 	var slow := Input.is_physical_key_pressed(KEY_SHIFT)
 	if _mouse_mode:
@@ -640,6 +682,7 @@ func _process(delta: float) -> void:
 		if _outro_t < OUTRO_TIME:
 			return
 		_done = true
+		_end_ff()   # 早送りの途中なら、ふつうの速さに戻して渡す
 		var music := _audio
 		if _audio.playing:
 			remove_child(_audio)
@@ -802,6 +845,7 @@ func _stats() -> Dictionary:
 		"mod_ids": _mods.ids,
 		"damage_factor": sim.damage_factor,
 		"score_graze": sim.score_graze,
+		"score_boss_time": sim.score_boss_time,
 		"graze": sim.graze,
 		"score": sim.score,
 		"practice": _mods.practice,
@@ -815,6 +859,9 @@ func _stats() -> Dictionary:
 		"breaks": sim.breaks,
 		"first_fire": sim.first_fire_time,
 	}
+	if sim.boss != null:   # 撃破 MOD: 結果画面に、倒せたか・倒すまでの時間(最初の発射から。実時間)・残りの HP・周回数を出す
+		d["boss"] = {"defeated": sim.boss.defeated, "defeat_t": maxf(float(sim.boss.defeat_t) - maxf(sim.first_fire_time, 0.0), 0.0),
+			"hp_left": float(sim.boss.hp) / maxf(float(sim.boss.max_hp), 1.0), "loops": sim.loop_index(_now) + 1}
 	if _mp != null:   # マルチプレイ: 結果画面が、参加者の成績を並べるのに使う
 		d["mp"] = {"mode": _mp.mode, "my_id": _mp.my_id, "players": _mp.roster.duplicate(true)}
 	return d
@@ -998,7 +1045,7 @@ func _update_hp_fx(delta: float) -> void:
 	_hp_stripe = fmod(_hp_stripe + lerpf(12.0, 55.0, _fx_regen) * (1.0 - _fx_break) * delta, 20.0)
 	_hp_ripple = fmod(_hp_ripple + delta / 1.9, 1.0)
 	# 火花の発生
-	var tip := Vector2(HP_X + _hp_w * g + HP_SL * 0.5, HP_Y + HP_H * 0.5)
+	var tip := Vector2(_hp_x + _hp_w * g + HP_SL * 0.5, _hp_y + HP_H * 0.5)
 	var col := UiStyle.hp_color(g).lerp(Color.WHITE, 0.45)
 	var rate := 0.0
 	if _hit_any:
@@ -1060,7 +1107,7 @@ func _draw_low_vignette() -> void:
 ## 体力バーの層(自機が近づくと、この層ごと薄くなる)。
 func _draw_hp_layer() -> void:
 	var g: float = clampf(sim.gauge, 0.0, 1.0) if sim != null else 1.0
-	_draw_hp_bar(ThemeDB.fallback_font, HP_X, HP_Y, g)
+	_draw_hp_bar(ThemeDB.fallback_font, _hp_x, _hp_y, g)
 
 
 ## スコアの層(自機が近づくと薄くなる)。被ダメージで点が減っている間は、数字が赤くなる。
@@ -1069,11 +1116,14 @@ func _draw_score() -> void:
 	var right := ARENA_POS.x + PatternGen.ARENA.x - 28.0   # フィールド右端の内側
 	var score_text := UiStyle.fmt(int(round(_score_disp)))
 	var prog_pct: float = (sim.progress if sim != null else 0.0) * 100.0
+	var dy := _score_dy
 	var score_c := Color(1, 1, 1, 0.97).lerp(Color(1.0, 0.27, 0.31, 1.0), _score_red)
-	_sc_node.draw_string(font, Vector2(right - 400.0, 24), "SCORE", HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 12, Color(1, 1, 1, 0.55).lerp(Color(1.0, 0.4, 0.42, 0.85), _score_red))
-	_sc_node.draw_string(_score_font, Vector2(right - 400.0 + 2.0, 74.0 + 2.0), score_text, HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 48, Color(0, 0, 0, 0.5))
-	_sc_node.draw_string(_score_font, Vector2(right - 400.0, 74.0), score_text, HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 48, score_c)
-	_sc_node.draw_string(font, Vector2(right - 400.0, 102.0), "%.2f%%" % prog_pct, HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 20, Color(0.62, 0.9, 1.0, 0.9))
+	_sc_node.draw_string(font, Vector2(right - 400.0, 24 + dy), "SCORE", HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 12, Color(1, 1, 1, 0.55).lerp(Color(1.0, 0.4, 0.42, 0.85), _score_red))
+	_sc_node.draw_string(_score_font, Vector2(right - 400.0 + 2.0, 74.0 + 2.0 + dy), score_text, HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 48, Color(0, 0, 0, 0.5))
+	_sc_node.draw_string(_score_font, Vector2(right - 400.0, 74.0 + dy), score_text, HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 48, score_c)
+	# 進行率(撃破 MOD では曲が繰り返すので、代わりに何周目か)
+	var sub := ("LOOP %d" % (sim.loop_index(_now) + 1)) if sim.loop_len > 0.0 else "%.2f%%" % prog_pct
+	_sc_node.draw_string(font, Vector2(right - 400.0, 102.0 + dy), sub, HORIZONTAL_ALIGNMENT_RIGHT, 400.0, 20, Color(0.62, 0.9, 1.0, 0.9))
 
 
 ## キアイ中の光を更新する。キアイの出入りはなめらかに、光は拍の頭で立ち上がって(約 40ms)次の拍に向けて消えていく。
@@ -1109,9 +1159,9 @@ func _dist_to_rect(p: Vector2, r: Rect2) -> float:
 func _update_hud_fade(delta: float, instant := false) -> void:
 	var pp: Vector2 = ARENA_POS + sim.player_pos
 	var pr: float = 14.0 * sim.player_scale
-	var hp_rect := Rect2(HP_X - 26.0, HP_Y - 22.0, _hp_w + HP_SL + 52.0, HP_H + 46.0)
+	var hp_rect := Rect2(_hp_x - 26.0, _hp_y - 22.0, _hp_w + HP_SL + 52.0, HP_H + 46.0)
 	var right := ARENA_POS.x + PatternGen.ARENA.x - 28.0
-	var sc_rect := Rect2(right - 300.0, 6.0, 306.0, 124.0)
+	var sc_rect := Rect2(right - 300.0, 6.0 + _score_dy, 306.0, 124.0)
 	var k := 1.0 if instant else 1.0 - exp(-delta * 12.0)
 	for spec in [[hp_rect, 0], [sc_rect, 1]]:
 		var d := maxf(_dist_to_rect(pp, spec[0]) - pr, 0.0)
@@ -1122,6 +1172,10 @@ func _update_hud_fade(delta: float, instant := false) -> void:
 			_sc_a += (target - _sc_a) * k
 	_hp_node.modulate.a = _hp_a
 	_sc_node.modulate.a = _sc_a
+	if _boss_gauge != null:   # ボスのゲージも、自機が近づくと薄くなる
+		var gd := maxf(_dist_to_rect(pp, Rect2(BossGauge.X - 10.0, 0.0, BossGauge.W + 40.0, 64.0)) - pr, 0.0)
+		var gt := lerpf(0.3, 1.0, smoothstep(0.0, HUD_FADE_DIST, gd))
+		_boss_gauge.modulate.a += (gt - _boss_gauge.modulate.a) * k
 
 
 func _draw_hud() -> void:
@@ -1147,16 +1201,23 @@ func _draw_hud() -> void:
 		_hud.draw_rect(Rect2(cx - bw * 0.5, ky + 16.0, bw * _break_frac, 4.0), Color(0.62, 0.9, 1.0, 0.9 * _break_a))
 
 	# 進行バー(フィールド下端。休憩地帯は淡い区間で示す)
+	# 撃破 MOD では曲が繰り返すので、いまの周の中の位置を出す(時刻は 1 周目に戻して数える)
 	var span := maxf(_end_time, 1.0)
-	var pr := clampf(_now / span, 0.0, 1.0)
+	var shift := 0.0
+	if sim != null and sim.loop_len > 0.0:
+		span = sim.loop_end + Boss.BONUS_TIME
+		shift = float(sim.loop_index(_now)) * sim.loop_len
+	var pr := clampf((_now - shift) / span, 0.0, 1.0)
 	var aw: float = PatternGen.ARENA.x
 	_hud.draw_rect(Rect2(ax, 716, aw, 4), Color(1, 1, 1, 0.08))
 	if sim != null:
 		for b in sim.breaks:
-			var x0 := clampf(float(b[0]) / span, 0.0, 1.0) * aw
-			var x1 := clampf(float(b[1]) / span, 0.0, 1.0) * aw
-			_hud.draw_rect(Rect2(ax + x0, 716, maxf(x1 - x0, 1.0), 4), Color(1, 1, 1, 0.22))
+			var x0 := clampf((float(b[0]) - shift) / span, 0.0, 1.0)
+			var x1 := clampf((float(b[1]) - shift) / span, 0.0, 1.0)
+			if x1 - x0 > 0.0:
+				_hud.draw_rect(Rect2(ax + x0 * aw, 716, maxf((x1 - x0) * aw, 1.0), 4), Color(1, 1, 1, 0.22))
 	_hud.draw_rect(Rect2(ax, 716, aw * pr, 4), Color(0.5, 0.9, 1.0, 0.9))
+	_draw_bonus_hud()
 	# アリーナ枠
 	_hud.draw_rect(Rect2(ARENA_POS, PatternGen.ARENA), Color(1, 1, 1, 0.35).lerp(Color(1.0, 0.35, 0.38, 0.75), clampf(_hit_glow, 0.0, 1.0)), false, 2.0)   # 被弾中は枠がなめらかに赤くなる
 
@@ -1223,6 +1284,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 ## イントロ(最初のノーツまでの何もない区間)を飛ばした先の曲時間。最初のノーツの SKIP_LEAD 秒前。
 func _skip_target() -> float:
+	if sim.boss != null:   # 撃破: ボスの登場(WARNING)が見えるところまで
+		return sim.boss.appear_t - 1.4
 	return sim.first_fire_time - SKIP_LEAD
 
 
@@ -1533,6 +1596,205 @@ func _animate_hud(delta: float) -> void:
 	_update_kiai(delta)
 	_dark_scale += ((DARK_SLOW_SCALE if sim.slow else 1.0) - _dark_scale) * (1.0 - exp(-delta * 9.0))
 	_break_a = move_toward(_break_a, 1.0 if _update_break_count() else 0.0, delta * 4.0)
+	_update_boss_hud(delta)
+
+
+## 撃破 MOD: ボスのゲージ・右パネルの強化を更新し、アイテムを取った・倒したときに音と演出を出す。
+func _update_boss_hud(delta: float) -> void:
+	var b = sim.boss
+	if b == null:
+		return
+	if _boss_gauge != null:
+		_boss_gauge.tick(delta, _now)
+	_update_weapon_labels()
+	while _pick_seen < b.pick_events.size():
+		var ev: Dictionary = b.pick_events[_pick_seen]
+		_pick_seen += 1
+		if not _dead:
+			_item_fx(str(ev.kind), ev.p)
+	if b.defeated and not _boss_down_seen:
+		_boss_down_seen = true
+		_sfx.play("boom", 1.0, clampf(b.defeat_pos.x / PatternGen.ARENA.x * 2.0 - 1.0, -1.0, 1.0))   # explosion はゲームオーバーの音なので使わない
+		UiSfx.play("stamp", 0.9)
+		if not _dead:   # 中央に「BOSS DEFEATED」(このあとクリア)
+			_center_label.text = "BOSS DEFEATED"
+			_center_label.add_theme_color_override("font_color", UiStyle.GOLD)
+			_center_label.visible = true
+			_center_label.modulate.a = 1.0
+			_center_label.pivot_offset = _center_label.size * 0.5
+			UiStyle.spring(_center_label, "scale", Vector2(1.4, 1.4), Vector2.ONE, 0.35)
+
+
+## 撃破 MOD: 上部のボスのゲージを作る(WARNING の重い音・節目の音をつなぐ)。
+func _build_boss_gauge() -> void:
+	_boss_gauge = BossGauge.new()
+	_boss_gauge.boss = sim.boss
+	_boss_gauge.warned.connect(func():
+		_sfx.play("boom")
+		UiSfx.play("whoosh", 0.7))
+	_boss_gauge.phase_crossed.connect(func(): UiSfx.play("whoosh", 1.25))
+	_hud.add_child(_boss_gauge)
+
+
+## アイテムを取ったときの音と演出(種類の色の輪・粒と、効果の名前が自機の上に浮かぶ)。ボムは盤面いっぱいに輪が広がる。
+func _item_fx(kind: String, at: Vector2) -> void:
+	var spec: Dictionary = Boss.ITEMS[kind]
+	var c: Color = spec.color
+	UiSfx.play("confirm", {"power": 1.2, "rate": 1.35, "wide": 1.1, "heal": 1.5, "bomb": 0.8}.get(kind, 1.2))
+	UiFx.ring(_arena, sim.player_pos, Color(c.r, c.g, c.b, 0.9), 8.0, 50.0, 0.4, 2.5)
+	UiFx.burst(_arena, at, c, 10, 140.0, 0.45, 2.5)
+	if kind == "bomb":
+		_sfx.play("boom", 1.0, clampf(sim.player_pos.x / PatternGen.ARENA.x * 2.0 - 1.0, -1.0, 1.0))
+		UiFx.ring(_arena, sim.player_pos, Color(1.0, 0.85, 0.45, 0.85), 20.0, 1100.0, 0.7, 6.0)
+		UiFx.ring(_arena, sim.player_pos, Color(1.0, 1.0, 1.0, 0.6), 10.0, 800.0, 0.55, 3.0)
+	elif kind == "heal":
+		UiFx.ring(_arena, sim.player_pos, Color(c.r, c.g, c.b, 0.7), 34.0, 8.0, 0.5, 3.0)
+	if not UiStyle.animate:
+		return
+	var lv: int = sim.boss.level_of(kind)
+	var mx: int = spec.max
+	var text: String = spec.name
+	if mx > 0:
+		text += "  MAX" if lv >= mx else "  Lv%d" % lv
+	var l := UiStyle.label(text, 15, c.lerp(Color.WHITE, 0.35), true)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.size = Vector2(200, 22)
+	l.position = sim.player_pos - Vector2(100, 48)
+	_arena.add_child(l)
+	var tw := l.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(l, "position:y", l.position.y - 34.0, 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(l, "modulate:a", 0.0, 0.5).set_delay(0.4)
+	tw.chain().tween_callback(l.queue_free)
+
+
+## 右パネルの強化の段階(変わったときだけ書き換える)。
+func _update_weapon_labels() -> void:
+	var b = sim.boss
+	if b == null or _weapon_ls.is_empty():
+		return
+	var key := "%d_%d_%d" % [b.power, b.rate_lv, b.wide_lv]
+	if key == _weapon_seen:
+		return
+	_weapon_seen = key
+	var rows := {"power": "攻撃  ×%.2f" % b.power_mul, "rate": "連射  ×%.2f" % (1.0 + Boss.RATE_STEP * b.rate_lv), "wide": "ワイド  %d 列" % Boss.WIDE_OFFSETS[b.wide_lv].size()}
+	for k in rows:
+		var l: Label = _weapon_ls[k]
+		var lv: int = b.level_of(k)
+		l.text = rows[k] + ("  MAX" if lv >= int(Boss.ITEMS[k].max) else "")
+		var c: Color = Boss.ITEMS[k].color
+		l.add_theme_color_override("font_color", c.lerp(Color.WHITE, 0.3) if lv > 0 else UiStyle.TEXT_DIM)
+
+
+## 撃破 MOD: ボーナスタイムの早送りを始める(曲の音程と速さが上がっていく)。
+func _begin_ff() -> void:
+	_ff_t = 0.0
+	_ff_jumped = false
+	UiSfx.play("whoosh", 1.3)
+
+
+## 撃破 MOD: 早送りを 1 フレーム進める。曲クロックは実時間で進め、曲の速さ(音程)を 1 → FF_PEAK → 1 倍に動かし、
+## 半分のところで曲の位置を、終わりにちょうど次の周の始まりに着くところへ飛ばす。終わったら次の周へ。
+func _tick_ff(delta: float) -> void:
+	var dur: float = Boss.BONUS_TIME
+	_ff_t += delta
+	_now += delta
+	var u := clampf(_ff_t / dur, 0.0, 1.0)
+	var f := 1.0 + (FF_PEAK - 1.0) * sin(PI * u)
+	if not _dead:
+		_audio.pitch_scale = _rate * f
+		_audio.volume_db = linear_to_db(1.0 - 0.3 * sin(PI * u))   # 速いところで少しだけ下げる
+	var land: float = sim.loop_from * _rate   # 着く先(曲の秒)
+	if not _ff_jumped and _ff_t >= dur * 0.5 and not _dead:
+		_ff_jumped = true
+		# 残りで進む曲の秒 = rate × ∫[u·dur, dur] (1 + (FF_PEAK − 1) sin(πτ/dur)) dτ = rate × (dur(1 − u) + (FF_PEAK − 1) dur/π (1 + cos πu))
+		var rest := _rate * (dur * (1.0 - u) + (FF_PEAK - 1.0) * dur / PI * (1.0 + cos(PI * u)))
+		var to := maxf(land - rest, 0.0)
+		if _audio.playing:
+			_audio.seek(to)
+		else:
+			_audio.play(to)
+	if _ff_t >= dur:
+		_ff_t = -1.0
+		_loop_k += 1
+		_now = maxf(_now, float(_loop_k) * sim.loop_len + sim.loop_from)
+		_end_ff()
+		if not _dead:
+			UiSfx.play("whoosh", 0.8)
+			_show_loop_banner()
+
+
+## 早送りの後始末: ふつうの速さ・音量に戻し、曲の位置が次の周の始まりからずれていれば合わせる(早送りの途中で呼ばれたときも)。
+func _end_ff() -> void:
+	if sim.loop_len <= 0.0:
+		return
+	var mid := _ff_t >= 0.0
+	_ff_t = -1.0
+	if _dead:
+		return
+	_audio.pitch_scale = _rate
+	_audio.volume_db = 0.0
+	if mid:   # 途中(クリアなど): 次の周の始まりへ
+		_audio.seek(sim.loop_from * _rate)
+		return
+	var want: float = sim.loop_from * _rate
+	if absf(_audio.get_playback_position() - want) > 0.05:
+		_audio.seek(want)
+
+
+## 撃破 MOD: 次の周に入ったとき、中央に「LOOP n」が弾んで出て、消える。
+func _show_loop_banner() -> void:
+	if sim.boss == null or sim.boss.defeated or not UiStyle.animate:
+		return
+	_center_label.text = "LOOP %d" % (_loop_k + 1)
+	_center_label.add_theme_color_override("font_color", Color(0.62, 0.9, 1.0))
+	_center_label.visible = true
+	_center_label.modulate.a = 1.0
+	_center_label.pivot_offset = _center_label.size * 0.5
+	UiStyle.spring(_center_label, "scale", Vector2(1.35, 1.35), Vector2.ONE, 0.35)
+	var t := _center_label.create_tween()
+	t.tween_interval(0.5)
+	t.tween_property(_center_label, "modulate:a", 0.0, 0.4)
+	t.tween_callback(func():
+		if not _dead and not (sim.boss != null and sim.boss.defeated):
+			_center_label.visible = false)
+
+
+## 撃破 MOD: ボーナスタイムの表示。上部(ボスのゲージの下)に「BONUS TIME」と早送りの印・残りのバー、フィールドには、左へ流れる早送りの光の筋。
+func _draw_bonus_hud() -> void:
+	if sim == null or sim.boss == null or sim.boss.defeated or _dead:
+		return
+	var left: float = sim.bonus_left(_now)
+	if left < 0.0:
+		return
+	var dur: float = Boss.BONUS_TIME
+	var u := 1.0 - left / dur
+	var env := smoothstep(0.0, 0.15, u) * (1.0 - smoothstep(0.85, 1.0, u))
+	var sp := sin(PI * u)   # 早送りの速さ(曲と同じ形)
+	var ax := ARENA_POS.x
+	var aw: float = PatternGen.ARENA.x
+	# 早送りの光の筋(フィールド全体。速いところほど長く、明るい)
+	for i in range(18):
+		var hy := fmod(float(i) * 97.3 + 13.0, 700.0) + 10.0
+		var spd := 900.0 + 700.0 * fmod(float(i) * 0.618, 1.0)
+		var x := ax + aw - fposmod(_now * spd * (0.4 + sp) + float(i) * 211.0, aw + 300.0) + 150.0
+		var ln := (60.0 + 260.0 * sp) * (0.6 + 0.4 * fmod(float(i) * 0.37, 1.0))
+		var x0 := clampf(x, ax, ax + aw)
+		var x1 := clampf(x + ln, ax, ax + aw)
+		if x1 - x0 > 1.0:
+			_hud.draw_line(Vector2(x0, hy), Vector2(x1, hy), Color(0.75, 0.9, 1.0, 0.10 * env * (0.4 + sp)), 2.0)
+	# 「BONUS TIME」と早送りの印、残りのバー
+	var cx := ax + aw * 0.5
+	var y := 104.0
+	var font := _score_font
+	var gold := Color(1.0, 0.86, 0.4, env)
+	_hud.draw_string(font, Vector2(cx - 200.0, y), "BONUS TIME", HORIZONTAL_ALIGNMENT_CENTER, 400.0, 30, gold)
+	for k in range(2):   # ▶▶(早送りの印。速いほど右へ流れる)
+		var ox := cx + 118.0 + 16.0 * k + 6.0 * sp
+		_hud.draw_colored_polygon(PackedVector2Array([Vector2(ox, y - 22.0), Vector2(ox + 13.0, y - 13.0), Vector2(ox, y - 4.0)]), gold)
+	var bw := 260.0
+	_hud.draw_rect(Rect2(cx - bw * 0.5, y + 10.0, bw, 4.0), Color(1, 1, 1, 0.15 * env))
+	_hud.draw_rect(Rect2(cx - bw * 0.5, y + 10.0, bw * (left / dur), 4.0), gold)
 
 
 ## 休憩のカウントダウン(弾を一掃してから休憩が終わるまで)の残りを更新する。表示すべきなら true。

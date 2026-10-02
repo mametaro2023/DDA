@@ -839,6 +839,7 @@ func open_mods() -> void:
 		return
 	var p := ModPanel.new()
 	p.theme = UiStyle.make_theme()
+	p.multi = pick_mode
 	p.setup(settings, _mod_level)
 	p.changed.connect(_on_mods_changed)
 	p.closed.connect(_close_mods)

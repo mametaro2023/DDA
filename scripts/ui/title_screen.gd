@@ -34,6 +34,7 @@ const PITCHES := [1.0, 1.122, 1.26, 1.5, 1.68]   # 項目ごとの選択音の�
 var settings: Dictionary = {}
 var update_info: Dictionary = {}   # 新しいバージョンがあるとき、main が渡す(あとから見つかった場合は show_update)
 var _update_btn: Button
+var _ver_chip: Control      # 「BETA v…」のチップ(更新の案内は、その右隣に置く)
 
 var _sel := 0
 var _cards: Array = []
@@ -104,6 +105,7 @@ func _ready() -> void:
 	var ver := UiStyle.chip("BETA   v%s" % _version(), UiStyle.GOLD)
 	ver.position = Vector2(112, 292)
 	add_child(ver)
+	_ver_chip = ver
 	UiStyle.pop_in(sub, 0.15, Vector2(-30, 0), 0.6)
 	UiStyle.pop_in(ver, 0.25, Vector2(-30, 0), 0.6)
 
@@ -152,7 +154,7 @@ func _ready() -> void:
 		show_update(update_info)
 
 
-## 新しいバージョンの案内(版の表示の下)。押すと、アップデートのパネルが開く。
+## 新しいバージョンの案内(版の表示の右隣。項目のカードには重ならない)。押すと、アップデートのパネルが開く。
 func show_update(info: Dictionary) -> void:
 	if _update_btn != null:
 		return
@@ -163,7 +165,7 @@ func show_update(info: Dictionary) -> void:
 	_update_btn.add_theme_stylebox_override("hover", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.26), UiStyle.ACCENT, 1, 4, 14, 6))
 	_update_btn.add_theme_color_override("font_color", UiStyle.ACCENT)
 	_update_btn.add_theme_color_override("font_hover_color", Color.WHITE)
-	_update_btn.position = Vector2(112, 328)
+	_update_btn.position = Vector2(112 + _ver_chip.get_combined_minimum_size().x + 14.0, 286)
 	_update_btn.pressed.connect(func():
 		if _overlay == null and not _leaving:
 			update_requested.emit())
@@ -314,7 +316,9 @@ func _activate(i: int) -> void:
 			UiSfx.play("open")
 			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
 		4:
-			_open(QuitPanel.new())
+			var q := QuitPanel.new()
+			q.confirmed.connect(func(): get_tree().quit())
+			_open(q)
 
 
 ## 決めた項目から、水色の輪と粒が広がる。

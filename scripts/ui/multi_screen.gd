@@ -2,6 +2,7 @@ extends Control
 ## マルチプレイの画面。入口(部屋を作る / 招待コードで入る)→ ロビー(参加者・モード・曲・開始)。
 ## 状態はすべて通信層(net.gd)が持ち、この画面はそれを描いて、操作を net に伝えるだけ。ゲームが始まると main が画面を切り替える。
 ##
+## 配置: 左上に「戻る」(ロビーでは「退出」。他の参加者がいるホストは、確認してから)、右上に「設定」、右下に主ボタン(ゲーム開始 / 準備完了)。
 ## 操作: Esc で戻る(ロビーでは部屋を出る)。マウスでも全部できる。
 
 signal back_requested        # 入口から、タイトルへ
@@ -18,6 +19,7 @@ const MpGame = preload("res://scripts/net/mp_game.gd")
 const SongDownload = preload("res://scripts/song_download.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
+const QuitPanel = preload("res://scripts/ui/quit_panel.gd")
 
 const BG_TINT := Color(0.3, 0.3, 0.36)
 const MODES := [["versus", "対戦"], ["coop", "協力"]]
@@ -38,6 +40,8 @@ var _busy := false
 var _t := 0.0
 var _resolve_t := 0.0
 var _ping_labels: Dictionary = {}
+var _my_ping_label: Label            # 参加者: 自分の遅延の表示
+var _confirm: Control                # 開いている確認パネル(ホストが部屋を閉じるとき)
 var _preview_md5 := ""
 var _dl: Node                       # 曲のダウンロード(必要になったときに作る)
 var _dl_frac := 0.0
@@ -117,6 +121,7 @@ func _clear_content() -> void:
 		c.queue_free()
 		_content.remove_child(c)
 	_ping_labels.clear()
+	_my_ping_label = null
 	_name_edit = null
 	_code_edit = null
 	_status = null
@@ -129,14 +134,15 @@ func _place(c: Control, x: float, y: float, w: float, h: float) -> Control:
 	return c
 
 
+## 見出し。「戻る」は左上(選曲画面と同じ場所)、「設定」は右上(main のボタン)。
 func _header(back_text: String, on_back: Callable) -> void:
-	_place(UiStyle.label("MULTIPLAYER", 30, UiStyle.ACCENT, true), 36, 20, 400, 40)
-	_place(UiStyle.caption("ONLINE / LAN"), 38, 62, 300, 16)
 	var back := Button.new()
 	back.text = back_text
 	back.focus_mode = Control.FOCUS_NONE
 	back.pressed.connect(on_back)
-	_place(back, 1044, 24, 124, 34)   # 右上の「設定」(main のボタン)と並べる
+	_place(back, 32, 20, 116, 34)
+	_place(UiStyle.label("MULTIPLAYER", 30, UiStyle.ACCENT, true), 164, 16, 400, 40)
+	_place(UiStyle.caption("ONLINE / LAN"), 166, 58, 300, 16)
 
 
 func _panel(x: float, y: float, w: float, h: float, alpha := 0.04) -> PanelContainer:
@@ -151,14 +157,7 @@ func _button(text: String, on_press: Callable, primary := false) -> Button:
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
 	if primary:
-		b.add_theme_stylebox_override("normal", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.9), Color(0, 0, 0, 0), 0, 4, 16, 8))
-		b.add_theme_stylebox_override("hover", UiStyle.box(UiStyle.ACCENT, Color(0, 0, 0, 0), 0, 4, 16, 8))
-		b.add_theme_stylebox_override("pressed", UiStyle.box(UiStyle.ACCENT, Color(0, 0, 0, 0), 0, 4, 16, 8))
-		b.add_theme_stylebox_override("disabled", UiStyle.box(Color(1, 1, 1, 0.08), Color(0, 0, 0, 0), 0, 4, 16, 8))
-		for k in ["font_color", "font_hover_color", "font_pressed_color"]:
-			b.add_theme_color_override(k, Color(0.02, 0.06, 0.1))
-		b.add_theme_color_override("font_disabled_color", UiStyle.TEXT_FAINT)
-		b.add_theme_font_override("font", UiStyle.bold())
+		UiStyle.style_primary(b)
 	b.pressed.connect(on_press)
 	return b
 
@@ -307,7 +306,7 @@ func _refresh_lobby() -> void:
 	_clear_content()
 	var is_host: bool = net.is_host()
 	var room: Dictionary = net.room
-	_header("退出", _leave)
+	_header("◀  退出", _request_leave)
 	# --- 左: 招待コード / 参加者 ---
 	if is_host:
 		var cp := _panel(36, 92, 600, 128)
@@ -339,7 +338,9 @@ func _refresh_lobby() -> void:
 			if net.players[id].slot == 0:
 				hname = str(net.players[id].name)
 		hv.add_child(UiStyle.label("%s の部屋" % hname, 30, UiStyle.TEXT, true))
-		hv.add_child(UiStyle.label("遅延 %s ms" % ("%.0f" % net.ping_ms if net.ping_ms >= 0.0 else "-"), 12, UiStyle.TEXT_DIM))
+		_my_ping_label = UiStyle.label("", 12, UiStyle.TEXT_DIM)
+		_update_my_ping()
+		hv.add_child(_my_ping_label)
 	var pp := _panel(36, 240, 600, 360)
 	var pv := VBoxContainer.new()
 	pv.add_theme_constant_override("separation", 8)
@@ -443,6 +444,8 @@ func _refresh_lobby() -> void:
 		_place(rb, 1088, 626, 160, 44)
 		var hint := "ホストが開始するのを待っています" if is_ready else ("準備ができたら「準備完了」を押してください" if have_song else "曲を入れると、準備完了にできます")
 		_place(UiStyle.label(hint, 13, UiStyle.GOOD if is_ready else UiStyle.TEXT_DIM), 668, 638, 400, 20)
+	else:   # 参加者で、ホストがまだ曲を選んでいない
+		_place(UiStyle.label("ホストが曲を選ぶのを待っています", 13, UiStyle.TEXT_DIM), 668, 638, 400, 20)
 	_update_bg()
 	if not _lobby_built:   # 最初だけ、パネルが左右から滑り込む
 		_lobby_built = true
@@ -593,6 +596,32 @@ func _leave() -> void:
 	net.leave()   # left が届いて、入口に戻る
 
 
+## 部屋を出る。他の参加者がいるホストが出ると部屋が閉じてしまうので、先に確認する(参加者や、1 人だけの部屋は、すぐ出る)。
+func _request_leave() -> void:
+	if not (net.is_host() and net.players.size() > 1):
+		_leave()
+		return
+	if _confirm != null:
+		return
+	var q := QuitPanel.new()
+	q.setup("部屋を閉じますか？", "閉じる", "キャンセル")
+	q.confirmed.connect(func():
+		q.queue_free()
+		_confirm = null
+		_leave())
+	q.closed.connect(func():
+		q.queue_free()
+		_confirm = null)
+	_confirm = q
+	add_child(q)
+
+
+## 参加者の自分の遅延の表示を更新する(部屋の画面を作り直さずに、数字だけ)。
+func _update_my_ping() -> void:
+	if _my_ping_label != null:
+		_my_ping_label.text = "遅延 %s ms" % ("%.0f" % net.ping_ms if net.ping_ms >= 0.0 else "-")
+
+
 func _open_songs_dir() -> void:
 	var d := SongLibrary.ensure_user_dir()
 	OS.shell_open(d)
@@ -631,6 +660,8 @@ func _process(delta: float) -> void:
 				if net.players.has(id):
 					var pg := float(net.players[id].ping)
 					_ping_labels[id].text = "%.0f ms" % pg if pg >= 0.0 else "- ms"
+		else:
+			_update_my_ping()
 	_resolve_t += delta
 	if _resolve_t >= 2.0:   # 曲をあとから入れたときに、見つけられるように
 		_resolve_t = 0.0
@@ -643,7 +674,7 @@ func _input(event: InputEvent) -> void:
 		return
 	if event.keycode == KEY_ESCAPE:
 		if _page == "lobby":
-			_leave()
+			_request_leave()
 		elif _page == "entry":
 			back_requested.emit()
 		get_viewport().set_input_as_handled()

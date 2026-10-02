@@ -146,8 +146,10 @@ var _sfx_pending_pan: Array = []  # 同じ順の、左右の位置
 var _left_col: Control
 var _right_col: Control
 var _pause_btns: Array = []
-var _pause_sel := 0       # 0..2 = ボタン、3 = 音量、4 = 効果音
-var _pause_vol: Array = []   # [スライダー, 値ラベル, 見出しラベル]
+const PAUSE_ROWS := 6       # 再開 / リトライ / メニューへ / 全体音量 / 音楽 / 効果音
+var _pause_sel := 0       # 0..2 = ボタン、3 = 全体音量、4 = 音楽、5 = 効果音
+var _pause_vol: Array = []   # [スライダー, 値ラベル, 見出しラベル, 行の枠]
+var _pause_music: Array = []
 var _pause_sfx: Array = []
 var _hud: Node2D
 var _hp_node: Node2D      # 体力バーの描画層(自機が近づくと薄くなる)
@@ -354,7 +356,7 @@ func _build_hud() -> void:
 	_build_right_panel()
 	_center_label = _label("READY", ARENA_POS + Vector2(0, 300), 40, PatternGen.ARENA.x)
 	_center_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_center_label.pivot_offset = Vector2(PatternGen.ARENA.x * 0.5, 30)
+	_center_label.pivot_offset = _center_label.size * 0.5   # ラベルの真ん中を軸に弾む
 	_hud = Node2D.new()
 	_hud.draw.connect(_draw_hud)
 	add_child(_hud)
@@ -370,7 +372,7 @@ func _build_hud() -> void:
 	UiStyle.pop_in(_right_col, 0.1, Vector2(26, 0), 0.5)
 	UiStyle.tween(_hud, "modulate:a", 0.0, 1.0, 0.6, 0.15)
 	UiStyle.tween(_center_label, "modulate:a", 0.0, 1.0, 0.4, 0.25)
-	_center_label.pivot_offset = Vector2(PatternGen.ARENA.x * 0.5, 30)
+	_center_label.pivot_offset = _center_label.size * 0.5   # ラベルの真ん中を軸に弾む
 	UiStyle.tween(_center_label, "scale", Vector2(1.3, 1.3), Vector2.ONE, 0.55, 0.25, Tween.TRANS_BACK)
 
 
@@ -438,7 +440,8 @@ func _build_right_panel() -> void:
 	col.add_child(_hit_l)
 
 
-## ポーズ画面(暗転 + 中央パネル。項目: 再開 / リトライ / メニューへ / 音量 / 効果音)。
+## ポーズ画面(暗転 + 中央パネル)。項目は 6 行: 再開 / リトライ / メニューへ / 全体音量 / 音楽 / 効果音(設定・音量メーターと同じ名前と並び)。
+## マウスを乗せた行が選択になり、枠で示す。キーでも、↑↓ で全部の行を選べる(← → は選んだ音量の行だけを動かす)。
 func _build_pause() -> void:
 	_pause_layer = Control.new()
 	_pause_layer.size = Vector2(1280, 720)
@@ -451,8 +454,8 @@ func _build_pause() -> void:
 	_pause_layer.add_child(dim)
 	var panel := PanelContainer.new()
 	_pause_panel = panel
-	panel.position = Vector2(420, 130)
-	panel.size = Vector2(440, 10)
+	panel.position = Vector2(400, 112)
+	panel.size = Vector2(480, 10)
 	panel.add_theme_stylebox_override("panel", UiStyle.box(UiStyle.PANEL, UiStyle.LINE, 1, 8, 30, 26))
 	_pause_layer.add_child(panel)
 	var v := VBoxContainer.new()
@@ -461,49 +464,70 @@ func _build_pause() -> void:
 	v.add_child(UiStyle.label("MENU" if _mp != null else "PAUSED", 28, UiStyle.TEXT, true))   # マルチプレイでは、ゲームは止まらない
 	v.add_child(UiStyle.hline())
 	_pause_btns.clear()
-	var specs := [["再開", "Esc", Callable(self, "_pause_activate").bind(0)],
-		["リトライ", "R", Callable(self, "_pause_activate").bind(1)],
-		["メニューへ", "Q", Callable(self, "_pause_activate").bind(2)]]
+	var btn_box := VBoxContainer.new()
+	btn_box.add_theme_constant_override("separation", 8)
+	v.add_child(btn_box)
+	var specs := [["再開", Callable(self, "_pause_activate").bind(0)],
+		["リトライ", Callable(self, "_pause_activate").bind(1)],
+		["メニューへ", Callable(self, "_pause_activate").bind(2)]]
 	for i in range(specs.size()):
 		var b := Button.new()
 		b.text = specs[i][0]
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		b.focus_mode = Control.FOCUS_NONE
-		b.pressed.connect(specs[i][2])
+		b.custom_minimum_size = Vector2(0, 44)
+		b.pressed.connect(specs[i][1])
 		b.mouse_entered.connect(func():
 			_pause_sel = i
 			_refresh_pause())
-		v.add_child(b)
+		btn_box.add_child(b)
 		_pause_btns.append(b)
 	if _mp != null:   # マルチプレイ: リトライはなく、「メニューへ」は部屋を出ることになる
 		_pause_btns[1].visible = false
 		_pause_btns[2].text = "退出"
 	v.add_child(UiStyle.hline())
-	_pause_vol = _pause_slider_row(v, "音量", func(x: float): _set_master_volume(int(x)))
-	_pause_sfx = _pause_slider_row(v, "効果音", func(x: float): _set_sfx_volume(int(x)))
+	var row_box := VBoxContainer.new()
+	row_box.add_theme_constant_override("separation", 6)
+	v.add_child(row_box)
+	_pause_vol = _pause_slider_row(row_box, 3, "全体音量", func(x: float): _set_master_volume(int(x)))
+	_pause_music = _pause_slider_row(row_box, 4, "音楽", func(x: float): _set_music_volume(int(x)))
+	_pause_sfx = _pause_slider_row(row_box, 5, "効果音", func(x: float): _set_sfx_volume(int(x)))
 
 
-## ポーズ画面の音量スライダー 1 行(見出し + スライダー + 値)。[スライダー, 値ラベル] を返す。
-func _pause_slider_row(parent: Control, cap: String, on_change: Callable) -> Array:
+## ポーズ画面の音量スライダー 1 行(見出し + スライダー + 値。選択中は枠で示す)。idx はその行の _pause_sel の番号。
+## [スライダー, 値ラベル, 見出しラベル, 行の枠] を返す。
+func _pause_slider_row(parent: Control, idx: int, cap: String, on_change: Callable) -> Array:
+	var row := PanelContainer.new()
+	row.custom_minimum_size = Vector2(0, 40)
+	row.mouse_filter = Control.MOUSE_FILTER_PASS   # 子(スライダー)の上でも、行に入ったことが分かる
 	var h := HBoxContainer.new()
-	h.add_theme_constant_override("separation", 14)
+	h.add_theme_constant_override("separation", 12)
+	row.add_child(h)
 	var l := UiStyle.label(cap, 15, UiStyle.TEXT)
-	l.custom_minimum_size = Vector2(70, 0)
+	l.custom_minimum_size = Vector2(88, 0)
 	h.add_child(l)
 	var s := HSlider.new()
 	s.min_value = 0
 	s.max_value = 100
 	s.step = 5
-	s.custom_minimum_size = Vector2(210, 0)
+	s.custom_minimum_size = Vector2(170, 0)
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	s.focus_mode = Control.FOCUS_NONE
 	s.value_changed.connect(on_change)
 	h.add_child(s)
 	var val := UiStyle.label("", 15, UiStyle.ACCENT)
 	val.custom_minimum_size = Vector2(50, 0)
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	h.add_child(val)
-	parent.add_child(h)
-	return [s, val, l]
+	var select_row := func():
+		if _pause_sel != idx:
+			_pause_sel = idx
+			_refresh_pause()
+	row.mouse_entered.connect(select_row)
+	s.mouse_entered.connect(select_row)
+	parent.add_child(row)
+	return [s, val, l, row]
 
 
 func _label(text: String, pos: Vector2, font_size: int, width: float) -> Label:
@@ -1102,22 +1126,25 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_UP, KEY_DOWN:
 			if _menu_open():
 				var d := -1 if event.keycode == KEY_UP else 1
-				for _i in range(5):
-					_pause_sel = (_pause_sel + d + 5) % 5
+				for _i in range(PAUSE_ROWS):
+					_pause_sel = (_pause_sel + d + PAUSE_ROWS) % PAUSE_ROWS
 					if not (_mp != null and _pause_sel == 1):   # マルチプレイにリトライはない
 						break
-				UiSfx.play("select", 1.0 + 0.12 * _pause_sel)
+				UiSfx.play("select", 1.0 + 0.1 * _pause_sel)
 				if _pause_sel < _pause_btns.size():   # 選んだボタンが、ぴょこっと弾む
 					_pause_btns[_pause_sel].pivot_offset = _pause_btns[_pause_sel].size * 0.5
 					UiStyle.spring(_pause_btns[_pause_sel], "scale", Vector2(1.06, 1.06), Vector2.ONE, 0.3)
 				_refresh_pause()
 		KEY_LEFT, KEY_RIGHT:
-			if _menu_open():
+			if _menu_open() and _pause_sel >= 3:   # 選んでいる音量の行だけを動かす(ボタンの行では、何も起きない)
 				var d := -5 if event.keycode == KEY_LEFT else 5
-				if _pause_sel == 4:
-					_set_sfx_volume(int(settings.get("sfx_volume", 70)) + d)
-				else:
-					_set_master_volume(int(settings.get("volume", 80)) + d)
+				match _pause_sel:
+					3:
+						_set_master_volume(int(settings.get("volume", 80)) + d)
+					4:
+						_set_music_volume(int(settings.get("music_volume", 100)) + d)
+					_:
+						_set_sfx_volume(int(settings.get("sfx_volume", 70)) + d)
 		KEY_ENTER, KEY_KP_ENTER:
 			if _menu_open() and _pause_sel < 3:
 				_pause_activate(_pause_sel)
@@ -1301,6 +1328,13 @@ func _set_master_volume(v: int) -> void:
 	_refresh_pause()
 
 
+func _set_music_volume(v: int) -> void:
+	settings.music_volume = clampi(v, 0, 100)
+	Volume.set_music(settings.music_volume)
+	Settings.save_all(settings)
+	_refresh_pause()
+
+
 func _set_sfx_volume(v: int) -> void:
 	settings.sfx_volume = clampi(v, 0, 100)
 	Volume.set_sfx(settings.sfx_volume)
@@ -1315,18 +1349,26 @@ func _set_sfx_volume(v: int) -> void:
 func _refresh_pause() -> void:
 	if Volume.loaded:   # ホイールで変えた値も出す
 		settings.volume = Volume.master
+		settings.music_volume = Volume.music
 		settings.sfx_volume = Volume.sfx
-	for i in range(_pause_btns.size()):
-		var sel := (i == _pause_sel)
-		_pause_btns[i].add_theme_stylebox_override("normal", UiStyle.box(
-			Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.16) if sel else Color(1, 1, 1, 0.05),
-			UiStyle.ACCENT if sel else UiStyle.LINE, 1, 4, 16, 8))
-	for k in range(2):
-		var row: Array = _pause_vol if k == 0 else _pause_sfx
-		var value := int(settings.get("volume", 80)) if k == 0 else int(settings.get("sfx_volume", 70))
+	for i in range(_pause_btns.size()):   # 選択中の行は、アクセント色の枠(ボタンも、音量の行も同じ見た目)
+		_pause_btns[i].add_theme_stylebox_override("normal", _pause_row_style(i == _pause_sel, 16.0, 8.0))
+	var rows := [_pause_vol, _pause_music, _pause_sfx]
+	var keys := ["volume", "music_volume", "sfx_volume"]
+	var defaults := [80, 100, 70]
+	for k in range(rows.size()):
+		var row: Array = rows[k]
+		var value := int(settings.get(keys[k], defaults[k]))
 		row[0].set_value_no_signal(value)
 		row[1].text = "%d%%" % value
 		row[2].add_theme_color_override("font_color", UiStyle.ACCENT if _pause_sel == 3 + k else UiStyle.TEXT)
+		(row[3] as PanelContainer).add_theme_stylebox_override("panel", _pause_row_style(_pause_sel == 3 + k, 14.0, 4.0))
+
+
+func _pause_row_style(selected: bool, mh: float, mv: float) -> StyleBoxFlat:
+	return UiStyle.box(
+		Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.16) if selected else Color(1, 1, 1, 0.05),
+		UiStyle.ACCENT if selected else UiStyle.LINE, 1, 4, mh, mv)
 
 
 func _input(event: InputEvent) -> void:
@@ -1350,7 +1392,7 @@ func _fade_out_center() -> void:
 	# 曲が始まる瞬間に READY が「GO」に変わり、少し膨らみながら消える
 	_center_label.text = "GO"
 	_center_label.modulate.a = 1.0
-	_center_label.pivot_offset = Vector2(PatternGen.ARENA.x * 0.5, 30)
+	_center_label.pivot_offset = _center_label.size * 0.5   # ラベルの真ん中を軸に弾む
 	UiStyle.spring(_center_label, "scale", Vector2(0.8, 0.8), Vector2(1.15, 1.15), 0.3)
 	var t := _center_label.create_tween()
 	t.tween_interval(0.12)

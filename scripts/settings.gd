@@ -20,6 +20,8 @@ const DEFAULTS := {
 	"window_size": "",    # ウィンドウの大きさ("1600x900" の形、または "fullscreen")。空なら変えない(標準は 1280x720。枠のドラッグで変えた大きさは保存しない)
 	"show_fps": false,      # 画面右下に FPS(描画・処理)を出す
 	"check_update": true, # 起動時に、新しいバージョンがないか確認する
+	"auto_update": true,  # 新しいバージョンが見つかったら、自動でダウンロードして入れ替える(check_update が入のとき。書き出した版のみ)
+	"last_auto_update": "", # 最後に自動更新を始めたバージョン(同じバージョンで繰り返し更新し続けないための印)
 	"player_name": "",    # マルチプレイでの表示名(空なら初回に自動で決める)
 }
 
@@ -87,10 +89,35 @@ static func apply_window_size(size: Vector2i) -> void:
 	DisplayServer.window_set_position(area.position + (area.size - (size + deco)) / 2)
 
 
+## 全画面にする前のウィンドウの大きさ(F11 で戻すとき用。まだ分からなければ標準の 1280x720)
+static var windowed_size := Vector2i(1280, 720)
+
+
+static func is_fullscreen() -> bool:
+	var mode := DisplayServer.window_get_mode()
+	return mode == DisplayServer.WINDOW_MODE_FULLSCREEN or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
+
+
+## 全画面 ⇔ ウィンドウを入れ替える(F11)。d の window_size を、入れ替えた結果("fullscreen" または "1600x900")に書き換えて返す(保存は呼び出し側)。
+## ウィンドウに戻すときは、全画面にする前の大きさへ戻す。
+static func toggle_fullscreen(d: Dictionary) -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	if is_fullscreen():
+		apply_window_size(windowed_size)
+		var now := DisplayServer.window_get_size()
+		d["window_size"] = "%dx%d" % [now.x, now.y]
+	else:
+		apply_fullscreen()
+		d["window_size"] = "fullscreen"
+
+
 ## 全画面にする(枠のない全画面。画面の解像度のまま、ゲームの画面は縦横の比を保って広がる)。
 static func apply_fullscreen() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
+	if not is_fullscreen():
+		windowed_size = DisplayServer.window_get_size()   # F11 で戻すときの大きさ
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
 

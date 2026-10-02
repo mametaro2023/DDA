@@ -1,5 +1,7 @@
 extends Control
-## 設定パネル(選曲画面の上に重ねる)。操作 / 音 / 画面 / ゲーム の 4 セクション(MOD は、難易度選択画面の MOD ボタンから)。
+## 設定パネル(選曲画面の上に重ねる)。操作 / 音 / 画面 / その他 の 4 セクション(MOD は、難易度選択画面の MOD ボタンから)。
+## 使う順に並べてある: 操作(マウスが標準)→ 音(音量とオフセット)→ 画面(ウィンドウの大きさが先頭)→ その他(更新・ファイルの関連付け)。
+## 右上の ✕、パネルの外のクリック、左下の「閉じる」、Esc で閉じる。
 ## settings(Settings.load_all の辞書)を直接書き換え、変えたら changed(kind) を出す。保存は閉じるときに呼び出し側が行う。
 ##   kind: "volume" | "control" | "misc"
 
@@ -14,7 +16,7 @@ const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const ToggleCard = preload("res://scripts/ui/toggle_card.gd")
 const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
 
-const SECTIONS := ["操作", "音", "画面", "ゲーム"]
+const SECTIONS := ["操作", "音", "画面", "その他"]
 
 var settings: Dictionary
 
@@ -116,10 +118,16 @@ func _ready() -> void:
 	root.add_child(content_margin)
 	var stack := Control.new()
 	content_margin.add_child(stack)
-	_pages = [_build_control(), _build_audio(), _build_screen(), _build_game()]
+	_pages = [_build_control(), _build_audio(), _build_screen(), _build_other()]
 	for p in _pages:
 		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		stack.add_child(p)
+	var x_btn := UiStyle.close_button(close_panel)   # 右上の ✕(ページの見出しの行の右端)
+	x_btn.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	x_btn.offset_left = -38.0
+	x_btn.offset_bottom = 36.0
+	stack.add_child(x_btn)
+	UiStyle.close_on_outside_click(self, panel, close_panel)
 
 	_show(0)
 	# 開く動き: 背景が暗くなり、パネルが下からふわっと上がる
@@ -152,7 +160,7 @@ func _show(i: int) -> void:
 			j += 1
 	_move_nav_indicator(prev < 0)
 	if i == 2:
-		_refresh_size()
+		refresh_size()
 
 
 ## 選択の枠を、選んだ項目の位置へ動かす(行き過ぎてから戻る。最初だけ、レイアウトが決まってから、その場に置く)。
@@ -240,24 +248,24 @@ func _set_toggle(c: PanelContainer, on: bool) -> void:
 	ToggleCard.set_on(c, on)
 
 
-## スライダー 1 行: 見出し + スライダー + 値。値の表示は fmt(値) -> String。
-func _slider_row(parent: Control, cap: String, lo: float, hi: float, step: float, value: float, fmt: Callable) -> HSlider:
+## スライダー 1 行: 見出し + スライダー + 値。値の表示は fmt(値) -> String。幅(見出し・スライダー・値)は、行の合計が 669px に収まる範囲で変えられる。
+func _slider_row(parent: Control, cap: String, lo: float, hi: float, step: float, value: float, fmt: Callable, cap_w := 170.0, slider_w := 380.0, val_w := 90.0) -> HSlider:
 	var h := HBoxContainer.new()
 	h.add_theme_constant_override("separation", 16)
 	var l := UiStyle.label(cap, 15, UiStyle.TEXT)
-	l.custom_minimum_size = Vector2(170, 0)
+	l.custom_minimum_size = Vector2(cap_w, 0)
 	h.add_child(l)
 	var s := HSlider.new()
 	s.min_value = lo
 	s.max_value = hi
 	s.step = step
 	s.value = value
-	s.custom_minimum_size = Vector2(380, 0)
+	s.custom_minimum_size = Vector2(slider_w, 0)
 	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	s.focus_mode = Control.FOCUS_NONE
 	h.add_child(s)
 	var v := UiStyle.label(fmt.call(value), 15, UiStyle.ACCENT)
-	v.custom_minimum_size = Vector2(90, 0)
+	v.custom_minimum_size = Vector2(val_w, 0)
 	h.add_child(v)
 	s.value_changed.connect(func(x: float):
 		v.text = fmt.call(x)
@@ -273,22 +281,30 @@ func _slider_row(parent: Control, cap: String, lo: float, hi: float, step: float
 func _build_control() -> Control:
 	var v := _page("操作", "")
 	var refs := {}   # ラムダは変数を値で捕まえるので、互いに参照する 2 枚のカードは辞書経由にする
+	# 感度はマウスのときだけ効くので、キーボードのときは薄くして触れなくする
+	var sync_sens := func():
+		var mouse: bool = settings.control == "mouse"
+		for c in refs.sens_row.get_children():   # (行そのものの透明度は、ページを開くときのフェードが使う)
+			c.modulate.a = 1.0 if mouse else 0.35
+		refs.sens.editable = mouse
+	refs.ms = _toggle_card("マウス", "", UiStyle.ACCENT, settings.control == "mouse", "",   # 標準の操作なので先頭
+		func(on: bool):
+			if not on:
+				_set_toggle(refs.ms, true)   # 必ずどちらか 1 つ
+			_set_toggle(refs.kb, false)
+			settings.control = "mouse"
+			sync_sens.call()
+			changed.emit("control"))
 	refs.kb = _toggle_card("キーボード", "", UiStyle.ACCENT, settings.control != "mouse", "",
 		func(on: bool):
 			if not on:
-				_set_toggle(refs.kb, true)   # 必ずどちらか 1 つ
+				_set_toggle(refs.kb, true)
 			_set_toggle(refs.ms, false)
 			settings.control = "keyboard"
+			sync_sens.call()
 			changed.emit("control"))
-	refs.ms = _toggle_card("マウス", "", UiStyle.ACCENT, settings.control == "mouse", "",
-		func(on: bool):
-			if not on:
-				_set_toggle(refs.ms, true)
-			_set_toggle(refs.kb, false)
-			settings.control = "mouse"
-			changed.emit("control"))
-	v.add_child(refs.kb)
 	v.add_child(refs.ms)
+	v.add_child(refs.kb)
 	var gap := Control.new()
 	gap.custom_minimum_size = Vector2(0, 10)
 	v.add_child(gap)
@@ -296,6 +312,9 @@ func _build_control() -> Control:
 	s.value_changed.connect(func(x: float):
 		settings.mouse_sens = x
 		changed.emit("misc"))
+	refs.sens = s
+	refs.sens_row = s.get_parent()
+	sync_sens.call()
 	return v
 
 
@@ -306,16 +325,25 @@ func _build_audio() -> Control:
 		settings.volume = int(x)
 		Settings.apply_volume(x)
 		changed.emit("volume"))
+	var m := _slider_row(v, "音楽", 0, 100, 5, float(settings.music_volume), func(x): return "%d%%" % int(x))   # 全体 → 音楽 → 効果音(ホイールのメーター・ポーズと同じ並び)
+	m.value_changed.connect(func(x: float):
+		settings.music_volume = int(x)
+		Volume.set_music(x)
+		changed.emit("volume"))
 	var b := _slider_row(v, "効果音", 0, 100, 5, float(settings.sfx_volume), func(x): return "%d%%" % int(x))
 	b.value_changed.connect(func(x: float):
 		settings.sfx_volume = int(x)
 		Volume.set_sfx(x)
 		changed.emit("volume"))
-	var m := _slider_row(v, "音楽", 0, 100, 5, float(settings.music_volume), func(x): return "%d%%" % int(x))
-	m.value_changed.connect(func(x: float):
-		settings.music_volume = int(x)
-		Volume.set_music(x)
-		changed.emit("volume"))
+	# 音と弾のタイミング校正(音に関わる設定なので、ここに置く)。+ で弾が遅れる、− で早まる
+	var gap_o := Control.new()
+	gap_o.custom_minimum_size = Vector2(0, 8)
+	v.add_child(gap_o)
+	var o := _slider_row(v, "オフセット", -300, 300, 5, float(settings.offset_ms), func(x):
+		return "%+d ms%s" % [int(x), "   弾が遅れる" if x > 0.0 else ("   弾が早まる" if x < 0.0 else "")], 170.0, 300.0, 180.0)   # 見出しの幅は他の行と同じ(スライダーの左端をそろえる)
+	o.value_changed.connect(func(x: float):
+		settings.offset_ms = int(x)
+		changed.emit("misc"))
 	var gap := Control.new()
 	gap.custom_minimum_size = Vector2(0, 8)
 	v.add_child(gap)
@@ -330,18 +358,7 @@ func _build_audio() -> Control:
 
 func _build_screen() -> Control:
 	var v := _page("画面", "")
-	v.add_child(_toggle_card("垂直同期", "画面の更新に合わせて描きます(ずれ・ちぎれを抑える)。切ると遅延が少し減りますが、ずれが出ることがあります", UiStyle.ACCENT,
-		bool(settings.vsync), "", func(on: bool):
-			settings.vsync = on
-			Settings.apply_vsync(on)))
-	v.add_child(_toggle_card("FPS を表示", "画面の右下に、描画と処理の FPS を出します(プレイ中は、弾の判定の計算回数も出ます)。F3 キーでも一時的に切り替えられます", UiStyle.ACCENT,
-		FpsOverlay.enabled, "", func(on: bool):
-			settings.show_fps = on
-			FpsOverlay.enabled = on))
-	var gap := Control.new()
-	gap.custom_minimum_size = Vector2(0, 8)
-	v.add_child(gap)
-	v.add_child(UiStyle.label("解像度(ウィンドウの大きさ)", 16, UiStyle.TEXT, true))
+	v.add_child(UiStyle.label("解像度(ウィンドウの大きさ)", 16, UiStyle.TEXT, true))   # いちばん触る項目なので先頭
 	var seg := HBoxContainer.new()
 	seg.add_theme_constant_override("separation", 8)
 	var group := ButtonGroup.new()
@@ -356,7 +373,7 @@ func _build_screen() -> Control:
 		b.pressed.connect(func():
 			settings.window_size = "%dx%d" % [size.x, size.y]
 			Settings.apply_window_size(size)
-			_refresh_size.call_deferred())
+			refresh_size.call_deferred())
 		b.set_meta("size", size)
 		seg.add_child(b)
 		_size_btns.append(b)
@@ -369,20 +386,31 @@ func _build_screen() -> Control:
 	fs_btn.pressed.connect(func():
 		settings.window_size = "fullscreen"
 		Settings.apply_fullscreen()
-		_refresh_size.call_deferred())
+		refresh_size.call_deferred())
 	seg.add_child(fs_btn)
 	_fullscreen_btn = fs_btn
 	v.add_child(seg)
 	_size_label = UiStyle.label("", 13, UiStyle.TEXT_DIM)
 	v.add_child(_size_label)
-	var hint := UiStyle.label("ウィンドウの枠をドラッグして、好きな大きさにもできます(縦横の比は保たれ、余白は黒くなります)。画面に入らない大きさは選べません。画面いっぱいにしたいときは「全画面」を選んでください(大きさを選び直すと、ウィンドウに戻ります)。", 12, UiStyle.TEXT_FAINT)
+	var hint := UiStyle.label("ウィンドウの枠をドラッグして、好きな大きさにもできます(縦横の比は保たれ、余白は黒くなります)。", 12, UiStyle.TEXT_FAINT)
 	hint.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	v.add_child(hint)
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 8)
+	v.add_child(gap)
+	v.add_child(_toggle_card("垂直同期", "画面の更新に合わせて描きます(ずれ・ちぎれを抑える)。切ると遅延が少し減りますが、ずれが出ることがあります", UiStyle.ACCENT,
+		bool(settings.vsync), "", func(on: bool):
+			settings.vsync = on
+			Settings.apply_vsync(on)))
+	v.add_child(_toggle_card("FPS を表示", "画面の右下に、描画と処理の FPS を出します(プレイ中は、弾の判定の計算回数も出ます)", UiStyle.ACCENT,
+		FpsOverlay.enabled, "", func(on: bool):
+			settings.show_fps = on
+			FpsOverlay.enabled = on))
 	return v
 
 
-## いまのウィンドウの大きさを表示し、候補のうち同じ大きさのものを選んだ状態にする。画面に入らない候補は押せなくする。
-func _refresh_size() -> void:
+## いまのウィンドウの大きさを表示し、候補のうち同じ大きさのものを選んだ状態にする。画面に入らない候補は押せなくする。F11 で変わったときも main が呼ぶ。
+func refresh_size() -> void:
 	if _size_label == null:
 		return
 	var cur := DisplayServer.window_get_size()
@@ -396,18 +424,13 @@ func _refresh_size() -> void:
 	_fullscreen_btn.set_pressed_no_signal(full)
 
 
-func _build_game() -> Control:
-	var v := _page("ゲーム", "")
-	var o := _slider_row(v, "オフセット", -300, 300, 5, float(settings.offset_ms), func(x): return "%+d ms" % int(x))
-	o.value_changed.connect(func(x: float):
-		settings.offset_ms = int(x)
-		changed.emit("misc"))
+func _build_other() -> Control:
+	var v := _page("その他", "")
 	# 更新の確認
-	var gap_u := Control.new()
-	gap_u.custom_minimum_size = Vector2(0, 8)
-	v.add_child(gap_u)
 	v.add_child(_toggle_card("起動時に更新を確認する", "新しいバージョンがあれば、タイトル画面でお知らせします(GitHub に問い合わせます)", UiStyle.ACCENT,
 		bool(settings.check_update), "", func(on: bool): settings.check_update = on))
+	v.add_child(_toggle_card("見つけたら自動で更新する", "新しいバージョンが見つかったら、起動したタイトル画面で、ダウンロードして入れ替え、再起動します(書き出した版のみ。曲や設定はそのまま)", UiStyle.ACCENT,
+		bool(settings.auto_update), "", func(on: bool): settings.auto_update = on))
 	# .osz を開くとき(Windows)。このアプリの関連付け(書き出した版のみ。既定のアプリは、Windows の設定で選ぶ)
 	if FileAssoc.supported():
 		var gap_a := Control.new()

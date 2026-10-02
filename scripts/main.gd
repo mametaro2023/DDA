@@ -15,10 +15,12 @@ const SfxBank = preload("res://scripts/sfx_bank.gd")
 const HpGraph = preload("res://scripts/ui/hp_graph.gd")
 const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const Volume = preload("res://scripts/volume.gd")
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
 const Updater = preload("res://scripts/updater.gd")
 const UpdatePanel = preload("res://scripts/ui/update_panel.gd")
+const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
 const OszImport = preload("res://scripts/osz_import.gd")
 const SingleInstance = preload("res://scripts/single_instance.gd")
 const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
@@ -47,6 +49,7 @@ var _music: AudioStreamPlayer = null   # クリアで引き継いだ曲(リザ�
 var _fade_enabled := false
 var _wipe: Node                    # 画面の切り替えの幕(斜めのワイプ)
 var _fading := false
+var _f11_down := false              # F11 を押している間(押した瞬間だけ全画面を切り替えるため)
 var _pending: Node = null
 
 
@@ -116,6 +119,9 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-sfx"):
 		_smoke_sfx()
+		return
+	if args.has("--smoke-autoupdate"):
+		_smoke_autoupdate()
 		return
 	if args.has("--smoke-modscroll"):
 		_smoke_modscroll()
@@ -203,6 +209,34 @@ func _smoke() -> void:
 func _on_update_checked(info: Dictionary) -> void:
 	if bool(info.get("newer", false)) and _current != null and _current.get_script() == TitleScreen:
 		_current.show_update(info)
+		_maybe_auto_update(info)
+
+
+## 起動時の自動更新: 新しいバージョンが見つかったら、タイトル画面でパネルを開き、すぐダウンロード → 入れ替え → 再起動する。
+## 次のときは自動で始めない(案内のボタンだけ残る): 設定で切ってある / 書き出した版でない・書き込めない場所 / もう別の操作を始めている /
+## 前回この版で自動更新を始めたのに、まだ古いまま(版の付け間違いなどで、更新を繰り返し続けないための印。使う人が途中でキャンセルしたときは、印を戻す)。
+func _maybe_auto_update(info: Dictionary) -> bool:
+	var st := Settings.load_all()
+	if not (bool(st.check_update) and bool(st.auto_update)):
+		return false
+	if updater == null or not updater.can_self_update():
+		return false
+	if str(st.last_auto_update) == str(info.get("version", "")):
+		return false
+	var t = _current
+	if t == null or t.get_script() != TitleScreen or t._overlay != null or t._leaving or _settings_panel != null or _fading:
+		return false
+	st.last_auto_update = str(info.get("version", ""))
+	Settings.save_all(st)
+	var p := UpdatePanel.new()
+	p.setup(updater)
+	p.auto_start = true
+	p.cancelled.connect(func():
+		var s2 := Settings.load_all()
+		s2.last_auto_update = ""
+		Settings.save_all(s2))
+	t._open(p)
+	return true
 
 
 ## 起動時の引数から、開く .osz を探す(ファイルの関連付けからは `-- "パス"` で届く。単に引数として渡されても拾う)。
@@ -246,14 +280,40 @@ func _open_in_dda(path: String) -> void:
 	show_menu()
 
 
-## ウィンドウに .osz をドロップした(選曲画面では、選曲画面が自分で受け取る)。
+## ウィンドウに .osz をドロップした(どの画面でも同じ)。すべて取り込み(songs にコピー。次の起動でも残る)、最後の曲を選ぶ。
+## 選曲画面では、画面を作り直さずに一覧へ足して選ぶ。プレイ中・ロビーでは取り込みだけ。
 func _on_files_dropped(files: PackedStringArray) -> void:
-	if _current != null and _current.get_script() == MenuScreen:
-		return
+	var oszs: Array = []
 	for f in files:
-		if f.to_lower().ends_with(".osz"):
-			_open_in_dda(f.replace("\\", "/"))
+		if str(f).to_lower().ends_with(".osz"):
+			oszs.append(str(f).replace("\\", "/"))
+	if oszs.is_empty():
+		if overlay != null and _current != null:
+			overlay.toast(".osz ファイル以外は取り込めません")
+		return
+	if UiStyle.animate and _current is Control:   # 受け取った合図: 画面の真ん中から輪が広がる(ドロップされるまで、アプリは何も知らされないので、これが最初の反応)
+		UiFx.ring(_current, Vector2(640, 360), UiStyle.ACCENT, 30.0, 560.0, 0.7, 3.0)
+	var imported := 0
+	for i in range(oszs.size() - 1):   # 最後の 1 つ以外は、取り込みだけ
+		if OszImport.import_file(oszs[i]).ok:
+			imported += 1
+	var last: String = oszs[oszs.size() - 1]
+	if _current != null and _current.get_script() == MenuScreen:
+		var r := OszImport.import_file(last)
+		if not r.ok:
+			if overlay != null:
+				overlay.toast(str(r.error))
 			return
+		_watch_sync()
+		_current.refresh_songs()
+		_current.select_path(str(r.path))
+		if overlay != null:
+			var name := str(r.title) if str(r.title) != "" else str(r.path).get_file()
+			overlay.toast("%d 曲を取り込みました" % (imported + 1) if oszs.size() > 1 else (("%s を開きます" if r.existed else "%s を取り込みました") % name))
+		return
+	_open_in_dda(last)
+	if oszs.size() > 1 and overlay != null:
+		overlay.toast("%d 曲を取り込みました" % (imported + 1))
 
 
 ## 画面を切り替える。通常起動では、短い暗転(フェードアウト → 入れ替え → フェードイン。点滅・フラッシュなし)を挟む。
@@ -305,7 +365,7 @@ func _update_settings_button() -> void:
 	_settings_btn.visible = _current != null and s != GameScreen and s != TitleScreen and s != MenuScreen and _settings_panel == null
 
 
-## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=ゲーム)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
 func open_settings(section := 0) -> void:
 	if _settings_panel != null or _current == null or _current.get_script() == GameScreen:
 		return
@@ -324,6 +384,7 @@ func open_settings(section := 0) -> void:
 	_settings_panel = p
 	if "_options" in _current:
 		_current._options = p
+	_current.set_process_input(false)   # 開いている間、下の画面は Esc や矢印に反応しない(パネルより先にキーを受け取ってしまうため)
 	_update_settings_button()
 
 
@@ -335,6 +396,8 @@ func close_settings() -> void:
 	_settings_panel = null
 	if _current != null and "_options" in _current:
 		_current._options = null
+	if is_instance_valid(_current):
+		_current.set_process_input(true)
 	p.queue_free()
 	_update_settings_button()
 
@@ -489,6 +552,7 @@ func _watch_sync() -> void:
 
 
 func _process(delta: float) -> void:
+	_poll_fullscreen_key()
 	_watch_t += delta
 	if _watch_t < 2.0:
 		return
@@ -496,6 +560,23 @@ func _process(delta: float) -> void:
 	if overlay == null or _current == null or _current.get_script() == GameScreen:
 		return   # 通常の起動でだけ、プレイ中以外に見張る
 	_watch_poll()
+
+
+## F11 で全画面 ⇔ ウィンドウ。パネルがキーを全部受け止めている間も効くよう、押した瞬間を見て判断する。プレイ中(ポーズ以外)は効かない。
+func _poll_fullscreen_key() -> void:
+	var down := Input.is_key_pressed(KEY_F11)
+	var edge := down and not _f11_down
+	_f11_down = down
+	if not edge or _current == null or _fading:
+		return
+	if _current.get_script() == GameScreen and not _current._paused:
+		return
+	var st = _current.get("settings")
+	var d: Dictionary = _settings_dict if _settings_panel != null else (st if st is Dictionary else Settings.load_all())
+	Settings.toggle_fullscreen(d)
+	Settings.save_all(d)
+	if _settings_panel != null:
+		_settings_panel.refresh_size.call_deferred()   # 開いている設定の「解像度」の表示も合わせる
 
 
 ## 新しく置かれた .osz を見つけて知らせる。コピーの途中かもしれないので、大きさが 2 回続けて同じになってから(読めたら)知らせる。
@@ -588,6 +669,10 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
+			if extra.has("empty"):   # 曲が 1 つもない状態: --shot menu out.png empty
+				await _current.debug_empty()
+			if extra.has("loading"):   # 曲の読み込み中の見た目: --shot menu out.png loading
+				await _current.debug_loading()
 		"cursor":
 			show_menu()   # 独自カーソル(押せるもの・ふつうの場所)。例: --shot cursor out.png hover|idle
 			var cu := CursorOverlay.new()
@@ -605,7 +690,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
 			_current.open_mods()
 		"options":
-			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=ゲーム)
+			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=その他)
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
 			_current.open_options(int(extra[0]) if extra.size() > 0 and extra[0].is_valid_int() else 0)
 		"game":
@@ -877,14 +962,21 @@ func _smoke_ui() -> void:
 	var m = _current
 	while m._job_pending:   # 曲の読み込み(別スレッド)を待つ
 		await get_tree().process_frame
-	print("menu: songs=%d diffs=%d diff_sel=%d focus_diff=%s" % [m._song_cards.size(), m._diff_cards.size(), m._diff_sel, str(m._focus_diff)])
-	await _key(KEY_DOWN)
-	print("Down       -> diff_sel=%d" % m._diff_sel)
-	await _key(KEY_TAB)
+	print("menu: songs=%d diffs=%d diff_sel=%d play_enabled=%s" % [m._song_cards.size(), m._diff_cards.size(), m._diff_sel, str(not m._play_btn.disabled)])
+	# ↑↓ は常に曲、← → は常に難易度
 	var song_before: int = m._song_sel
+	await _key(KEY_DOWN)
+	print("Down       -> song_sel %d -> %d (expect +1)  loading=%s play_enabled=%s (expect true, false)" % [song_before, m._song_sel, str(m._job_pending), str(not m._play_btn.disabled)])
+	while m._job_pending:
+		await get_tree().process_frame
+	var diff_before: int = m._diff_sel
+	await _key(KEY_RIGHT)
+	print("Right      -> diff_sel %d -> %d (expect +1 unless last)  song_sel=%d (expect unchanged)" % [diff_before, m._diff_sel, m._song_sel])
+	await _key(KEY_LEFT)
 	await _key(KEY_UP)
-	print("Tab, Down  -> focus_diff=%s song_sel %d -> %d (diffs=%d)" % [str(m._focus_diff), song_before, m._song_sel, m._diff_cards.size()])
-	await _key(KEY_TAB)
+	while m._job_pending:
+		await get_tree().process_frame
+	print("Left, Up   -> diff_sel=%d song_sel=%d (expect back at %d)  play_enabled=%s" % [m._diff_sel, m._song_sel, song_before, str(not m._play_btn.disabled)])
 	var lv_before: float = m._ratings[m._diff_sel].level
 	await _key(KEY_M)
 	print("M          -> mod panel open=%s" % str(m._mod_panel != null))
@@ -911,14 +1003,21 @@ func _smoke_ui() -> void:
 	print("Enter      -> screen=%s mods=%s Lv=%.2f (MODなし %.2f)" % [g.get_script().resource_path.get_file(), str(g._mods.ids), g.gen.level, g.gen.base_level])
 	await _key(KEY_ESCAPE)
 	print("Esc        -> paused=%s layer=%s" % [str(g._paused), str(g._pause_layer.visible)])
+	var vol0 := int(g.settings.volume)
 	await _key(KEY_DOWN)
 	await _key(KEY_RIGHT)
-	print("Down,Right -> sel=%d volume=%d" % [g._pause_sel, int(g.settings.volume)])
-	for i in range(3):
+	print("Down,Right -> sel=%d (expect 1)  volume %d -> %d (expect unchanged: ボタンの行では ← → は何もしない)" % [g._pause_sel, vol0, int(g.settings.volume)])
+	for i in range(3):   # 1 → 0 → 5(効果音)→ 4(音楽)
 		await _key(KEY_UP)
+	var music0 := int(g.settings.get("music_volume", 100))
+	await _key(KEY_LEFT)
+	print("Up x3,Left -> sel=%d (expect 4)  music %d -> %d (expect -5)" % [g._pause_sel, music0, int(g.settings.get("music_volume", 100))])
+	for i in range(2):   # 4 → 5 → 0(先頭へ戻る)
+		await _key(KEY_DOWN)
 	await _key(KEY_ENTER)
-	print("Up x3, Enter  -> paused=%s" % str(g._paused))
-	await _key(KEY_ESCAPE)
+	print("Down x2, Enter -> sel=%d (expect 0)  paused=%s (expect false: 再開)" % [g._pause_sel, str(g._paused)])
+	await _key(KEY_ESCAPE)   # もう一度ポーズ
+	print("Esc        -> paused=%s (expect true)" % str(g._paused))
 	await _key(KEY_Q)
 	for i in range(3):
 		await get_tree().process_frame
@@ -1061,7 +1160,67 @@ func _smoke_sfx() -> void:
 	get_tree().quit()
 
 
-## 開発用: MOD パネルの上でホイールを回すと、パネルの一覧が動き、後ろの難易度の一覧は動かないことを確かめる。-- --smoke-modscroll
+## 開発用: 起動時の自動更新の判断を確かめる(新しいバージョンが見つかったときに、パネルが開いて更新を始めるか。ダウンロード先は存在しないアドレス)。-- --smoke-autoupdate
+func _smoke_autoupdate() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	updater = Updater.new()
+	add_child(updater)
+	updater.allow_any_url = true
+	updater.force_apply = true   # 開発中の実行でも、入れ替えられるものとして扱う
+	var info := {"ok": true, "newer": true, "version": "9.9.9", "notes": "test", "page": Updater.PAGE_URL, "asset_url": "http://127.0.0.1:9/none.zip", "asset_size": 0, "digest": ""}
+	updater.info = info
+	var set_st := func(auto: bool, last: String):
+		var d := Settings.load_all()
+		d.check_update = true
+		d.auto_update = auto
+		d.last_auto_update = last
+		Settings.save_all(d)
+	var fresh_title := func():
+		show_title()
+		await get_tree().create_timer(1.2).timeout
+	# 1) 切ってあれば、始めない
+	set_st.call(false, "")
+	await fresh_title.call()
+	chk.call(not _maybe_auto_update(info) and _current._overlay == null, "設定で切ってあると、自動では始めない")
+	# 2) 入れていて、まだ試していない版なら、パネルが開いてすぐダウンロードを始める
+	set_st.call(true, "")
+	await fresh_title.call()
+	var t = _current
+	t._update_btn = null
+	chk.call(_maybe_auto_update(info), "入れていれば、自動で始める")
+	await get_tree().create_timer(0.5).timeout
+	chk.call(t._overlay != null and t._overlay.get_script() == UpdatePanel and t._overlay._busy, "更新のパネルが開き、ダウンロード中になっている")
+	chk.call(str(Settings.load_all().last_auto_update) == "9.9.9", "始めた版の印が残る: %s" % str(Settings.load_all().last_auto_update))
+	# 3) 使う人がキャンセルすると、閉じて、印が戻る(次の起動で、また自動で始められる)
+	t._overlay._on_later()
+	await get_tree().create_timer(0.6).timeout
+	chk.call(t._overlay == null and str(Settings.load_all().last_auto_update) == "", "キャンセルすると、パネルが閉じて、印が戻る")
+	# 4) 前回この版で自動更新を始めたのに、まだ古いままなら、繰り返さない
+	set_st.call(true, "9.9.9")
+	await fresh_title.call()
+	chk.call(not _maybe_auto_update(info) and _current._overlay == null, "同じ版で自動更新を繰り返さない(案内のボタンだけ)")
+	# 5) 別の操作を始めていたら(遊び方を開いているなど)、割り込まない
+	set_st.call(true, "")
+	await fresh_title.call()
+	_current._open(HowToPanel.new())
+	await get_tree().create_timer(0.4).timeout
+	chk.call(not _maybe_auto_update(info), "パネルを開いている間は、割り込まない")
+	# 6) 入れ替えられない環境(書き出した版でない)では、始めない
+	updater.force_apply = false
+	set_st.call(true, "")
+	await fresh_title.call()
+	chk.call(OS.has_feature("template") or not _maybe_auto_update(info), "入れ替えられない環境(開発中の実行)では、始めない")
+	Settings.restore(original)
+	print("smoke-autoupdate: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## 開発用: MOD パネルの 6 枚がスクロールなしで収まり、パネルの上でホイールを回しても、後ろの難易度・曲の一覧は動かないことを確かめる。-- --smoke-modscroll
 func _smoke_modscroll() -> void:
 	var orig := Settings.load_all()
 	var st := {"fails": 0}
@@ -1077,12 +1236,38 @@ func _smoke_modscroll() -> void:
 	while m._job_pending:
 		await get_tree().process_frame
 	await get_tree().create_timer(1.0).timeout
+	# 曲を続けて切り替えても、難易度の一覧が暗いまま残らない(読み込み中の暗転と、完了後の復帰が重ならない)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	for n in range(14):
+		m._select_song(rng.randi_range(0, m._songs.size() - 1))
+		await get_tree().create_timer(rng.randf_range(0.0, 0.45)).timeout
+	while m._job_pending:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.6).timeout
+	chk.call(m._diff_scroll.modulate.a > 0.999, "曲を続けて切り替えたあとも、難易度の一覧は暗くならない(透明度 %.3f)" % m._diff_scroll.modulate.a)
+	# 一度読んだ曲は、弾幕を作り直さないので速い
+	var idx_a := 5
+	var idx_b := 6
+	m._select_song(idx_a)
+	while m._job_pending:
+		await get_tree().process_frame
+	m._select_song(idx_b)
+	while m._job_pending:
+		await get_tree().process_frame
+	var t_hit := Time.get_ticks_msec()
+	m._select_song(idx_a)
+	while m._job_pending:
+		await get_tree().process_frame
+	var ms_hit := Time.get_ticks_msec() - t_hit
+	chk.call(m._loader != null and m._diff_cards.size() >= 1 and ms_hit < 400, "一度読んだ曲は、弾幕を作り直さず速く読める(%d ms)" % ms_hit)
+	await get_tree().create_timer(1.0).timeout
 	var diff_before: int = m._diff_scroll.scroll_vertical
 	var song_before: int = m._song_scroll.scroll_vertical
 	m.open_mods()
 	await get_tree().create_timer(0.8).timeout
 	var sc: ScrollContainer = m._mod_panel.find_children("*", "ScrollContainer", true, false)[0]
-	chk.call(sc.get_v_scroll_bar().max_value - sc.get_v_scroll_bar().page > 0.0, "MOD の一覧は、スクロールが必要な長さ")
+	chk.call(sc.get_v_scroll_bar().max_value - sc.get_v_scroll_bar().page <= 0.5, "MOD の 6 枚は、スクロールなしで収まる(高さ %d / 表示 %d)" % [int(sc.get_v_scroll_bar().max_value), int(sc.get_v_scroll_bar().page)])
 	# 難易度の一覧の真上でもある位置(パネルの中)にマウスを置いて、ホイールを回す
 	var at: Vector2 = sc.get_global_rect().get_center()
 	get_viewport().warp_mouse(at)
@@ -1098,8 +1283,53 @@ func _smoke_modscroll() -> void:
 		await get_tree().process_frame
 		await get_tree().process_frame
 	await get_tree().create_timer(0.6).timeout
-	chk.call(sc.scroll_vertical > 0, "MOD の一覧がスクロールする(%d)" % sc.scroll_vertical)
 	chk.call(m._diff_scroll.scroll_vertical == diff_before and m._song_scroll.scroll_vertical == song_before, "後ろの難易度・曲の一覧は動かない(%d → %d)" % [diff_before, m._diff_scroll.scroll_vertical])
+	# マウスだけで: パネルの中のクリックでは閉じず、外のクリックと「✕」で閉じる。「すべて解除」で MOD が外れる
+	var click_at := func(p: Vector2) -> InputEventMouseButton:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = MOUSE_BUTTON_LEFT
+		ev.pressed = true
+		ev.position = p
+		ev.global_position = p
+		return ev
+	m._mod_panel.gui_input.emit(click_at.call(Vector2(640, 300)))
+	await get_tree().create_timer(0.4).timeout
+	chk.call(m._mod_panel != null, "MOD: パネルの中のクリックでは閉じない")
+	var storm: Control = _find_card(m._mod_panel, "暴風雨")
+	storm.gui_input.emit(click_at.call(Vector2(10, 10)))
+	await get_tree().process_frame
+	chk.call(m.settings.mods == ["storm"], "MOD: カードのクリックで付く(%s)" % str(m.settings.mods))
+	var clear_btn: Button
+	var x_btn: Button
+	for b in m._mod_panel.find_children("*", "Button", true, false):
+		if (b as Button).text == "すべて解除":
+			clear_btn = b
+		elif (b as Button).text == "✕":
+			x_btn = b
+	chk.call(clear_btn != null and not clear_btn.disabled and x_btn != null, "MOD: 「すべて解除」(付けると押せる)と右上の「✕」がある")
+	clear_btn.pressed.emit()
+	await get_tree().process_frame
+	chk.call((m.settings.mods as Array).is_empty() and clear_btn.disabled, "MOD: 「すべて解除」で外れ、ボタンは押せなくなる")
+	x_btn.pressed.emit()
+	await get_tree().create_timer(0.5).timeout
+	chk.call(m._mod_panel == null, "MOD: 「✕」で閉じる")
+	m.open_mods()
+	await get_tree().create_timer(0.6).timeout
+	m._mod_panel.gui_input.emit(click_at.call(Vector2(20, 400)))
+	await get_tree().create_timer(0.5).timeout
+	chk.call(m._mod_panel == null, "MOD: パネルの外をクリックすると閉じる")
+	open_settings(0)
+	await get_tree().create_timer(0.6).timeout
+	_settings_panel.gui_input.emit(click_at.call(Vector2(20, 400)))
+	await get_tree().create_timer(0.5).timeout
+	chk.call(_settings_panel == null, "設定: パネルの外をクリックすると閉じる")
+	open_settings(0)
+	await get_tree().create_timer(0.6).timeout
+	for b in _settings_panel.find_children("*", "Button", true, false):
+		if (b as Button).text == "✕":
+			b.pressed.emit()
+	await get_tree().create_timer(0.5).timeout
+	chk.call(_settings_panel == null, "設定: 「✕」で閉じる")
 	Settings.restore(orig)
 	print("smoke-modscroll: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()
@@ -1415,10 +1645,13 @@ func _smoke_title() -> void:
 	await _key(KEY_DOWN)   # 設定
 	await _key(KEY_ENTER)
 	await get_tree().create_timer(0.5).timeout
-	print("options open=%s (selected=%d)" % [str(t._overlay != null), t._sel])
+	print("options open=%s (selected=%d)" % [str(_settings_panel != null), t._sel])
+	# 設定を開いている間は、下のタイトルがキーに反応しない(Esc で終了確認が開いたり、項目が動いたりしない)
+	await _key(KEY_DOWN)
+	print("title ignores keys while settings open: sel=%d (expect 3) quit_panel=%s (expect false)" % [t._sel, str(t._overlay != null)])
 	await _key(KEY_ESCAPE)
 	await get_tree().create_timer(0.6).timeout
-	print("options closed=%s" % str(t._overlay == null))
+	print("options closed=%s  title_overlay=%s (expect true, false)" % [str(_settings_panel == null), str(t._overlay != null)])
 	await _key(KEY_UP)
 	await _key(KEY_UP)
 	await _key(KEY_UP)   # プレイ
@@ -1822,6 +2055,13 @@ func _smoke_mp_ui() -> void:
 		await get_tree().process_frame
 	await get_tree().create_timer(0.4).timeout
 	chk.call(n.players.size() == 2, "参加者が入ると、ホストの名簿に載る")
+	# 他の参加者がいるホストが退室しようとすると、先に確認が出る(部屋が閉じてしまうため)。キャンセルすれば残る
+	await _key(KEY_ESCAPE)
+	await get_tree().create_timer(0.3).timeout
+	chk.call(m._confirm != null and n.is_active() and m._page == "lobby", "参加者がいるホストが Esc を押すと、確認が出て、まだ部屋にいる")
+	await _key(KEY_ESCAPE)   # 確認のキャンセル
+	await get_tree().create_timer(0.3).timeout
+	chk.call(m._confirm == null and n.is_active() and m._page == "lobby", "キャンセルすると、部屋に残る")
 	# 選曲
 	m.pick_song_requested.emit()
 	await get_tree().create_timer(1.0).timeout
@@ -2194,6 +2434,31 @@ func _smoke_open() -> void:
 	await get_tree().create_timer(1.5).timeout
 	m = _current
 	chk.call(m.get_script() == MenuScreen and m._songs[m._song_sel].path.contains("Reol"), "続けて別の曲を開くと、その曲が選ばれる")
+	# ウィンドウへのドロップ(選曲画面で、複数のファイルを一度に): すべて songs へ取り込まれ、画面は作り直されず、最後の曲が選ばれる
+	var drop_dir := ProjectSettings.globalize_path("user://drop_test")
+	DirAccess.make_dir_recursive_absolute(drop_dir)
+	var drop_names := ["13887 ZUN - U.N. Owen Was Her.osz", "68893 Yiruma & Skullee - River Flows In You (A Love Note).osz"]
+	var drop_dsts: Array = []
+	var drop_pre: Array = []
+	for nm in drop_names:
+		DirAccess.copy_absolute("C:/Desktop/my_apps/DDA/" + nm, drop_dir.path_join(nm))
+		var dst := SongLibrary.ensure_user_dir().path_join(nm)
+		drop_dsts.append(dst)
+		drop_pre.append(FileAccess.file_exists(dst))
+	m = _current
+	get_window().files_dropped.emit(PackedStringArray([drop_dir.path_join(drop_names[0]), "C:/x/readme.txt", drop_dir.path_join(drop_names[1])]))
+	await get_tree().create_timer(1.5).timeout
+	chk.call(_current == m, "ドロップしても、選曲画面は作り直されない")
+	chk.call(m._song_sel >= 0 and m._songs[m._song_sel].path.contains("Yiruma"), "最後の .osz が選ばれる: %s" % (m._songs[m._song_sel].path.get_file() if m._song_sel >= 0 else "-"))
+	chk.call(FileAccess.file_exists(drop_dsts[0]) and FileAccess.file_exists(drop_dsts[1]), "どちらも songs にコピーされる(次の起動でも残る)")
+	get_window().files_dropped.emit(PackedStringArray(["C:/x/readme.txt"]))   # .osz 以外だけ: 通知だけで、何も起きない
+	await get_tree().create_timer(0.3).timeout
+	chk.call(_current == m, ".osz 以外のドロップでは、何も起きない")
+	for i in range(drop_dsts.size()):   # 後始末(もとからあったものは消さない)
+		if not drop_pre[i]:
+			DirAccess.remove_absolute(drop_dsts[i])
+		DirAccess.remove_absolute(drop_dir.path_join(drop_names[i]))
+	SongLibrary.save_index()
 	# プレイ中は、画面を変えない
 	start_game(m._loader, m._loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
 	await get_tree().create_timer(1.0).timeout

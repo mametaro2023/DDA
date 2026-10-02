@@ -189,6 +189,19 @@ func start_download() -> void:
 	progress.emit(0.0, "ダウンロード中…")
 
 
+## ダウンロードを中止する(途中のファイルは消す)。
+func cancel() -> void:
+	if _http != null:
+		if _http.request_completed.is_connected(_on_download_done):
+			_http.request_completed.disconnect(_on_download_done)
+		_http.cancel_request()
+		_http.queue_free()
+		_http = null
+	_downloading = false
+	if _dl_path != "" and FileAccess.file_exists(_dl_path):
+		DirAccess.remove_absolute(_dl_path)
+
+
 func _process(_delta: float) -> void:
 	if _downloading and _http != null:
 		var total := _http.get_body_size()

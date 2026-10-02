@@ -1,14 +1,18 @@
 extends Control
 ## アップデートのパネル(タイトル画面の上に重ねる)。新しいバージョンの案内 → 「今すぐ更新」でダウンロード(進み具合を表示)→ 自動で入れ替えて再起動。
 ## 入れ替えられない場合(開発中の実行・書き込めない場所)は、リリースのページを開くボタンにする。Esc / 「後で」で閉じる。
+## auto_start = true は、開いたらすぐダウンロードを始める(起動時の自動更新)。ダウンロード中は「キャンセル」(Esc・✕も同じ)で中止して閉じられる。
 
 signal closed
+## ダウンロード中に、使う人が中止した(自動更新の印を戻すために、main が受け取る)
+signal cancelled
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const Updater = preload("res://scripts/updater.gd")
 
 var updater
+var auto_start := false
 var _dim: ColorRect
 var _panel: PanelContainer
 var _closing := false
@@ -41,7 +45,12 @@ func _ready() -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 12)
 	_panel.add_child(v)
-	v.add_child(UiStyle.label("アップデート", 26, UiStyle.TEXT, true))
+	var head := HBoxContainer.new()
+	var head_l := UiStyle.label("アップデート", 26, UiStyle.TEXT, true)
+	head_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(head_l)
+	head.add_child(UiStyle.close_button(_on_later))   # ダウンロード中は、中止して閉じる
+	v.add_child(head)
 	v.add_child(UiStyle.hline())
 	var info: Dictionary = updater.info
 	var ver := HBoxContainer.new()
@@ -83,18 +92,12 @@ func _ready() -> void:
 	_btn_later = Button.new()
 	_btn_later.text = "後で"
 	_btn_later.focus_mode = Control.FOCUS_NONE
-	_btn_later.pressed.connect(close_panel)
+	_btn_later.pressed.connect(_on_later)
 	row.add_child(_btn_later)
 	_btn_update = Button.new()
 	_btn_update.focus_mode = Control.FOCUS_NONE
 	_btn_update.custom_minimum_size = Vector2(200, 40)
-	_btn_update.add_theme_stylebox_override("normal", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.9), Color(0, 0, 0, 0), 0, 4, 16, 8))
-	_btn_update.add_theme_stylebox_override("hover", UiStyle.box(UiStyle.ACCENT, Color(0, 0, 0, 0), 0, 4, 16, 8))
-	_btn_update.add_theme_stylebox_override("disabled", UiStyle.box(Color(1, 1, 1, 0.08), Color(0, 0, 0, 0), 0, 4, 16, 8))
-	for k in ["font_color", "font_hover_color", "font_pressed_color"]:
-		_btn_update.add_theme_color_override(k, Color(0.02, 0.06, 0.1))
-	_btn_update.add_theme_color_override("font_disabled_color", UiStyle.TEXT_FAINT)
-	_btn_update.add_theme_font_override("font", UiStyle.bold())
+	UiStyle.style_primary(_btn_update)
 	if updater.can_self_update():
 		_btn_update.text = "今すぐ更新"
 		_btn_update.pressed.connect(_start)
@@ -105,7 +108,10 @@ func _ready() -> void:
 	updater.progress.connect(_on_progress)
 	updater.failed.connect(_on_failed)
 	updater.staged.connect(_on_staged)
+	UiStyle.close_on_outside_click(self, _panel, close_panel)
 	UiSfx.play("open")
+	if auto_start and updater.can_self_update():
+		_start.call_deferred()
 	UiStyle.tween(_dim, "color:a", 0.0, 0.7, 0.22)
 	UiStyle.pop_scale(_panel, 0.93, 0.42)
 
@@ -137,7 +143,7 @@ func _start() -> void:
 		return
 	_busy = true
 	_btn_update.disabled = true
-	_btn_later.disabled = true
+	_btn_later.text = "キャンセル"
 	_progress_box.visible = true
 	_status.add_theme_color_override("font_color", UiStyle.TEXT_DIM)
 	updater.start_download()
@@ -154,6 +160,7 @@ func _on_failed(msg: String) -> void:
 	_status.text = msg
 	_status.add_theme_color_override("font_color", UiStyle.DANGER)
 	_btn_later.disabled = false
+	_btn_later.text = "後で"
 	_btn_update.disabled = false
 	_btn_update.text = "ダウンロードページを開く"
 	for c in _btn_update.pressed.get_connections():
@@ -162,9 +169,21 @@ func _on_failed(msg: String) -> void:
 
 
 func _on_staged() -> void:
+	_btn_later.disabled = true   # ここから先は止められない
 	_status.text = "再起動して更新します…"
 	await get_tree().create_timer(0.6).timeout
 	updater.apply_and_quit()
+
+
+## 「後で」「キャンセル」「✕」「Esc」: ダウンロード中なら中止してから閉じる。
+func _on_later() -> void:
+	if _busy:
+		if _btn_later.disabled:   # 入れ替えの直前は、止められない
+			return
+		updater.cancel()
+		_busy = false
+		cancelled.emit()
+	close_panel()
 
 
 func close_panel() -> void:
@@ -185,5 +204,5 @@ func close_panel() -> void:
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
-		close_panel()
+		_on_later()
 		get_viewport().set_input_as_handled()

@@ -332,13 +332,13 @@ func _init() -> void:
 	_check(sim.score < s_before_hit and s_before_hit > 0.0, "被弾すると表示点数も下がる (%.0f → %.0f)" % [s_before_hit, sim.score])
 
 	# --- MOD ---
-	# 16) 合成: MOD なしは既定値のまま。地獄は 弾サイズ 1.35 倍 / 体力 150ms / 半減なし / ベース +6%
+	# 16) 合成: MOD なしは既定値のまま。地獄は 弾サイズ 1.35 倍 / 体力 150ms / 半減なし / ベース +8%
 	var none: Dictionary = Mods.params([])
 	_check(none.size_mul == 1.0 and none.drain_time == GameSim.GAUGE_DRAIN_TIME and none.low_protect and none.score_mul == 1.0,
 		"MOD なしは既定の設定")
 	var hell: Dictionary = Mods.params(["hell"])
-	_check(hell.size_mul == 1.35 and absf(hell.drain_time - 0.15) < 1e-9 and not hell.low_protect and absf(hell.score_mul - 1.06) < 1e-9,
-		"地獄: 弾サイズ ×1.35 / 体力 150ms / 低体力の半減なし / ベーススコア ×1.06")
+	_check(hell.size_mul == 1.35 and absf(hell.drain_time - 0.15) < 1e-9 and not hell.low_protect and absf(hell.score_mul - 1.08) < 1e-9,
+		"地獄: 弾サイズ ×1.35 / 体力 150ms / 低体力の半減なし / ベーススコア ×1.08")
 	_check(Mods.params(["hell", "hell", "nope"]).ids == ["hell"], "重複・未知の MOD id は無視する")
 
 	# 17) 地獄: 当たり続けると 150ms でゲージ 0(半減がないので、20% 以下でも減る速さは変わらない)
@@ -367,21 +367,21 @@ func _init() -> void:
 	now = _run(sim, now, 1)
 	_check(absf((g_prev - sim.gauge) - full_step) < 0.001, "地獄: ゲージ 20%% 以下(%.2f)でも被ダメージは半減しない: 1 フレームで %.4f" % [g_prev, g_prev - sim.gauge])
 
-	# 18) 地獄: ベーススコア +6%。グレイズのボーナスは別(+30,000 のまま)、被ダメージ係数は全体にかかる
+	# 18) 地獄: ベーススコア +8%。グレイズのボーナスは別(+30,000 のまま)、被ダメージ係数は全体にかかる
 	a = _make(false, 10.0, [], [], hell)
 	sim = a[0]
 	sim.graze = 100000
 	now = _run(sim, 0.0, 10)
-	_check(absf(sim.score_gross - (1060000.0 + 30000.0)) < 0.5, "地獄: 係数を掛ける前の点数 = 1,060,000 + グレイズ 30,000 (%.0f)" % sim.score_gross)
+	_check(absf(sim.score_gross - (1080000.0 + 30000.0)) < 0.5, "地獄: 係数を掛ける前の点数 = 1,080,000 + グレイズ 30,000 (%.0f)" % sim.score_gross)
 	a = _make(false, 10.0, [], [], hell)
 	sim = a[0]
 	now = 0.0
 	while not sim.finished:
 		sim.step(now, DT, Vector2.ZERO, false)
 		now += DT
-	_check(absf(sim.score - 1060000.0) < 0.5 and not sim.failed, "地獄: ノーダメージ・グレイズなしの完走は 1,060,000 (%.0f)" % sim.score)
+	_check(absf(sim.score - 1080000.0) < 0.5 and not sim.failed, "地獄: ノーダメージ・グレイズなしの完走は 1,080,000 (%.0f)" % sim.score)
 
-	# 19) 効果の合成(すべて乗算)。ベーススコアは 1.06 を 2 つ付けたら 1.06 × 1.06
+	# 19) 効果の合成(すべて乗算)。ベーススコアは 暴風雨(1.11)と巨人(1.07)なら 1.11 × 1.07
 	var storm: Dictionary = Mods.params(["storm"])
 	# 弾速の倍率(speed_mul)は MOD の効果の 1 つとして残してある。単独で付ける MOD は今はないので、合成の辞書を直接作って確かめる
 	var gale: Dictionary = Mods.params(["storm"])
@@ -389,14 +389,14 @@ func _init() -> void:
 	gale.count_mul = 1.0
 	var giant: Dictionary = Mods.params(["giant"])
 	var rush: Dictionary = Mods.params(["rush"])
-	_check(storm.count_mul == 1.5 and storm.speed_mul == 1.5 and absf(storm.score_mul - 1.06) < 1e-9, "暴風雨: 弾の量 ×1.5(+50%) / 弾の速度 ×1.5(+50%) / ベーススコア ×1.06")
+	_check(storm.count_mul == 1.5 and storm.speed_mul == 1.5 and absf(storm.score_mul - 1.11) < 1e-9, "暴風雨: 弾の量 ×1.5(+50%) / 弾の速度 ×1.5(+50%) / ベーススコア ×1.11")
 	_check(Mods.find("gale").is_empty(), "疾風は暴風雨に統合された(単独の MOD としてはない)")
-	_check(giant.player_scale == 3.0 and absf(giant.score_mul - 1.06) < 1e-9, "巨人: 自機サイズ ×3(+200%) / ベーススコア ×1.06")
-	_check(rush.rate == 1.5 and absf(rush.score_mul - 1.12) < 1e-9, "加速: 再生速度 ×1.5 / ベーススコア ×1.12")
-	_check(absf(Mods.params(["storm", "giant"]).score_mul - 1.06 * 1.06) < 1e-9, "6%% を 2 つ重ねると 1.06 × 1.06 = %.4f" % (1.06 * 1.06))
+	_check(giant.player_scale == 2.0 and absf(giant.score_mul - 1.07) < 1e-9, "巨人: 自機サイズ ×2(+100%) / ベーススコア ×1.07")
+	_check(rush.rate == 1.5 and absf(rush.score_mul - 1.06) < 1e-9, "加速: 再生速度 ×1.5 / ベーススコア ×1.06")
+	_check(absf(Mods.params(["storm", "giant"]).score_mul - 1.11 * 1.07) < 1e-9, "暴風雨 + 巨人は 1.11 × 1.07 = %.4f" % (1.11 * 1.07))
 	var all4: Dictionary = Mods.params(["hell", "storm", "giant", "rush"])
-	_check(absf(all4.score_mul - 1.06 * 1.06 * 1.06 * 1.12) < 1e-9, "4 つ重ねると 1.06^3 × 1.12 = %.4f" % all4.score_mul)
-	_check(all4.size_mul == 1.35 and all4.count_mul == 1.5 and all4.speed_mul == 1.5 and all4.player_scale == 3.0 and all4.rate == 1.5,
+	_check(absf(all4.score_mul - 1.08 * 1.11 * 1.07 * 1.06) < 1e-9, "4 つ重ねると 1.08 × 1.11 × 1.07 × 1.06 = %.4f" % all4.score_mul)
+	_check(all4.size_mul == 1.35 and all4.count_mul == 1.5 and all4.speed_mul == 1.5 and all4.player_scale == 2.0 and all4.rate == 1.5,
 		"重ねても、それぞれの効果は自分の倍率のまま")
 	_check(Mods.names(["hell", "rush"]) == "地獄 + 加速", "MOD 名の表示")
 
@@ -458,7 +458,7 @@ func _init() -> void:
 	var g_all: Dictionary = Mods.apply(gen0, all4)
 	_check(g_all.level > g_hell.level and g_all.level > g_rush.level and g_all.level > g_gale.level, "重ねると Lv はさらに上がる (%.2f)" % g_all.level)
 
-	# 21) 自機サイズ: 当たり判定の半径が 3 倍になる(標準も PLAYER_SIZE_MUL 倍)。距離 9px の静止弾に、通常は当たらず、巨人なら当たる
+	# 21) 自機サイズ: 当たり判定の半径が 2 倍になる(標準も PLAYER_SIZE_MUL 倍)。距離 9px の静止弾に、通常は当たらず、巨人なら当たる
 	for mod_ids in [[], ["giant"]]:
 		a = _make(true, 10.0, [], [], Mods.params(mod_ids))
 		sim = a[0]
@@ -468,7 +468,7 @@ func _init() -> void:
 		if mod_ids.is_empty():
 			_check(absf(sim.player_r - 3.5 * GameSim.PLAYER_SIZE_MUL) < 1e-9 and sim.hits == 0, "MOD なし: 自機の当たり判定 %.2fpx、9px 先の弾には当たらない" % sim.player_r)
 		else:
-			_check(absf(sim.player_r - 10.5 * GameSim.PLAYER_SIZE_MUL) < 1e-9 and sim.hits == 1, "巨人: 自機の当たり判定 %.2fpx(3 倍)、同じ弾に当たる" % sim.player_r)
+			_check(absf(sim.player_r - 7.0 * GameSim.PLAYER_SIZE_MUL) < 1e-9 and sim.hits == 1, "巨人: 自機の当たり判定 %.2fpx(2 倍)、同じ弾に当たる" % sim.player_r)
 
 	# --- イントロのスキップ ---
 	# 20) 最初に弾を撃つイベントの時刻を持つ(弾を撃たないイベントは飛ばす)
@@ -570,9 +570,9 @@ func _init() -> void:
 	var p_prac := Mods.params(["practice"])
 	_check(p_prac.practice and is_equal_approx(p_prac.score_mul, 0.5) and not p_prac.dark, "練習 MOD: practice=true、ベーススコア ×0.5")
 	var p_dark := Mods.params(["dark"])
-	_check(p_dark.dark and is_equal_approx(p_dark.score_mul, 1.06) and not p_dark.practice, "暗闇 MOD: dark=true、ベーススコア ×1.06")
+	_check(p_dark.dark and is_equal_approx(p_dark.score_mul, 1.05) and not p_dark.practice, "暗闇 MOD: dark=true、ベーススコア ×1.05")
 	var p_both := Mods.params(["practice", "dark", "rush"])
-	_check(is_equal_approx(p_both.score_mul, 0.5 * 1.06 * 1.12) and p_both.practice and p_both.dark, "練習 + 暗闇 + 加速: 倍率は乗算 (%.4f)" % p_both.score_mul)
+	_check(is_equal_approx(p_both.score_mul, 0.5 * 1.05 * 1.06) and p_both.practice and p_both.dark, "練習 + 暗闇 + 加速: 倍率は乗算 (%.4f)" % p_both.score_mul)
 	_check(not Mods.params([]).practice and not Mods.params([]).dark, "MOD なしなら practice / dark は false")
 	# 練習 MOD: setup() の mods だけでゲージ 0 でも続行する。ベーススコアは半分
 	a = _make(false, 10.0, [], [], p_prac)

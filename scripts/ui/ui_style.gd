@@ -94,7 +94,9 @@ static func make_theme() -> Theme:
 	t.set_stylebox("hover", "Button", box(Color(1, 1, 1, 0.12), Color(1, 1, 1, 0.28), 1, 4, 16, 8))
 	t.set_stylebox("pressed", "Button", box(Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.2), ACCENT, 1, 4, 16, 8))
 	t.set_stylebox("hover_pressed", "Button", box(Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.26), ACCENT, 1, 4, 16, 8))
+	t.set_stylebox("disabled", "Button", box(Color(1, 1, 1, 0.03), LINE, 1, 4, 16, 8))
 	t.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	t.set_color("font_disabled_color", "Button", TEXT_FAINT)
 	t.set_color("font_color", "Button", TEXT)
 	t.set_color("font_hover_color", "Button", Color.WHITE)
 	t.set_color("font_pressed_color", "Button", ACCENT)
@@ -174,6 +176,43 @@ static func hline() -> ColorRect:
 	r.custom_minimum_size = Vector2(0, 1)
 	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return r
+
+
+## 主ボタン(決定・開始・確定)の見た目: アクセント色の塗り + 太字。danger = true は赤(取り消せない確定)。無効のときは薄く沈む。
+## 主ボタンは、画面の右下に 1 つだけ置く。
+static func style_primary(b: Button, danger := false, mh := 16.0, mv := 8.0) -> void:
+	var c := DANGER if danger else ACCENT
+	var none := Color(0, 0, 0, 0)
+	b.add_theme_stylebox_override("normal", box(Color(c.r, c.g, c.b, 0.9), none, 0, 4, mh, mv))
+	b.add_theme_stylebox_override("hover", box(c, none, 0, 4, mh, mv))
+	b.add_theme_stylebox_override("pressed", box(c, none, 0, 4, mh, mv))
+	b.add_theme_stylebox_override("disabled", box(Color(1, 1, 1, 0.08), none, 0, 4, mh, mv))
+	var ink := Color(0.1, 0.02, 0.03) if danger else Color(0.02, 0.06, 0.1)
+	for k in ["font_color", "font_hover_color", "font_pressed_color"]:
+		b.add_theme_color_override(k, ink)
+	b.add_theme_color_override("font_disabled_color", TEXT_FAINT)
+	b.add_theme_font_override("font", bold())
+
+
+## パネルの右上に置く「✕」(閉じる)。全パネルで同じ大きさにして、見出しの行の右端に置く(場所を揃える)。
+static func close_button(on_press: Callable) -> Button:
+	var b := Button.new()
+	b.text = "✕"
+	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(38, 36)
+	b.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	b.set_meta("juice_sound", "back")
+	b.pressed.connect(on_press)
+	return b
+
+
+## パネルの外(暗い部分)を左クリックしたら on_close を呼ぶ。
+## root は画面全体に広がる mouse_filter = STOP の Control(パネルの親)、enabled は「いま閉じてよいか」を返す Callable(省略すると、いつでも)。
+static func close_on_outside_click(root: Control, panel: Control, on_close: Callable, enabled := Callable()) -> void:
+	root.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT and ev.pressed \
+				and not panel.get_rect().has_point(ev.position) and (not enabled.is_valid() or enabled.call()):
+			on_close.call())
 
 
 ## 押せるカード(PanelContainer)。左クリックで on_click、ダブルクリックで on_double。押している間は少し縮み、離すと弾んで戻る。

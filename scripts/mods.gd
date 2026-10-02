@@ -21,31 +21,34 @@ extends RefCounted
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 
+## ベーススコアの加算(score_mul)の決め方: その MOD で上がる Lv(手元の 46 譜面の平均で、暴風雨 +56% / 巨人 +34% / 加速 +30% / 地獄 +16% / 暗闇 0%)の
+## およそ 0.2 倍を基準にし(緩やかな加算)、Lv に出ない厳しさがあるもの(地獄: 体力 250→150ms・低体力の半減なし / 暗闇: 見えにくさ)は +5% ずつ上乗せした。
+## MOD や譜面の仕様を変えたら、測り直して見直す。
 const ALL := [
 	{
 		"id": "hell", "name": "地獄", "tag": "HELL", "color": Color(1.0, 0.32, 0.3),
-		"desc": "弾サイズ +35% / 体力 150ms / 低体力の被ダメージ半減なし / ベーススコア +6%",
-		"size_mul": 1.35, "drain_time": 0.15, "low_protect": false, "score_mul": 1.06,
+		"desc": "弾サイズ +35% / 体力 150ms / 低体力の被ダメージ半減なし / ベーススコア +8%",
+		"size_mul": 1.35, "drain_time": 0.15, "low_protect": false, "score_mul": 1.08,
 	},
 	{
 		"id": "storm", "name": "暴風雨", "tag": "STORM", "color": Color(0.5, 0.8, 1.0),
-		"desc": "弾の量 +50% / 弾の速度 +50% / ベーススコア +6%",
-		"count_mul": 1.5, "speed_mul": 1.5, "score_mul": 1.06,
+		"desc": "弾の量 +50% / 弾の速度 +50% / ベーススコア +11%",
+		"count_mul": 1.5, "speed_mul": 1.5, "score_mul": 1.11,
 	},
 	{
 		"id": "giant", "name": "巨人", "tag": "GIANT", "color": Color(1.0, 0.75, 0.35),
-		"desc": "自機サイズ +200% / ベーススコア +6%",
-		"player_scale": 3.0, "score_mul": 1.06,
+		"desc": "自機サイズ +100% / ベーススコア +7%",
+		"player_scale": 2.0, "score_mul": 1.07,
 	},
 	{
 		"id": "rush", "name": "加速", "tag": "RUSH", "color": Color(0.82, 0.6, 1.0),
-		"desc": "譜面の再生速度 +50%(曲の音程も上がる) / ベーススコア +12%",
-		"rate": 1.5, "score_mul": 1.12,
+		"desc": "譜面の再生速度 +50%(曲の音程も上がる) / ベーススコア +6%",
+		"rate": 1.5, "score_mul": 1.06,
 	},
 	{
 		"id": "dark", "name": "暗闇", "tag": "DARK", "color": Color(0.55, 0.65, 0.95),
-		"desc": "自機の周囲しか弾が見えない(離れるほど消える。発射地点は見える) / ベーススコア +6%",
-		"dark": true, "score_mul": 1.06,
+		"desc": "自機の周囲しか弾が見えない(離れるほど消える。発射地点は見える) / ベーススコア +5%",
+		"dark": true, "score_mul": 1.05,
 	},
 	{
 		"id": "practice", "name": "練習", "tag": "PRACTICE", "color": Color(1.0, 0.82, 0.35),

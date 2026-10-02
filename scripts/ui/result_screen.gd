@@ -198,19 +198,30 @@ func _ready() -> void:
 	gv.add_child(_graph)
 	_update_graph()
 
-	# 下部のボタン(Enter / R のキーでも同じ操作ができる)
+	# 下部のボタン(Enter / R のキーでも同じ操作ができる)。主ボタン(次へ進む「メニューへ」「ロビーへ」)が右下、リトライはその左
 	var hint := HBoxContainer.new()
 	hint.add_theme_constant_override("separation", 12)
-	hint.position = Vector2(60, 634)
-	for spec in ([["ロビーへ", menu_requested]] if stats.has("mp") else [["メニューへ", menu_requested], ["リトライ", retry_requested]]):
+	hint.position = Vector2(1220, 626)   # 右端をグラフの右端にそろえる(幅が増えたら左へ伸びる)
+	hint.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	for spec in ([["ロビーへ", menu_requested, true]] if stats.has("mp") else [["リトライ", retry_requested, false], ["メニューへ", menu_requested, true]]):
 		var b := Button.new()
 		b.text = spec[0]
 		b.focus_mode = Control.FOCUS_NONE
-		b.custom_minimum_size = Vector2(150, 40)
+		b.custom_minimum_size = Vector2(160, 48)
+		if spec[2]:
+			UiStyle.style_primary(b)
 		var sig: Signal = spec[1]
 		b.pressed.connect(func(): sig.emit())
+		if UiStyle.animate:
+			b.mouse_filter = Control.MOUSE_FILTER_IGNORE   # 現れるまでは押せない(見えないのにクリックが通らないように)
 		hint.add_child(b)
 	add_child(hint)
+	if UiStyle.animate:
+		get_tree().create_timer(1.2 + 0.08 * hint.get_child_count() + 0.4).timeout.connect(func():
+			if not is_instance_valid(hint):   # もう画面を離れた
+				return
+			for b in hint.get_children():
+				b.mouse_filter = Control.MOUSE_FILTER_STOP)
 
 	# 右の列は右から滑り込み、中身が上から順に現れ、数字が数え上がる。グラフは下から現れて、左から右へ描かれる
 	UiStyle.pop_in(right, 0.1, Vector2(40, 0), 0.5)

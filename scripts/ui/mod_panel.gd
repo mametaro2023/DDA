@@ -27,6 +27,8 @@ var _mul_tween: Tween
 var _dim: ColorRect
 var _panel: PanelContainer
 var _closing := false
+var _cards := {}          # MOD の id → カード
+var _clear_btn: Button
 
 
 func setup(p_settings: Dictionary, p_level_cb: Callable) -> void:
@@ -59,16 +61,11 @@ func _ready() -> void:
 	title_box.add_child(UiStyle.label("MOD", 24, UiStyle.TEXT, true))
 	title_box.add_child(UiStyle.caption("難易度とスコアの修飾"))
 	head.add_child(title_box)
-	var close := Button.new()
-	close.text = "閉じる"
-	close.focus_mode = Control.FOCUS_NONE
-	close.custom_minimum_size = Vector2(110, 34)
-	close.pressed.connect(close_panel)
-	head.add_child(close)
+	head.add_child(UiStyle.close_button(close_panel))   # 右上の ✕(どのパネルも同じ場所)
 	v.add_child(head)
 	v.add_child(UiStyle.hline())
 
-	# カードが増えても合計表示が隠れないよう、カード一覧だけをスクロールにする
+	# 6 枚が、スクロールなしで入る高さのカード(compact)。万一増えても合計表示が隠れないよう、カード一覧だけをスクロールにしておく
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.custom_minimum_size = Vector2(0, 120)
@@ -77,7 +74,7 @@ func _ready() -> void:
 	SmoothScroll.attach(scroll)
 	var list := VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_theme_constant_override("separation", 10)
+	list.add_theme_constant_override("separation", 9)
 	scroll.add_child(list)
 	var mods: Array = settings.mods
 	for m in Mods.ALL:
@@ -87,18 +84,46 @@ func _ready() -> void:
 			if not p.begins_with("ベーススコア"):
 				effects.append(p)
 		var pct := int(round((float(m.get("score_mul", 1.0)) - 1.0) * 100.0))
-		list.add_child(ToggleCard.make(self, "%s   %s" % [m.name, m.tag], "  /  ".join(effects), m.color, mods.has(m.id), "ベーススコア %+d%%" % pct,
-			func(on: bool): _on_toggled(m.id, on)))
+		var card := ToggleCard.make(self, "%s   %s" % [m.name, m.tag], "  /  ".join(effects), m.color, mods.has(m.id), "ベーススコア %+d%%" % pct,
+			func(on: bool): _on_toggled(m.id, on), true)
+		_cards[m.id] = card
+		list.add_child(card)
 	v.add_child(UiStyle.hline())
+	# 下の段: 左に「すべて解除」、まん中に合計(視線が行く場所)、右下に「閉じる」(主ボタン)
 	var foot := HBoxContainer.new()
-	foot.add_theme_constant_override("separation", 60)
-	foot.alignment = BoxContainer.ALIGNMENT_CENTER
+	foot.add_theme_constant_override("separation", 24)
 	v.add_child(foot)
+	_clear_btn = Button.new()
+	_clear_btn.text = "すべて解除"
+	_clear_btn.focus_mode = Control.FOCUS_NONE
+	_clear_btn.custom_minimum_size = Vector2(132, 42)
+	_clear_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_clear_btn.pressed.connect(_clear_all)
+	foot.add_child(_clear_btn)
+	var sp_l := Control.new()
+	sp_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	foot.add_child(sp_l)
+	var stats := HBoxContainer.new()
+	stats.add_theme_constant_override("separation", 60)
+	foot.add_child(stats)
 	_lv_l = UiStyle.label("--", 44, UiStyle.TEXT_FAINT, true)
-	foot.add_child(_stat_block("難易度  LV", _lv_l))
+	stats.add_child(_stat_block("難易度  LV", _lv_l, 130.0))   # "13.37"(114px)が入る幅
 	_mul_l = UiStyle.label("×1.0000", 44, UiStyle.TEXT, true)
-	foot.add_child(_stat_block("ベーススコア倍率", _mul_l))
+	stats.add_child(_stat_block("ベーススコア倍率", _mul_l, 190.0))   # "×1.0000"(165px)が入る幅
+	var sp_r := Control.new()
+	sp_r.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	foot.add_child(sp_r)
+	var done := Button.new()
+	done.text = "閉じる"
+	done.focus_mode = Control.FOCUS_NONE
+	done.custom_minimum_size = Vector2(132, 42)
+	done.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	UiStyle.style_primary(done)
+	done.pressed.connect(close_panel)
+	foot.add_child(done)
+	_sync_clear_btn()
 	refresh_info(false)
+	UiStyle.close_on_outside_click(self, panel, close_panel)
 
 	# 開く動き: 背景が暗くなり、パネルが下からふわっと上がる
 	UiSfx.play("open")
@@ -113,13 +138,35 @@ func _on_toggled(id: String, on: bool) -> void:
 	elif not on:
 		mods.erase(id)
 	settings.mods = mods
+	_sync_clear_btn()
 	changed.emit()
 	refresh_info()
 
 
-## 見出し(小さな文字)と、その下の大きな数字。
-func _stat_block(cap: String, value: Label) -> Control:
+## 付けている MOD を全部外す。
+func _clear_all() -> void:
+	var mods: Array = settings.mods
+	if mods.is_empty():
+		return
+	UiSfx.play("off")
+	for id in _cards:
+		ToggleCard.set_on(_cards[id], false)
+	settings.mods = []
+	_sync_clear_btn()
+	changed.emit()
+	refresh_info()
+
+
+## 「すべて解除」は、何も付けていないときは押せない。
+func _sync_clear_btn() -> void:
+	if _clear_btn != null:
+		_clear_btn.disabled = (settings.mods as Array).is_empty()
+
+
+## 見出し(小さな文字)と、その下の大きな数字。幅は固定にする(Lv が 10 を超えて桁が増えても、ブロックが横にずれない)。
+func _stat_block(cap: String, value: Label, width: float) -> Control:
 	var b := VBoxContainer.new()
+	b.custom_minimum_size = Vector2(width, 0)
 	b.add_theme_constant_override("separation", -2)
 	b.add_child(UiStyle.caption(cap))
 	b.add_child(value)
@@ -180,7 +227,7 @@ func _ease_mul(to: float, animate: bool) -> void:
 
 ## 数字が変わるとき、ぽんと少し弾む。
 func _pop(l: Label) -> void:
-	l.pivot_offset = Vector2(l.size.x * 0.5, l.size.y * 0.5)
+	l.pivot_offset = Vector2(l.get_minimum_size().x * 0.5, l.size.y * 0.5)   # 文字の中心(ブロックは固定幅で、文字は左寄せ)
 	UiStyle.spring(l, "scale", Vector2(1.08, 1.08), Vector2.ONE, 0.35)
 
 

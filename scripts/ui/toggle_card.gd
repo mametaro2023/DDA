@@ -7,17 +7,19 @@ const UiFx = preload("res://scripts/ui/ui_fx.gd")
 
 
 ## host はカードを置く画面(入れたときの粒を、その座標系で出す)。on_toggle(新しい状態) を呼ぶ。
-static func make(host: Control, title: String, lines: String, color: Color, on: bool, right_text: String, on_toggle: Callable) -> PanelContainer:
+## compact = true は、右端の文字(チップ)をタイトルの行へ移し、縦を詰めたカード(多くの項目を、スクロールなしで並べたいとき)。
+static func make(host: Control, title: String, lines: String, color: Color, on: bool, right_text: String, on_toggle: Callable, compact := false) -> PanelContainer:
 	var c := PanelContainer.new()
 	c.mouse_filter = Control.MOUSE_FILTER_STOP
 	var state := {"on": on}
+	var mv := 7.0 if compact else 12.0
 	var ind := PanelContainer.new()
 	ind.custom_minimum_size = Vector2(18, 18)
 	ind.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var apply := func():
 		var s := state.on as bool
 		c.add_theme_stylebox_override("panel", UiStyle.box(Color(color.r, color.g, color.b, 0.10 if s else 0.035),
-			Color(color.r, color.g, color.b, 0.8 if s else 0.09), 1, 6, 16, 12))
+			Color(color.r, color.g, color.b, 0.8 if s else 0.09), 1, 6, 16, mv))
 		ind.add_theme_stylebox_override("panel", UiStyle.box(Color(color.r, color.g, color.b, 0.95) if s else Color(0, 0, 0, 0),
 			Color(color.r, color.g, color.b, 0.9 if s else 0.35), 1, 9))
 	apply.call()
@@ -32,13 +34,23 @@ static func make(host: Control, title: String, lines: String, color: Color, on: 
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.add_theme_constant_override("separation", 3)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_child(UiStyle.label(title, 18, color, true))
+	var title_l := UiStyle.label(title, 18, color, true)
+	if compact and right_text != "":
+		var trow := HBoxContainer.new()
+		trow.add_theme_constant_override("separation", 12)
+		trow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		title_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		trow.add_child(title_l)
+		trow.add_child(UiStyle.chip(right_text, color))
+		col.add_child(trow)
+	else:
+		col.add_child(title_l)
 	if lines != "":
 		var l := UiStyle.label(lines, 13, UiStyle.TEXT_DIM)
 		l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 		col.add_child(l)
 	h.add_child(col)
-	if right_text != "":
+	if right_text != "" and not compact:
 		var chip_wrap := CenterContainer.new()
 		chip_wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		chip_wrap.add_child(UiStyle.chip(right_text, color))

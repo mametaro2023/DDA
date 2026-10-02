@@ -27,6 +27,11 @@ const PLAYER_HIT_R := 3.5
 const PLAYER_MARGIN := 8.0
 const SAFE_RADIUS := 100.0       # 発射点にこの距離以内に自機がいたら弾は一時無害
 const SAFE_GRACE_PX := 140.0
+## 猶予は「不意打ち」を防ぐためのもの。同じ場所(スピナーの中央・重なったノーツ・スライダーの発射点など)で待ち続けて、近くから撃たれ続ける間は、
+## 猶予は最初の GRACE_STREAK_MAX 秒ぶんの発射にだけつける(それより後に近くで撃たれた弾は、ふつうに当たる)。近くでの発射が GRACE_STREAK_GAP 秒より空いたら、数え直す。
+## (猶予がずっと続くと、スピナーの間は中央に居座るだけで、すべて避けられてしまう)
+const GRACE_STREAK_MAX := 0.6
+const GRACE_STREAK_GAP := 0.5
 
 const GAUGE_DRAIN_TIME := 0.25   # ゲージ満タンぶんの被弾時間(通常時の被ダメージ速度)
 const GAUGE_LOW_THRESHOLD := 0.2 # ゲージがこれ以下のとき、
@@ -154,6 +159,8 @@ var _prev_pos := Vector2.ZERO  # このステップ開始時の自機位置(移�
 var _ext_hit_t := 0.0          # ホスト: 他の人が被弾した直後は、ゲージが回復しない(秒)
 var _ev_idx := 0
 var _warn_idx := 0
+var _near_start := -100.0   # 近くでの発射が続いている区間の始まり(GRACE_STREAK_*)
+var _near_last := -100.0    # 最後に近くで撃たれた時刻
 var _giz_idx := 0
 var _no_hit_time := 1.0        # 最後に被弾してからの経過秒
 var _graze_tau := GRAZE_TAU_MIN
@@ -555,7 +562,13 @@ func _update_score() -> void:
 func _fire(e: Dictionary, now: float) -> void:
 	var late := maxf(now - e.t, 0.0)
 	var pos: Vector2 = e.pos
-	var grace := SAFE_GRACE_PX if player_pos.distance_to(pos) < SAFE_RADIUS else 0.0
+	var grace := 0.0
+	if not e.shots.is_empty() and player_pos.distance_to(pos) < SAFE_RADIUS:   # 自機の近くで撃たれた: 続けて撃たれている間は、最初の GRACE_STREAK_MAX 秒だけ猶予
+		if float(e.t) - _near_last > GRACE_STREAK_GAP:
+			_near_start = float(e.t)
+		_near_last = float(e.t)
+		if float(e.t) - _near_start <= GRACE_STREAK_MAX:
+			grace = SAFE_GRACE_PX
 	var aims: Array = aim_targets_for(_ev_idx)   # 自機狙いの相手(協力では全員。ひとりでは自機)
 	aim_targets.erase(_ev_idx)
 	for s in e.shots:

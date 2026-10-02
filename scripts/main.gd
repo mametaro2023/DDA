@@ -716,6 +716,11 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			start_game(loader, bm, gs, secs, death_t)
 			if extra.size() > 2 and extra[2] == "pause":
 				_current._set_paused(true)
+			if extra.size() > 2 and extra[2] == "wait":   # 再開の待ち(自機だけを見せている)
+				_current._set_paused(true)
+				_current._set_paused(false)
+				_current._set_ship_in(1.0)
+				_current._tick_resume_wait(0.35)
 			if extra.has("nearhp") or extra.has("nearscore"):   # 自機を体力バー / スコアの近くに置いて、HUD の透過を撮る
 				_current.sim.player_pos = Vector2(200, 34) if extra.has("nearhp") else Vector2(800, 40)
 				_current._update_hud_fade(0.0, true)
@@ -792,10 +797,10 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			_current.debug_move = func(): return _bot_dodge(_current)
 		"mpresult":
 			var nn = _get_net()
-			nn.results = {1: {"name": "Alice", "score": 903120.0, "hits": 0, "graze": 214, "hit_ms": 0}, 2: {"name": "Bob", "score": 871400.0, "hits": 3, "graze": 180, "hit_ms": 480,
+			nn.results = {1: {"name": "Alice", "score": 903120.0, "hits": 0, "graze": 214, "hit_ms": 0, "dmg": 0.00, "damage": 0.00}, 2: {"name": "Bob", "score": 871400.0, "hits": 3, "graze": 180, "hit_ms": 480, "dmg": 0.43, "damage": 0.43,
 				"hp": HpGraph.downsample(HpGraph.points_from_log(_fake_hp(2, 118.0, false, 3).hp_log, 0.25, 118.0, 0.7), 48), "dur": 118.0}}
 			var mode_r := "coop" if extra.has("coop") else "versus"
-			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": false, "progress": 1.0, "hits": 3, "hit_ms": 480, "graze": 394, "score": 903120.0, "score_gross": 1013000.0,
+			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": false, "progress": 1.0, "hits": 3, "hit_ms": 480, "dmg": 0.43, "damage": 0.43, "graze": 394, "score": 903120.0, "score_gross": 1013000.0,
 				"damage_factor": 0.89, "score_graze": 13000.0, "practice": false, "score_base": 1000000.0, "mod_ids": [], "mods": "",
 				"mp": {"mode": mode_r, "my_id": 1, "players": [{"id": 1, "name": "Alice", "slot": 0}, {"id": 2, "name": "Bob", "slot": 1}, {"id": 3, "name": "Carol", "slot": 2}]}}.merged(_fake_hp(1, 118.0, false, 3)))
 			_current.skip_animation()
@@ -805,7 +810,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			var rl := OszLoader.new()
 			rl.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 			var rbm = rl.difficulties[rl.difficulties.size() - 1]
-			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "graze": 123, "score": 1013000.0 if extra.has("ss") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
+			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "dmg": 0.16, "damage": 0.16, "graze": 123, "score": 1013000.0 if extra.has("ss") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
 				"score_base": 1060000.0, "mod_ids": ["hell", "rush"], "mods": "地獄 + 加速",
 				"bg": rl.load_image(rbm.background) if rbm.background != "" else null}.merged(_fake_hp(1, 118.0, extra.size() > 0 and extra[0] == "failed", 3)))
 			_current.skip_animation()   # スクリーンショットでは、演出を待たない
@@ -1005,7 +1010,7 @@ func _smoke_ui() -> void:
 	var g = _current
 	print("Enter      -> screen=%s mods=%s Lv=%.2f (MODなし %.2f)" % [g.get_script().resource_path.get_file(), str(g._mods.ids), g.gen.level, g.gen.base_level])
 	await _key(KEY_ESCAPE)
-	print("Esc        -> paused=%s layer=%s" % [str(g._paused), str(g._pause_layer.visible)])
+	print("Esc        -> paused=%s layer=%s  arena_cover=%s (expect true: ポーズ中は弾を見せない)" % [str(g._paused), str(g._pause_layer.visible), str(g._pause_cover.visible and g._pause_cover.color.a > 0.99)])
 	var vol0 := int(g.settings.volume)
 	await _key(KEY_DOWN)
 	await _key(KEY_RIGHT)
@@ -1018,9 +1023,23 @@ func _smoke_ui() -> void:
 	for i in range(2):   # 4 → 5 → 0(先頭へ戻る)
 		await _key(KEY_DOWN)
 	await _key(KEY_ENTER)
-	print("Down x2, Enter -> sel=%d (expect 0)  paused=%s (expect false: 再開)" % [g._pause_sel, str(g._paused)])
+	print("Down x2, Enter -> sel=%d (expect 0)  resume_wait=%s (expect true: 自機だけを見せて、操作を待つ)  bullets_hidden=%s ship_only=%s  pause_menu=%s (expect false)" % [g._pause_sel, str(g._resume_wait), str(not g.field.visible), str(g._view_under.ship_only), str(g._pause_layer.visible)])
+	await _key(KEY_SPACE)   # 待ちに入った直後は、操作を受けない(ダブルクリックで、すぐ始まらないように)
+	print("Space right away -> still waiting=%s (expect true)" % str(g._resume_wait))
+	await get_tree().create_timer(0.4).timeout
+	await _key(KEY_ESCAPE)   # 待ちの間の Esc は、ポーズへ戻る
+	print("Esc while waiting -> back to pause menu=%s (expect true)  resume_wait=%s (expect false)" % [str(g._pause_layer.visible), str(g._resume_wait)])
+	await _key(KEY_DOWN)
+	await _key(KEY_UP)
+	await _key(KEY_ENTER)   # もう一度「再開」
+	await get_tree().create_timer(0.4).timeout
+	await _key(KEY_SPACE)   # 操作で、動き出す
+	print("Space after wait -> paused=%s (expect false)  bullets_visible=%s (expect true)  ship_only=%s (expect false)" % [str(g._paused), str(g.field.visible), str(g._view_under.ship_only)])
+	await _key(KEY_ESCAPE)   # 再開した直後は、またポーズできない(連続ポーズで、止めた弾を観察する悪用を防ぐ)
+	print("Esc right after resume -> paused=%s (expect false: クールダウン %.1fs)  bullets_alpha=%.2f (expect < 1 か 1: 弾が現れていく)" % [str(g._paused), g._pause_cd, g.field.modulate.a])
+	await get_tree().create_timer(GameScreen.PAUSE_COOLDOWN + 0.2).timeout
 	await _key(KEY_ESCAPE)   # もう一度ポーズ
-	print("Esc        -> paused=%s (expect true)" % str(g._paused))
+	print("Esc after cooldown -> paused=%s (expect true)  bullets_alpha=%.2f" % [str(g._paused), g.field.modulate.a])
 	await _key(KEY_Q)
 	for i in range(3):
 		await get_tree().process_frame

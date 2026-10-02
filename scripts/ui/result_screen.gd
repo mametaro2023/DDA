@@ -173,7 +173,7 @@ func _ready() -> void:
 		grid.add_theme_constant_override("separation", 40)
 		grid.add_child(_stat("GRAZE", int(stats.graze), "", 0.7))
 		grid.add_child(_stat("被弾", int(stats.hits), " 回", 0.8))
-		grid.add_child(_stat("被弾時間", int(stats.hit_ms), " ms", 0.9))
+		grid.add_child(_stat("ダメージ", int(round(float(stats.damage) * 100.0)), "%", 0.9))   # ゲージ満タン = 100%(回復は引かない)
 		right.add_child(grid)
 
 	# --- 下: 体力の推移 ---
@@ -440,7 +440,8 @@ func _rebuild_board() -> void:
 	var versus: bool = mp.mode == "versus"
 	var res: Dictionary = net.results.duplicate() if net != null else {}
 	res[int(mp.my_id)] = {"score": float(stats.score), "hits": int(stats.hits) if versus else int(res.get(int(mp.my_id), {}).get("hits", stats.hits)),
-		"graze": int(res.get(int(mp.my_id), {}).get("graze", stats.graze)), "hit_ms": int(res.get(int(mp.my_id), {}).get("hit_ms", stats.hit_ms))}
+		"graze": int(res.get(int(mp.my_id), {}).get("graze", stats.graze)), "hit_ms": int(res.get(int(mp.my_id), {}).get("hit_ms", stats.hit_ms)),
+		"dmg": float(res.get(int(mp.my_id), {}).get("dmg", stats.get("own_damage", stats.damage)))}
 	var rows: Array = []
 	for p in mp.players:
 		if net != null and p.id != int(mp.my_id) and not net.players.has(p.id) and not res.has(p.id):
@@ -489,11 +490,11 @@ func _rebuild_board() -> void:
 			row.add_child(sc)
 			var rk := GameSim.rank_of(false, int(r.res.hits), float(r.res.score), base)
 			row.add_child(UiStyle.chip(rk, UiStyle.rank_color(rk)))
-			row.add_child(UiStyle.label("被弾 %d 回 / %d ms" % [int(r.res.hits), int(r.res.get("hit_ms", 0))], 13, UiStyle.TEXT_DIM))
+			row.add_child(UiStyle.label("被弾 %d 回 / ダメージ %d%%" % [int(r.res.hits), int(round(float(r.res.get("dmg", 0.0)) * 100.0))], 13, UiStyle.TEXT_DIM))
 			if lead and all_done and rows.size() > 1:
 				row.add_child(UiStyle.chip("WIN", UiStyle.GOLD))
 		else:
 			row.add_child(UiStyle.label("GRAZE %d" % int(r.res.graze), 15, UiStyle.TEXT))
 			row.add_child(UiStyle.label("被弾 %d 回" % int(r.res.hits), 15, UiStyle.TEXT))
-			row.add_child(UiStyle.label("%d ms" % int(r.res.hit_ms), 15, UiStyle.TEXT_DIM))
+			row.add_child(UiStyle.label("ダメージ %d%%" % int(round(float(r.res.get("dmg", 0.0)) * 100.0)), 15, UiStyle.TEXT_DIM))
 		_board.add_child(row)

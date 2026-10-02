@@ -148,7 +148,18 @@ var _sfx_pending_pan: Array = []  # 同じ順の、左右の位置
 var _left_col: Control
 var _right_col: Control
 var _pause_btns: Array = []
+## ポーズで止めた弾を、じっくり観察してから再開する(連続ポーズ)悪用を防ぐ:
+##   ポーズ中はアリーナを覆って、弾・自機を見せない / 「再開」のあとは、自機だけを見せて待ち(動かせない)、クリックか移動キーなどの操作で、
+##   弾が RESUME_VEIL 秒かけて現れて動き出す / 動き出してから PAUSE_COOLDOWN 秒は、またポーズできない
+const PAUSE_COOLDOWN := 2.0
+const RESUME_VEIL := 0.35
+const RESUME_KEYS := [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_A, KEY_D, KEY_W, KEY_S]
 const PAUSE_ROWS := 6       # 再開 / リトライ / メニューへ / 全体音量 / 音楽 / 効果音
+var _pause_cover: ColorRect   # ポーズ中、アリーナ(弾・自機)を覆う
+var _resume_wait := false     # 「再開」のあと、使う人の操作を待っている(自機だけを見せている。ゲームは止まったまま)
+var _wait_t := 0.0
+var _wait_lock := 0.0         # 待ちに入った直後は、操作を受けない(再開ボタンのダブルクリックで、すぐ始まらないように)
+var _pause_cd := 0.0          # 再開してから、またポーズできるようになるまでの残り秒
 var _pause_sel := 0       # 0..2 = ボタン、3 = 全体音量、4 = 音楽、5 = 効果音
 var _pause_vol: Array = []   # [スライダー, 値ラベル, 見出しラベル, 行の枠]
 var _pause_music: Array = []
@@ -427,7 +438,7 @@ func _build_left_panel() -> void:
 		col.add_child(_mp_box)
 
 
-## 右パネル(幅 160): GRAZE / HIT TIME と、モード表示。
+## 右パネル(幅 160): GRAZE / DAMAGE(ダメージ量。ゲージ満タン = 100%)と、モード表示。
 func _build_right_panel() -> void:
 	var col := VBoxContainer.new()
 	_right_col = col
@@ -442,8 +453,8 @@ func _build_right_panel() -> void:
 	var gap := Control.new()
 	gap.custom_minimum_size = Vector2(0, 12)
 	col.add_child(gap)
-	col.add_child(UiStyle.caption("HIT TIME"))
-	_hit_l = UiStyle.label("0 ms", 26, UiStyle.TEXT, true)
+	col.add_child(UiStyle.caption("DAMAGE"))
+	_hit_l = UiStyle.label("0%", 26, UiStyle.TEXT, true)
 	col.add_child(_hit_l)
 
 
@@ -459,6 +470,13 @@ func _build_pause() -> void:
 	dim.color = Color(0, 0, 0, 0.62)
 	dim.size = Vector2(1280, 720)
 	_pause_layer.add_child(dim)
+	_pause_cover = ColorRect.new()   # 止めた弾を観察できないよう、ポーズ中のアリーナは見せない(マルチプレイのメニューは、ゲームが進むので覆わない)
+	_pause_cover.color = Color(UiStyle.BG.r, UiStyle.BG.g, UiStyle.BG.b, 1.0)
+	_pause_cover.position = ARENA_POS
+	_pause_cover.size = PatternGen.ARENA
+	_pause_cover.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_cover.visible = _mp == null
+	_pause_layer.add_child(_pause_cover)
 	var panel := PanelContainer.new()
 	_pause_panel = panel
 	panel.position = Vector2(400, 112)
@@ -556,8 +574,11 @@ func _process(delta: float) -> void:
 	if debug_seek >= 0.0 or _done:
 		return
 	if _paused:
+		if _resume_wait:
+			_tick_resume_wait(delta)
 		return
 	delta = minf(delta, 0.05)
+	_pause_cd = maxf(_pause_cd - delta, 0.0)
 	_ui_time += delta
 	if not _audio_started:
 		if _mp != null:   # マルチプレイ: 開始の合図まで待ち、合図のあとは全員で共通の時計で READY を数える(同じ瞬間に曲が始まる)
@@ -774,6 +795,7 @@ func _stats() -> Dictionary:
 		"hits": sim.hits,
 		"hit_ms": int(round(sim.hit_time * 1000.0)),
 		"damage": sim.damage_total,
+		"own_damage": sim.own_damage,
 		"score_gross": sim.score_gross,
 		"score_base": sim.score_base,
 		"mods": Mods.names(_mods.ids),
@@ -831,7 +853,7 @@ func _refresh() -> void:
 		field.vis_r1 = DARK_FADE_R * _dark_scale
 	field.sync_render()
 	_graze_l.text = str(sim.graze)
-	_hit_l.text = "%d ms" % int(round(sim.hit_time * 1000.0))
+	_hit_l.text = "%d%%" % int(round(sim.damage_total * 100.0))   # ダメージ量(回復は引かない。協力ではチーム全体)
 	_hud.queue_redraw()
 	_hp_node.queue_redraw()
 	_sc_node.queue_redraw()
@@ -1148,13 +1170,22 @@ func _capture_mouse() -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
+	if _resume_wait:   # 再開の待ち: Esc でポーズへ戻る / 移動キー・Space・Enter で、動き出す
+		if event.keycode == KEY_ESCAPE:
+			_set_paused(true)
+		elif _wait_lock <= 0.0 and RESUME_KEYS.has(event.keycode):
+			_finish_resume()
+		return
 	match event.keycode:
 		KEY_SPACE:
 			if _can_skip():
 				_request_skip()
 		KEY_ESCAPE:
 			if _end_timer < 0.0 and _outro_t < 0.0:
-				_set_paused(not _menu_open())
+				if _mp == null and not _paused and _pause_cd > 0.0:
+					UiSfx.play("deny")   # 再開したばかり: まだポーズできない
+				else:
+					_set_paused(not _menu_open())
 		KEY_UP, KEY_DOWN:
 			if _menu_open():
 				var d := -1 if event.keycode == KEY_UP else 1
@@ -1305,23 +1336,72 @@ func _set_paused(p: bool) -> void:
 			else:
 				_capture_mouse()
 		return
-	_paused = p
-	_pause_layer.visible = p
-	UiSfx.play("open" if p else "close")
-	if p:
-		_pause_sel = 0
-		_refresh_pause()
-		_pause_panel.pivot_offset = _pause_panel.size * 0.5
-		UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
-		UiStyle.spring(_pause_panel, "scale", Vector2(0.9, 0.9), Vector2.ONE, 0.4)
-		_pause_enter()
+	if not p:   # ポーズから戻る: すぐには動かさず、自機だけを見せて、使う人の操作を待つ
+		_begin_resume_wait()
+		return
+	_paused = true
+	_resume_wait = false
+	_set_ship_only(false)
+	_pause_layer.visible = true
+	UiSfx.play("open")
+	field.visible = false   # 弾の描画そのものを止める(アリーナの外にはみ出した弾も、見えないように)
+	field.modulate.a = 1.0
+	_pause_sel = 0
+	_refresh_pause()
+	_pause_panel.pivot_offset = _pause_panel.size * 0.5
+	UiStyle.tween(_pause_layer, "modulate:a", 0.0, 1.0, 0.18)
+	UiStyle.spring(_pause_panel, "scale", Vector2(0.9, 0.9), Vector2.ONE, 0.4)
+	_pause_enter()
 	if _audio_started:
-		_audio.stream_paused = p
+		_audio.stream_paused = true
 	if _mouse_mode:
-		if p:
-			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
-		else:
-			_capture_mouse()
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+
+
+## 「再開」を押したあと: アリーナには自機(と、その周りの輪)だけを見せ、ゲームは止めたまま、使う人の操作を待つ。
+## 弾は見せない(止めた弾を観察できないように)。マウスは、自機がカーソルになるよう捕まえておく(動かしても、自機はまだ動かない)。
+func _begin_resume_wait() -> void:
+	UiSfx.play("close")
+	_resume_wait = true
+	_wait_t = 0.0
+	_wait_lock = 0.3
+	_pause_layer.visible = false
+	_set_ship_only(true)
+	if _skip_btn != null:
+		_skip_btn.visible = false   # 待ちの間、Space は「動き出す」操作になるので、スキップの案内は隠す(動き出したら、また出る)
+	if _mouse_mode:
+		_capture_mouse()
+
+
+func _tick_resume_wait(delta: float) -> void:
+	_wait_t += delta
+	_wait_lock = maxf(_wait_lock - delta, 0.0)
+	_view_over.wait_t = _wait_t
+	_view_over.queue_redraw()
+
+
+## 操作された: ゲームが進み始め、弾が RESUME_VEIL 秒かけて現れる。そこから PAUSE_COOLDOWN 秒は、またポーズできない。
+func _finish_resume() -> void:
+	_resume_wait = false
+	_paused = false
+	_set_ship_only(false)
+	_pause_cd = PAUSE_COOLDOWN
+	field.visible = true
+	field.modulate.a = 0.0
+	UiStyle.tween(field, "modulate:a", 0.0, 1.0, RESUME_VEIL, 0.0, Tween.TRANS_QUAD, Tween.EASE_IN)
+	if _audio_started:
+		_audio.stream_paused = false
+	if _mouse_mode:
+		_capture_mouse()
+
+
+## 自機だけを描く状態にする(再開の待ち)/ 元に戻す。
+func _set_ship_only(on: bool) -> void:
+	_view_under.ship_only = on
+	_view_over.ship_only = on
+	_view_under.sync_sliders()
+	_view_under.queue_redraw()
+	_view_over.queue_redraw()
 
 
 ## ポーズを開いたとき、ボタンが上から順に弾んで現れる。
@@ -1404,6 +1484,10 @@ func _pause_row_style(selected: bool, mh: float, mv: float) -> StyleBoxFlat:
 
 
 func _input(event: InputEvent) -> void:
+	if _resume_wait and event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and _wait_lock <= 0.0:
+		_finish_resume()   # 再開の待ち: クリックで動き出す
+		get_viewport().set_input_as_handled()
+		return
 	if _mouse_mode and not _guiding and not _paused and not _mp_menu and not _dead and (_mp == null or _mp.started) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventMouseMotion:
 		# モード切替直後の初期イベント(カーソルの中央移動)は無視する
 		if Time.get_ticks_msec() - _mouse_capture_ms > 200:
@@ -1432,7 +1516,7 @@ func _fade_out_center() -> void:
 	t.tween_callback(func(): _center_label.visible = false)
 
 
-## HUD の細かい動き: グレイズの数字が弾む / 被弾中は被弾時間が赤くなる / スキップ案内がなめらかに出入りする。
+## HUD の細かい動き: グレイズの数字が弾む / 被弾中はダメージ量が赤くなる / スキップ案内がなめらかに出入りする。
 func _animate_hud(delta: float) -> void:
 	_update_hp_fx(delta)
 	_update_mp_rows(delta)

@@ -19,6 +19,9 @@ const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const ARENA := PatternGen.ARENA
 const PLAYER_SPEED := 380.0      # キーボード
 const PLAYER_SLOW := 160.0
+## ダメージの基準速度(px/s)。弾に触れているとき、触れていた「時間」と、弾の中を「通った距離 ÷ この速度」のうち長いほうを、ダメージの時間として使う。
+## 速く動いて弾を抜けても、キーボードで同じ距離を抜けるのと同じダメージになる(マウスの素早い動きで、被弾を実質的に減らせない)。これ以下の速さでは、触れていた時間のまま。
+const CONTACT_SPEED_REF := PLAYER_SPEED
 const MOUSE_SLOW_FACTOR := 0.3   # マウスの低速時に移動量へ掛ける倍率
 const PLAYER_HIT_R := 3.5
 const PLAYER_MARGIN := 8.0
@@ -145,6 +148,7 @@ var contact_hits := 0
 var own_graze := 0                # 自分ひとりぶんの成績(協力では、graze・hits・hit_time は全員の合計になるので、結果画面の個人別の表示に使う)
 var own_hits := 0
 var own_hit_time := 0.0
+var own_damage := 0.0             # 自分ひとりぶんのダメージ量(ゲージ満タン = 1.0。回復は引かない。協力では、damage_total は全員の合計)
 
 var _prev_pos := Vector2.ZERO  # このステップ開始時の自機位置(移動経路上の当たり判定用)
 var _ext_hit_t := 0.0          # ホスト: 他の人が被弾した直後は、ゲージが回復しない(秒)
@@ -385,17 +389,22 @@ func _update(now: float, dt: float) -> void:
 			hit_log.append(now)
 		_no_hit_time = 0.0
 		own_hit_time += dt
+		# ダメージは「触れていた時間」と「弾の中を通った距離 ÷ 基準速度」の長いほう(速く動いて抜けても、減りすぎない)
+		var eff_dt := maxf(dt, field.hit_dist / CONTACT_SPEED_REF)
+		var fragile := ZONE_FRAGILE if zone_debuff == "fragile" else 1.0
+		# ゲージが少ないとき(20% 以下)は被ダメージが半分(MOD で無効になる)
+		var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
+		var dmg := eff_dt / drain_time * factor * fragile
+		own_damage += dmg
 		if authority:
 			hit_time += dt
-			# ゲージが少ないとき(20% 以下)は被ダメージが半分(MOD で無効になる)
-			var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
-			var dmg := dt / drain_time * factor * (ZONE_FRAGILE if zone_debuff == "fragile" else 1.0)
 			damage_total += dmg
 			gauge -= dmg
 		else:
 			contact_dt += dt
-			if zone_debuff == "fragile":
-				contact_extra += dt * (ZONE_FRAGILE - 1.0)
+			var extra := eff_dt * fragile - dt   # 脆弱と、速く動いた分の追加(ホストへは追加ダメージとして送る)
+			if extra > 0.0:
+				contact_extra += extra
 	else:
 		_no_hit_time += dt
 		if not resting and authority and _ext_hit_t <= 0.0:

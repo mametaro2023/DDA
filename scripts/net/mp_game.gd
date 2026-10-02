@@ -345,10 +345,10 @@ func _score_of(id: int) -> float:
 	return float(remotes[id].score) if remotes.has(id) else 0.0
 
 
-## 最終成績(ホストへ送る。全員に配られる)。協力では、hits・graze・hit_ms は自分ひとりぶん(スコア・ダメージ係数はチームの値)。
+## 最終成績(ホストへ送る。全員に配られる)。協力では、hits・graze・hit_ms・dmg(ダメージ量。ゲージ満タン = 1)は自分ひとりぶん(スコア・ダメージ係数はチームの値)。
 func final_stats(stats: Dictionary) -> Dictionary:
 	return {"name": name_of(my_id), "score": float(stats.score), "failed": bool(stats.failed),
-		"hits": sim.own_hits, "graze": sim.own_graze, "hit_ms": int(round(sim.own_hit_time * 1000.0)),
+		"hits": sim.own_hits, "graze": sim.own_graze, "hit_ms": int(round(sim.own_hit_time * 1000.0)), "dmg": sim.own_damage,
 		"damage_factor": float(stats.damage_factor), "progress": float(stats.progress),
 		"hp": HpGraph.downsample(HpGraph.points_from_log(stats.get("hp_log", PackedFloat32Array()), float(stats.get("hp_step", 0.25)), float(stats.get("hp_t_end", 0.0)), float(stats.get("hp_end", 0.0))), HP_SAMPLES),
 		"dur": float(stats.get("hp_t_end", 0.0))}

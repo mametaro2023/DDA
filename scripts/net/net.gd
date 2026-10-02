@@ -839,7 +839,7 @@ func _clean_info(d: Dictionary) -> Dictionary:
 func _clean_result(r) -> Dictionary:
 	var d: Dictionary = r if r is Dictionary else {}
 	return {"name": _clean_name(str(d.get("name", ""))), "score": _num(d.get("score", 0.0), 0.0, 0.0, 1e9), "failed": bool(d.get("failed", false)),
-		"hits": int(_num(d.get("hits", 0), 0.0, 0.0, 1e6)), "graze": int(_num(d.get("graze", 0), 0.0, 0.0, 1e7)), "hit_ms": int(_num(d.get("hit_ms", 0), 0.0, 0.0, 1e9)),
+		"hits": int(_num(d.get("hits", 0), 0.0, 0.0, 1e6)), "graze": int(_num(d.get("graze", 0), 0.0, 0.0, 1e7)), "hit_ms": int(_num(d.get("hit_ms", 0), 0.0, 0.0, 1e9)), "dmg": _num(d.get("dmg", 0.0), 0.0, 0.0, 1e4),
 		"damage_factor": _num(d.get("damage_factor", 1.0), 1.0, 0.0, 1.0), "progress": _num(d.get("progress", 0.0), 0.0, 0.0, 1.0),
 		"hp": _clean_hp(d.get("hp")), "dur": _num(d.get("dur", 0.0), 0.0, 0.0, 36000.0)}
 

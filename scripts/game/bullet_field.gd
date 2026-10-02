@@ -25,6 +25,9 @@ var grazed := PackedByteArray()
 
 # update() の結果
 var hit := false
+## このステップで、自機の移動経路が弾の当たり判定の中を通った長さ(px)。当たった弾のうち最大のもの。被弾していなければ 0。
+## ダメージを「触れていた時間」だけでなく「通った距離」でも測るのに使う(速く動いて抜けても、ダメージが減りすぎないように)。
+var hit_dist := 0.0
 var graze_count := 0
 
 var bounds := Rect2(-12, -12, 984, 744)
@@ -158,6 +161,7 @@ func _remove(i: int) -> void:
 ## 弾を進め、被弾/かすりを判定する。check_hit=false(無敵中)でも弾は動く。
 func update(dt: float, ppos: Vector2, player_r: float, check_hit: bool, pprev := Vector2.INF) -> void:
 	hit = false
+	hit_dist = 0.0
 	graze_count = 0
 	var b := bounds
 	# 自機の移動経路(pprev→ppos)上で判定する: 素早い移動で弾をすり抜けないように
@@ -191,12 +195,24 @@ func update(dt: float, ppos: Vector2, player_r: float, check_hit: bool, pprev :=
 			var hr := player_r + r * HIT_SCALE
 			if check_hit and d2 < hr * hr:
 				hit = true
+				hit_dist = maxf(hit_dist, _path_inside(p, hr, pprev, seg, seg2, swept))
 			elif grazed[i] == 0:
 				var gr := player_r + r + GRAZE_MARGIN
 				if d2 < gr * gr:
 					grazed[i] = 1
 					graze_count += 1
 		i -= 1
+
+
+## 自機の経路(pprev から seg だけ動いた線分)のうち、中心 p・半径 hr の円の中を通った長さ。ほとんど動いていないとき(swept でない)は、動いた長さ。
+static func _path_inside(p: Vector2, hr: float, pprev: Vector2, seg: Vector2, seg2: float, swept: bool) -> float:
+	var seg_len := sqrt(seg2)
+	if not swept:
+		return seg_len
+	var u := (p - pprev).dot(seg) / seg2   # 線分の上の、いちばん近い点の位置(0..1 の外もありうる)
+	var dl2 := p.distance_squared_to(pprev + seg * u)
+	var half := sqrt(maxf(hr * hr - dl2, 0.0)) / seg_len   # 円の中を通る範囲の半分(線分の長さを 1 とした割合)
+	return maxf(minf(1.0, u + half) - maxf(0.0, u - half), 0.0) * seg_len
 
 
 ## 中心から半径 r 内の弾を消す(被弾後の連鎖被弾防止)。

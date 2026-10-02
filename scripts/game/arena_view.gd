@@ -25,6 +25,9 @@ var _slider_nodes := {}   # スライダーの軌道の描画ノード(key → {
 ## マルチプレイ: 自分の機体の色と、他の人の機体 [{pos, color, name, slow, alpha}](mp_game.gd が決める)
 var own_color := Color(0.32, 0.80, 1.0)
 var remotes: Array = []
+## 再開の待ち(ポーズから戻る前): 自機と、その周りの輪だけを描く(弾・予兆・軌道・危険エリアは見せない)。wait_t は輪を動かす時間(秒)
+var ship_only := false
+var wait_t := 0.0
 
 
 func _draw() -> void:
@@ -41,6 +44,10 @@ func _color(idx: int) -> Color:
 
 
 func _draw_under() -> void:
+	if ship_only:
+		if not dead:
+			_draw_player_body()
+		return
 	_draw_zones()
 	var lead: float = sim.warn_lead
 	for g in sim.active_gizmos:
@@ -159,8 +166,22 @@ func _draw_over() -> void:
 	if dead:
 		_draw_death()
 		return
+	if ship_only:
+		_draw_wait_rings()
+		_draw_player_marks()
+		return
 	_draw_remote_marks()
 	_draw_player_marks()
+
+
+## 再開の待ち: 自機の周りで、輪がゆっくり広がっては消える(点滅ではなく、なめらかに。ここから動かし始められる合図)。
+func _draw_wait_rings() -> void:
+	var p: Vector2 = sim.player_pos
+	var sc: float = sim.player_scale
+	for k in range(2):
+		var ph := fposmod(wait_t * 0.6 + 0.5 * float(k), 1.0)
+		var a := sin(PI * ph) * 0.6
+		draw_arc(p, (18.0 + 36.0 * ph) * sc, 0.0, TAU, 48, Color(own_color.r, own_color.g, own_color.b, a), 2.0, true)
 
 
 ## スライダーの軌道(帯 + 中心線)を、現在のギズモに合わせて作る・更新する・消す。game_screen が描画の前に呼ぶ。
@@ -169,7 +190,7 @@ func _draw_over() -> void:
 ## 機体や予兆のリングより奥に描く(show_behind_parent)。
 func sync_sliders() -> void:
 	var live := {}
-	for g in sim.active_gizmos:
+	for g in ([] if ship_only else sim.active_gizmos):
 		if g.kind != "slider":
 			continue
 		var key := "%s_%s" % [str(g.t), str(g.points[0])]

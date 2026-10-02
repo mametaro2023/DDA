@@ -28,6 +28,8 @@ var _dim: ColorRect
 var _panel: PanelContainer
 var _closing := false
 var _cards := {}          # MOD の id → カード
+## マルチプレイの部屋の曲を選ぶとき: ひとり用の MOD(撃破)は出さない
+var multi := false
 var _clear_btn: Button
 
 
@@ -78,6 +80,8 @@ func _ready() -> void:
 	scroll.add_child(list)
 	var mods: Array = settings.mods
 	for m in Mods.ALL:
+		if multi and bool(m.get("solo", false)):
+			continue
 		var parts: PackedStringArray = (m.desc as String).split(" / ")
 		var effects: Array = []
 		for p in parts:
@@ -178,7 +182,7 @@ func refresh_info(animate := true) -> void:
 	if _lv_l == null:
 		return
 	var lv: float = level_cb.call() if level_cb.is_valid() else -1.0
-	var mul: float = Mods.params(settings.mods).score_mul
+	var mul: float = Mods.params(Mods.multi_ok(settings.mods) if multi else settings.mods).score_mul
 	_ease_lv(lv, animate)
 	_ease_mul(mul, animate)
 

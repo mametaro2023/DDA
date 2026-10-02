@@ -3,6 +3,7 @@ extends Node2D
 
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
+const Boss = preload("res://scripts/game/boss.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 
 var sim
@@ -43,6 +44,7 @@ func _color(idx: int) -> Color:
 
 
 func _draw_under() -> void:
+	_draw_move_rect()
 	if ship_only:
 		if not dead:
 			_draw_player_body()
@@ -78,6 +80,8 @@ func _draw_under() -> void:
 		var a := 0.25 + 0.6 * (1.0 - p)
 		draw_arc(e.pos, r, 0.0, TAU, 40, Color(c.r, c.g, c.b, a), 2.5, true)
 		draw_circle(e.pos, 5.0, Color(1, 1, 1, a))
+	if sim.boss != null and not dead:
+		_draw_boss_under()
 	# 自機の機体は予兆・軌道の上、弾の下に描く(弾が機体の上に見える)
 	if not dead:
 		for r in remotes:
@@ -90,8 +94,6 @@ func _draw_under() -> void:
 ##   発動: 枠が一瞬、広がりながら光り(合図)、そのあと、濃い面・実線の太い枠・はっきりしたマークで「効いている」ことを示す。点滅しない。
 ##   終わる直前: ゆっくり消える。弾より奥に描く。
 func _draw_zones() -> void:
-	var cw := GameSim.ARENA.x / 3.0
-	var ch := GameSim.ARENA.y / 3.0
 	for z in sim.zones:
 		var t0: float = z.t
 		var t1: float = z.end
@@ -109,7 +111,7 @@ func _draw_zones() -> void:
 		var since := now - t0                      # 発動してからの秒
 		for c in z.cells:
 			var idx: int = c.c
-			var r := Rect2(float(idx % 3) * cw, float(idx / 3) * ch, cw, ch).grow(-3.0)
+			var r: Rect2 = sim.cell_rect(idx).grow(-3.0)   # 動ける範囲(小型化なら中央の長方形)を 3×3 に分けたマス
 			var col := GameSim.zone_color(str(c.type))
 			var center := r.get_center()
 			if warn:
@@ -170,7 +172,120 @@ func _draw_over() -> void:
 		_draw_player_marks()
 		return
 	_draw_remote_marks()
+	if sim.boss != null:
+		_draw_boss_over()
 	_draw_player_marks()
+
+
+## 小型化 MOD: 動ける範囲の外を少し暗くし、範囲の枠を描く(弾・発射位置は範囲の外にも出る)。
+func _draw_move_rect() -> void:
+	var r: Rect2 = sim.move_rect
+	if r.size.is_equal_approx(GameSim.ARENA):
+		return
+	var shade := Color(0.0, 0.0, 0.0, 0.32)
+	var a := GameSim.ARENA
+	draw_rect(Rect2(0, 0, a.x, r.position.y), shade)
+	draw_rect(Rect2(0, r.end.y, a.x, a.y - r.end.y), shade)
+	draw_rect(Rect2(0, r.position.y, r.position.x, r.size.y), shade)
+	draw_rect(Rect2(r.end.x, r.position.y, a.x - r.end.x, r.size.y), shade)
+	draw_rect(r, Color(0.45, 0.95, 0.75, 0.55), false, 2.0)
+	var k := 14.0   # 角の目印
+	for c in [r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y)]:
+		var sx := 1.0 if c.x <= r.get_center().x else -1.0
+		var sy := 1.0 if c.y <= r.get_center().y else -1.0
+		draw_polyline(PackedVector2Array([c + Vector2(0, k * sy), c, c + Vector2(k * sx, 0)]), Color(0.75, 1.0, 0.88, 0.9), 3.0, true)
+
+
+## 撃破 MOD(弾の下の層): 自機の弾と、ボスの本体(回る六角形と三角形・コア・HP の輪)。命中した瞬間は白く光る。
+func _draw_boss_under() -> void:
+	var b = sim.boss
+	for p in b.shots:
+		draw_line(p, p + Vector2(0, 16), Color(0.65, 0.95, 1.0, 0.55), 2.0, true)
+	if b.defeated:
+		return
+	var c: Vector2 = b.pos
+	var R := Boss.BOSS_R
+	var base := Color(1.0, 0.5, 0.42).lerp(Color.WHITE, clampf(b.flash / Boss.FLASH_TIME, 0.0, 1.0) * 0.8)
+	var frac: float = b.hp / maxf(b.max_hp, 1.0)
+	draw_circle(c, R * 1.25, Color(base.r, base.g, base.b, 0.08))
+	var hexa := PackedVector2Array()
+	for k in range(7):
+		hexa.append(c + Vector2.from_angle(TAU * float(k) / 6.0 + now * 0.8) * R)
+	draw_colored_polygon(hexa.slice(0, 6), Color(base.r * 0.35, base.g * 0.2, base.b * 0.2, 0.75))
+	draw_polyline(hexa, Color(base.r, base.g, base.b, 0.95), 2.5, true)
+	var tri := PackedVector2Array()
+	for k in range(4):
+		tri.append(c + Vector2.from_angle(TAU * float(k) / 3.0 - now * 1.6) * R * 0.6)
+	draw_polyline(tri, Color(1.0, 0.8, 0.6, 0.85), 2.0, true)
+	draw_circle(c, R * 0.24, Color(1.0, 0.9, 0.8, 0.95))
+	# ボーナスタイム: ボスがひるんでいる(金色の輪と、頭の上を回る星)
+	var bl: float = sim.bonus_left(now)
+	if bl >= 0.0:
+		var env := clampf((Boss.BONUS_TIME - bl) / 0.25, 0.0, 1.0) * clampf(bl / 0.3, 0.0, 1.0)
+		draw_arc(c, R + 16.0, 0.0, TAU, 48, Color(1.0, 0.86, 0.4, 0.55 * env), 2.0, true)
+		for k in range(3):
+			var ang := now * 4.0 + TAU * float(k) / 3.0
+			var sp := c + Vector2(cos(ang) * (R * 0.9), -R - 10.0 + sin(ang) * 7.0)
+			var star := PackedVector2Array()
+			for q in range(10):
+				star.append(sp + Vector2.from_angle(-PI * 0.5 + PI * 0.2 * q) * (6.0 if q % 2 == 0 else 2.6))
+			draw_colored_polygon(star, Color(1.0, 0.9, 0.45, 0.95 * env))
+	# HP の輪(上から時計回りに減る。残りが少ないほど赤く)
+	var hc := Color(1.0, 0.85, 0.4).lerp(Color(1.0, 0.25, 0.3), 1.0 - frac)
+	draw_arc(c, R + 9.0, 0.0, TAU, 48, Color(1, 1, 1, 0.12), 3.0, true)
+	if frac > 0.0:
+		draw_arc(c, R + 9.0, -PI * 0.5, -PI * 0.5 + TAU * frac, 48, Color(hc.r, hc.g, hc.b, 0.9), 3.0, true)
+
+
+## 撃破 MOD(弾の上の層): アイテム(種類ごとの色と文字。P 攻撃力 / S 連射 / W ワイド / H 回復 / B ボム)と、撃破の演出。
+func _draw_boss_over() -> void:
+	var b = sim.boss
+	var font := UiStyle.bold()
+	for it in b.items:
+		var p: Vector2 = it.p
+		var spec: Dictionary = Boss.ITEMS[it.kind]
+		var c: Color = spec.color
+		var age := now - float(it.t)
+		var pulse := 0.5 + 0.5 * sin(age * 6.0)
+		draw_circle(p, 17.0, Color(c.r, c.g, c.b, 0.14 + 0.08 * pulse))
+		draw_arc(p, 14.0 + 3.0 * pulse, 0.0, TAU, 24, Color(c.r, c.g, c.b, 0.55 * (1.0 - 0.5 * pulse)), 2.0, true)
+		# ゆっくり回るひし形の札
+		var rot := age * 1.2
+		var pts := PackedVector2Array()
+		for k in range(4):
+			pts.append(p + Vector2.from_angle(rot + PI * 0.5 * k) * 12.5)
+		draw_colored_polygon(pts, Color(c.r * 0.75, c.g * 0.75, c.b * 0.75, 0.95))
+		pts.append(pts[0])
+		draw_polyline(pts, Color(1, 1, 1, 0.95), 1.5, true)
+		draw_string(font, p + Vector2(-9, 5), str(spec.mark), HORIZONTAL_ALIGNMENT_CENTER, 18.0, 13, Color.WHITE)
+	if b.defeated:
+		_draw_boss_burst(b.defeat_pos, now - float(b.defeat_t))
+
+
+## ボスの撃破の演出(1.6 秒): 白い閃光 → 3 重の輪が広がる → 破片と火花が散る。
+func _draw_boss_burst(c: Vector2, t: float) -> void:
+	if t < 0.0 or t > 1.6:
+		return
+	var flash := clampf(1.0 - t / 0.25, 0.0, 1.0)
+	if flash > 0.0:
+		draw_circle(c, 30.0 + 50.0 * (1.0 - flash), Color(1.0, 0.95, 0.85, 0.6 * flash))
+	for i in range(3):
+		var tt := (t - 0.08 * i) / (0.9 + 0.3 * i)
+		if tt <= 0.0 or tt >= 1.0:
+			continue
+		var r := 20.0 + (160.0 + 90.0 * i) * (1.0 - pow(1.0 - tt, 3.0))
+		var col := [Color(1.0, 0.85, 0.6), Color(1.0, 0.45, 0.4), Color(1.0, 0.7, 0.35)][i] as Color
+		draw_arc(c, r, 0.0, TAU, 72, Color(col.r, col.g, col.b, 0.85 * pow(1.0 - tt, 2.0)), lerpf(6.0, 1.0, tt), true)
+	for i in range(28):
+		var hh := _h(i, 11.0)
+		var life := 0.6 + 0.8 * _h(i, 12.0)
+		if t >= life:
+			continue
+		var k := t / life
+		var d := Vector2.from_angle(TAU * float(i) / 28.0 + hh)
+		var p1 := c + d * (180.0 + 360.0 * hh) * (1.0 - exp(-3.0 * t)) / 3.0
+		var p0 := c + d * (180.0 + 360.0 * hh) * (1.0 - exp(-3.0 * maxf(t - 0.06, 0.0))) / 3.0
+		draw_line(p0, p1, Color(1.0, 0.9 - 0.5 * k, 0.6 - 0.5 * k, 1.0 - k), 2.0, true)
 
 
 ## 再開の待ち: 自機の周りで、輪がゆっくり広がっては消える(点滅ではなく、なめらかに。ここから動かし始められる合図)。

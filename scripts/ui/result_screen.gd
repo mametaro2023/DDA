@@ -1,6 +1,6 @@
 extends Control
 ## リザルト画面。左上にランクと、その周りの円状のメーター(点数の達成率まで伸びる)、右上にスコアと内訳・成績、下に体力の推移のグラフ。
-## ゲームオーバーなら、ランクの代わりに到達度(メーターも到達度まで伸びる)。マルチプレイは、右に参加者の成績の一覧、グラフに参加者の体力を重ねる。
+## ゲームオーバーなら、ランクの代わりに到達度(メーターも到達度まで伸びる。撃破 MOD では、ボスを削った割合)。マルチプレイは、右に参加者の成績の一覧、グラフに参加者の体力を重ねる。
 
 signal menu_requested
 signal retry_requested
@@ -75,6 +75,8 @@ func _ready() -> void:
 	var accent := UiStyle.DANGER if failed else UiStyle.rank_color(_rank)
 	_accent = accent
 	_ratio = clampf(float(stats.progress), 0.0, 1.0) if failed else clampf(float(stats.score) / maxf(score_base, 1.0), 0.0, 1.0)
+	if failed and stats.has("boss"):   # 撃破: 曲が繰り返すので、到達度の代わりにボスを削った割合
+		_ratio = clampf(1.0 - float(stats.boss.hp_left), 0.0, 1.0)
 
 	# --- 左: ランク / 到達度と、周りのメーター ---
 	var left := Control.new()
@@ -108,17 +110,13 @@ func _ready() -> void:
 	meter.add_child(center)
 	if failed:
 		_big = UiStyle.label("0%", 100, accent, true)
-		_sub = UiStyle.label("到達", 18, UiStyle.TEXT_DIM)
+		_sub = UiStyle.label("削った" if stats.has("boss") else "到達", 18, UiStyle.TEXT_DIM)
 	else:
 		_big = UiStyle.label(_rank, 124, accent, true)
 		_sub = UiStyle.label("0.0%", 20, UiStyle.TEXT_DIM)
 	center.add_child(_centered(_big))
 	center.add_child(_centered(_sub))
 	if not failed:
-		var note := UiStyle.label("ノーミスなら SS", 12, UiStyle.TEXT_FAINT)
-		note.position = Vector2(16, 18)
-		note.size = Vector2(150, 20)
-		left.add_child(note)
 		_big.modulate.a = 0.0   # ランクの文字は、メーターが伸びきってから叩きつける
 
 	# 左パネルは左から滑り込む
@@ -166,6 +164,8 @@ func _ready() -> void:
 		if not failed:
 			right.add_child(_row("ベーススコア", UiStyle.fmt(int(round(score_base))), _mod_note()))
 			right.add_child(_row("グレイズボーナス", "+ " + UiStyle.fmt(int(stats.score_graze)), ""))
+			if stats.has("boss"):   # 撃破: 倒すまでの時間のボーナス
+				right.add_child(_row("撃破タイムボーナス", "+ " + UiStyle.fmt(int(stats.get("score_boss_time", 0.0))), ""))
 			right.add_child(_row("被ダメージ係数", "× %.3f" % stats.damage_factor, ""))
 			right.add_child(UiStyle.hline())
 		# 成績(3 つ並べる)
@@ -174,6 +174,13 @@ func _ready() -> void:
 		grid.add_child(_stat("GRAZE", int(stats.graze), "", 0.7))
 		grid.add_child(_stat("被弾", int(stats.hits), " 回", 0.8))
 		grid.add_child(_stat("ダメージ", int(round(float(stats.damage) * 100.0)), "%", 0.9))   # ゲージ満タン = 100%(回復は引かない)
+		if stats.has("boss") and bool(stats.boss.defeated):   # 撃破: 最初の発射から倒すまでの時間(m:ss)
+			var sec := int(float(stats.boss.defeat_t))
+			var bt := VBoxContainer.new()
+			bt.add_theme_constant_override("separation", 2)
+			bt.add_child(UiStyle.caption("撃破タイム"))
+			bt.add_child(UiStyle.label("%d:%02d" % [sec / 60, sec % 60], 26, UiStyle.TEXT, true))
+			grid.add_child(bt)
 		right.add_child(grid)
 
 	# --- 下: 体力の推移 ---

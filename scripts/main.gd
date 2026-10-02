@@ -12,6 +12,7 @@ const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const UserDirMigrate = preload("res://scripts/user_dir_migrate.gd")
 const Mods = preload("res://scripts/mods.gd")
+const Boss = preload("res://scripts/game/boss.gd")
 const SfxBank = preload("res://scripts/sfx_bank.gd")
 const HpGraph = preload("res://scripts/ui/hp_graph.gd")
 const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
@@ -148,6 +149,9 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-death"):
 		_smoke_death()
+		return
+	if args.has("--smoke-bossloop"):
+		_smoke_bossloop()
 		return
 	if args.has("--smoke-score"):
 		_smoke_score()
@@ -494,7 +498,7 @@ func _on_song_picked(loader, bm, settings: Dictionary, level: float) -> void:
 	var n = _get_net()
 	if n.is_host():
 		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": level, "set_id": bm.beatmapset_id, "map_id": bm.beatmap_id},
-			settings.mods, 1.0, loader, bm)
+			Mods.multi_ok(settings.mods), 1.0, loader, bm)   # 撃破はひとり用
 	show_multi()
 
 
@@ -761,6 +765,46 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				_current.sim.slow = true
 				_current._dark_scale = _current.DARK_SLOW_SCALE
 				_current._refresh()
+			if _current.sim.boss != null:   # 撃破 MOD: ボスの真下に自機を置く / bossitem: アイテム・攻撃力 / bossdown: 撃破の演出の途中
+				var b = _current.sim.boss
+				var r: Rect2 = _current.sim.move_rect
+				_current.sim.player_pos = Vector2(clampf(b.pos.x, r.position.x + 10.0, r.end.x - 10.0), clampf(b.pos.y + 160.0, r.position.y + 10.0, r.end.y - 10.0))
+				if extra.has("bossitem"):   # 強化の途中・アイテムが 5 種類落ちている・HP 42%
+					b.power = 2
+					b.power_mul = 1.5
+					b.rate_lv = 1
+					b.wide_lv = 1
+					b.hp = b.max_hp * 0.42
+					var kinds := ["power", "rate", "wide", "heal", "bomb"]
+					for k in range(kinds.size()):
+						b.items.append({"kind": kinds[k], "p": _current.sim.player_pos + Vector2(-120.0 + 60.0 * k, -110.0), "v": Vector2.ZERO, "t": 0.0})
+					for k in range(16):
+						b.shots.append(_current.sim.player_pos + Vector2(Boss.WIDE_OFFSETS[1][k % 4], -20.0 - 30.0 * float(k / 4)))
+				if extra.has("bossdown"):
+					_current._update_boss_hud(10.0)   # ゲージを出しきってから倒す
+					b.hp = 0.0
+					b.defeated = true
+					b.defeat_t = _current._now - 0.35
+					b.defeat_pos = b.pos
+				if extra.has("bosswarn"):   # ボスの登場(WARNING の途中・ゲージが現れるところ)
+					var tw: float = b.appear_t + 0.15
+					_current._now = tw
+					b.pos = b.pos_at(tw)
+					_current.field.clear()
+					for k in range(40):
+						_current._boss_gauge.tick(1.0 / 60.0, tw - 40.0 / 60.0 + k / 60.0)
+				elif extra.has("bossbonus"):   # ボーナスタイムの途中(早送りの速いところ)
+					var tb: float = _current.sim.loop_end + 1.3
+					_current._now = tb
+					b.pos = b.pos_at(tb)
+					_current.field.clear()
+					_current._update_boss_hud(10.0)
+				elif not extra.has("bossdown"):
+					_current._update_boss_hud(10.0)
+				if extra.has("bossdown"):   # ゲージが砕けている途中
+					for k in range(24):
+						_current._boss_gauge.tick(1.0 / 60.0, _current._now)
+				_current._refresh()
 			for e in extra:   # 体力を指定して撮る(例: ... Extra 40 practice hp0.15)
 				if e.begins_with("hp") and e.trim_prefix("hp").is_valid_float():
 					var hp := float(e.trim_prefix("hp"))
@@ -829,7 +873,8 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			var rbm = rl.difficulties[rl.difficulties.size() - 1]
 			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "dmg": 0.16, "damage": 0.16, "graze": 123, "score": 1013000.0 if extra.has("ss") or extra.has("s") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
 				"score_base": 1060000.0, "mod_ids": ["hell", "rush"], "mods": "地獄 + 加速",
-				"bg": rl.load_image(rbm.background) if rbm.background != "" else null}.merged(_fake_hp(1, 118.0, extra.size() > 0 and extra[0] == "failed", 3)))
+				"bg": rl.load_image(rbm.background) if rbm.background != "" else null}.merged(_fake_hp(1, 118.0, extra.size() > 0 and extra[0] == "failed", 3)).merged(
+				{"boss": {"defeated": not (extra.size() > 0 and extra[0] == "failed"), "defeat_t": 152.0, "hp_left": 0.38, "loops": 2}, "score_boss_time": 15600.0, "mod_ids": ["boss", "shrink"], "mods": "撃破 + 小型化"} if extra.has("boss") else {}, true))   # 例: --shot result out.png [failed] boss
 			_current.skip_animation()   # スクリーンショットでは、演出を待たない
 	_setup_ui_layer()   # 右上の「設定」ボタンも撮る
 	_update_settings_button()
@@ -887,6 +932,42 @@ func _fake_hp(seed_n: int, dur: float, fail: bool, n_hits: int) -> Dictionary:
 
 
 ## 開発用: 動かずに被弾するまで待ち、ゲームオーバー演出→リザルト遷移を確認する。-- --smoke-death
+## 撃破 MOD の曲の繰り返し: 周の最後のノーツの少し前へ飛ばし、ボーナスタイムの早送りで次の周の始まりに着くこと
+## (早送りで速くなる・曲クロックが戻らない・着いたあと曲と曲クロックがそろっている・ゲームが終わらない)。
+func _smoke_bossloop() -> void:
+	var loader := OszLoader.new()
+	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+	start_game(loader, loader.difficulties[0], {"mods": ["boss", "practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	var g = _current
+	while not g._audio_started:
+		await get_tree().process_frame
+	var sim = g.sim
+	print("loop_len=%.2f loop_from=%.2f loop_end=%.2f song_len=%.2f" % [sim.loop_len, sim.loop_from, sim.loop_end, g._audio.stream.get_length()])
+	var start: float = sim.loop_end - 1.0
+	g._audio.seek(start * g._rate)
+	g._now = start
+	g._sim_t = start
+	var prev: float = g._now
+	var mono := true
+	var peak := 0.0
+	var bonus_seen := false
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 6000:
+		await get_tree().process_frame
+		mono = mono and g._now >= prev - 0.0001
+		prev = g._now
+		peak = maxf(peak, g._audio.pitch_scale)
+		bonus_seen = bonus_seen or sim.bonus_left(g._now) >= 0.0
+	var pos: float = g._audio.get_playback_position()
+	var clock_from_audio: float = pos / g._rate + float(g._loop_k) * sim.loop_len
+	print("after: loop_k=%d now=%.2f pos=%.2f audio_clock=%.2f peak_pitch=%.2f pitch=%.2f bonus_seen=%s monotonic=%s finished=%s loop_index=%d" % [g._loop_k, g._now,
+		pos, clock_from_audio, peak, g._audio.pitch_scale, str(bonus_seen), str(mono), str(sim.finished), sim.loop_index(g._now)])
+	var ok: bool = g._loop_k == 1 and sim.loop_index(g._now) == 1 and g._audio.playing and mono and not sim.finished and bonus_seen \
+		and peak > g.FF_PEAK * 0.9 and is_equal_approx(g._audio.pitch_scale, g._rate) and absf(clock_from_audio - g._now) < 0.15
+	print("smoke-bossloop: ", "OK" if ok else "FAILED")
+	get_tree().quit(0 if ok else 1)
+
+
 func _smoke_death() -> void:
 	var loader := OszLoader.new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")

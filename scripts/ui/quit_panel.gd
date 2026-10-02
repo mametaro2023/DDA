@@ -1,7 +1,7 @@
 extends Control
 ## 確認パネル(画面の上に重ねる)。既定は「ゲームを終了しますか？」(タイトル画面)。Enter で実行(confirmed)、Esc・「キャンセル」・パネルの外で閉じる(closed)。
 ## 全画面のときはウィンドウの ✕ が見えないので、タイトルの「終了」と Esc から出られるようにしてある。
-## 文言は setup() で変えられる(部屋を出る確認などにも使う)。ゲームを終わらせる処理は、呼び出し側が confirmed につなぐ。
+## 文言は setup() で変えられる(部屋を出る確認・ダウンロードの同意などにも使う。body を渡すと、見出しの下に説明文を出す)。ゲームを終わらせる処理は、呼び出し側が confirmed につなぐ。
 
 signal closed
 signal confirmed
@@ -12,16 +12,18 @@ const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 var title_text := "ゲームを終了しますか？"
 var ok_text := "終了する"
 var cancel_text := "キャンセル"
+var body_text := ""   # 見出しの下の説明文(空なら出さない)
 
 var _panel: PanelContainer
 var _dim: ColorRect
 var _done := false
 
 
-func setup(p_title: String, p_ok: String, p_cancel := "キャンセル") -> void:
+func setup(p_title: String, p_ok: String, p_cancel := "キャンセル", p_body := "") -> void:
 	title_text = p_title
 	ok_text = p_ok
 	cancel_text = p_cancel
+	body_text = p_body
 
 
 func _ready() -> void:
@@ -43,6 +45,14 @@ func _ready() -> void:
 	_panel.add_child(v)
 	v.add_child(UiStyle.label(title_text, 24, UiStyle.TEXT, true))
 	v.add_child(UiStyle.hline())
+	if body_text != "":   # 説明文があるときは、パネルを広げて、画面の中央に置く
+		var body := UiStyle.label(body_text, 15, UiStyle.TEXT_DIM)
+		body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.custom_minimum_size = Vector2(580, 0)
+		v.add_child(body)
+		_panel.size = Vector2(640, 0)
+		_panel.position = Vector2(320, 200)
+		_panel.resized.connect(func(): _panel.position.y = (720.0 - _panel.size.y) * 0.5)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	v.add_child(row)

@@ -10,6 +10,7 @@ const NetScript = preload("res://scripts/net/net.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
+const UserDirMigrate = preload("res://scripts/user_dir_migrate.gd")
 const Mods = preload("res://scripts/mods.gd")
 const SfxBank = preload("res://scripts/sfx_bank.gd")
 const HpGraph = preload("res://scripts/ui/hp_graph.gd")
@@ -54,6 +55,7 @@ var _pending: Node = null
 
 
 func _ready() -> void:
+	UserDirMigrate.run()   # アプリの名前を変えたので、前の名前のユーザーデータ(設定・曲・記録)を移す(残っていなければ何もしない)
 	Volume.init_from(Settings.load_all())
 	var args := OS.get_cmdline_user_args()
 	var i := args.find("--shot")

@@ -463,7 +463,7 @@ func _build_missing(sv: VBoxContainer, song: Dictionary) -> void:
 	var set_id := int(song.get("set_id", 0))
 	var downloading: bool = _dl != null and _dl.busy
 	if set_id > 0 and not downloading:
-		var dl := _button("ダウンロードして取り込む", func(): _start_download(song), true)
+		var dl := _button("ダウンロードして取り込む", func(): _ask_download(song), true)
 		dl.custom_minimum_size = Vector2(0, 40)
 		sv.add_child(dl)
 	if downloading:
@@ -490,6 +490,33 @@ func _build_missing(sv: VBoxContainer, song: Dictionary) -> void:
 		row.add_child(_button("ブラウザで開く", func(): OS.shell_open(url)))
 	row.add_child(_button("曲フォルダを開く", _open_songs_dir))
 	sv.add_child(row)
+
+
+## ダウンロードの前に、非公式のミラーサイトから取ることへの同意を求める(同意したら覚えておき、次からは聞かない。設定の mirror_consent)。
+func _ask_download(song: Dictionary) -> void:
+	if bool(settings.get("mirror_consent", false)):
+		_start_download(song)
+		return
+	if _confirm != null:
+		return
+	var q := QuitPanel.new()
+	q.setup("非公式のミラーサイトから取得します", "同意してダウンロード", "キャンセル",
+		"この曲(.osz)を、osu! 公式ではないミラーサイト(osu.direct・Nerinyan・catboy.best)からダウンロードして取り込みます。
+" +
+		"本アプリと各ミラーサイトは無関係で、譜面・楽曲の権利は、それぞれの制作者にあります。公式のページから入れたいときは「ブラウザで開く」を使ってください。
+" +
+		"同意すると、次からはこの確認を出しません。")
+	q.confirmed.connect(func():
+		q.queue_free()
+		_confirm = null
+		settings.mirror_consent = true
+		Settings.save_all(settings)
+		_start_download(song))
+	q.closed.connect(func():
+		q.queue_free()
+		_confirm = null)
+	_confirm = q
+	add_child(q)
 
 
 func _start_download(song: Dictionary) -> void:

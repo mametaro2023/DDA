@@ -20,7 +20,7 @@ var mirrors: Array = [
 const MAX_BYTES := 150 * 1024 * 1024
 const MIN_BYTES := 2000
 const WORK_DIR := "user://download"
-const USER_AGENT := "User-Agent: DDA-osu-danmaku-dodger (+https://github.com/mametaro2023/DDA)"
+const USER_AGENT := "User-Agent: DDA-danmaku-dodger (+https://github.com/mametaro2023/DDA)"
 
 var busy := false
 ## 取り込み先(空なら、ユーザーデータの songs。テスト用に差し替えられる)

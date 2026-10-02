@@ -112,12 +112,13 @@ static func to_arena(p: Vector2) -> Vector2:
 	return p * SCALE
 
 
-## opts: density_mul(目標の弾数にかかる倍率), size_mul(弾サイズの倍率。実験用)
+## opts: density_mul(目標の弾数にかかる倍率), size_mul(弾サイズの倍率。実験用),
+##       speed_mul(弾速の倍率。弾速の実験用(scripts/speed_study.gd)。目標の Lv は変えないので、弾数が自動で増減して同じ Lv になる)
 ## 戻り値: events, gizmos, warn_lead, rating{mean,p95,peak,score}, level(Lv), speed, size, stars, target_level
 static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	var stars := reference_stars(bm)
 	var k := clampf((stars - STAR_MIN) / (STAR_MAX - STAR_MIN), 0.0, 1.0)
-	var speed := BASE_SPEED * lerpf(1.0 - SPEED_VAR, 1.0 + SPEED_VAR, k)
+	var speed := BASE_SPEED * lerpf(1.0 - SPEED_VAR, 1.0 + SPEED_VAR, k) * float(opts.get("speed_mul", 1.0))
 	var size := base_size(k) * float(opts.get("size_mul", 1.0))
 	# 目標の adj(弾速・弾サイズの補正後スコア)。density_mul が 1 なら目標 Lv = 推定★
 	var target_adj := target_score_for(stars + LEVEL_SHIFT) * float(opts.get("density_mul", 1.0))

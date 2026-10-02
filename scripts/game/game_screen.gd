@@ -19,6 +19,7 @@ const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
+const SpeedStudy = preload("res://scripts/speed_study.gd")
 
 const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
@@ -141,6 +142,7 @@ var _bg_tex: Texture2D    # 背景の画像(リザルトへ渡して、同じ背
 var _sim_t := -LEAD_IN    # 判定側(GameSim)の時刻。_now に追いつくまで SIM_STEP 刻みで進める
 var _hit_any := false     # このフレームのどこかのステップで、弾に当たっていたか
 var _hit_started := false # このフレームのどこかで、新しい被弾が始まったか
+var _study_cond := ""   # 弾速の実験の条件(scripts/speed_study.gd)。実験しないときは空
 var _sfx_pending: Array = []  # このフレームの発射音(まとめて鳴らす)
 var _sfx_pending_pan: Array = []  # 同じ順の、左右の位置
 var _left_col: Control
@@ -239,7 +241,12 @@ func _ready() -> void:
 	# 弾幕生成 + シミュ
 	# 弾幕: 選曲のときに作ったもの(MOD 適用前)があれば、それを使う(作り直すと、曲によっては 0.3 秒ほど止まる)
 	var dm := float(settings.get("density_mul", 1.0))
-	gen = pre.gen if (not pre.get("gen", {}).is_empty() and is_equal_approx(dm, 1.0)) else PatternGen.generate(bm, {"density_mul": dm})
+	# 弾速の実験(設定で参加したとき・ひとりで・弾幕に効く MOD なし): 条件に合わせて、弾速・目標の難易度を変えて作る(プレイ中は条件を出さない)
+	if SpeedStudy.eligible(settings, net != null):
+		_study_cond = SpeedStudy.choose(SpeedStudy.map_key(bm), SpeedStudy.read_rows())
+	var sc: Dictionary = SpeedStudy.CONDITIONS.get(_study_cond, SpeedStudy.CONDITIONS.base)
+	var plain := is_equal_approx(dm, 1.0) and is_equal_approx(sc.speed_mul, 1.0) and is_equal_approx(sc.density_mul, 1.0)
+	gen = pre.gen if (not pre.get("gen", {}).is_empty() and plain) else PatternGen.generate(bm, {"density_mul": dm * float(sc.density_mul), "speed_mul": float(sc.speed_mul)})
 	_mods = Mods.params(settings.get("mods", []))
 	gen = Mods.apply(gen, _mods)   # MOD を掛け、その弾幕で難易度(Lv)を測り直す
 	_rate = _mods.rate
@@ -618,6 +625,7 @@ func _process(delta: float) -> void:
 		else:
 			music = null
 		var st_clear := _stats()
+		_record_study(st_clear)
 		if _mp != null:
 			_mp.send_final(st_clear)
 		finished.emit(st_clear, music)
@@ -630,6 +638,7 @@ func _process(delta: float) -> void:
 			_done = true
 			_audio.stop()
 			var st_fail := _stats()
+			_record_study(st_fail)
 			if _mp != null:
 				_mp.send_final(st_fail)
 			finished.emit(st_fail, null)
@@ -729,6 +738,29 @@ func _apply_death_fx() -> void:
 	var sc := lerpf(2.2, 1.0, 1.0 - pow(1.0 - a, 3.0))
 	_center_label.scale = Vector2(sc, sc)
 	_center_label.visible = a > 0.0
+
+
+## 弾速の実験の記録を 1 行書き足す(実験しているプレイだけ)。被弾は、最初の発射から、最後の発射(ゲームオーバーならその時刻)までの時間あたりで比べる。
+func _record_study(st: Dictionary) -> void:
+	if _study_cond == "":
+		return
+	var first_t := -1.0
+	var last_t := 0.0
+	for e in gen.events:
+		if not e.shots.is_empty():
+			if first_t < 0.0:
+				first_t = float(e.t)
+			last_t = float(e.t)
+	var end_t := minf(sim.death_time, last_t) if sim.failed else last_t
+	var sc: Dictionary = SpeedStudy.CONDITIONS[_study_cond]
+	SpeedStudy.record({
+		"time": Time.get_datetime_string_from_system(), "app": str(ProjectSettings.get_setting("application/config/version", "")),
+		"map": SpeedStudy.map_key(bm), "stars": float(gen.stars), "cond": _study_cond,
+		"speed_mul": float(sc.speed_mul), "density_mul": float(sc.density_mul), "speed": float(gen.speed), "size": float(gen.size),
+		"level": float(gen.level), "mean": float(gen.rating.mean), "control": str(settings.get("control", "")),
+		"practice": 1 if _mods.practice else 0, "failed": 1 if sim.failed else 0, "progress": float(st.progress),
+		"played_s": maxf(end_t - maxf(first_t, 0.0), 0.0), "hits": int(sim.hits), "hit_ms": int(st.hit_ms), "graze": int(sim.graze), "score": float(sim.score),
+	})
 
 
 func _stats() -> Dictionary:

@@ -120,6 +120,9 @@ func _ready() -> void:
 	if args.has("--smoke-sfx"):
 		_smoke_sfx()
 		return
+	if args.has("--smoke-speed-study"):
+		_smoke_speed_study()
+		return
 	if args.has("--smoke-autoupdate"):
 		_smoke_autoupdate()
 		return
@@ -1504,6 +1507,50 @@ func _smoke_clear() -> void:
 	print("after menu request: music node alive=%s (fading)" % str(_music != null))
 	await get_tree().create_timer(0.6).timeout
 	print("+0.7s: music=%s" % str(_music))
+	get_tree().quit()
+
+
+## 開発用: 弾速の実験(scripts/speed_study.gd)を、実際のプレイ画面で通す。2 回遊ぶ(最後の発射の直前まで進めて終える)と、記録が 2 行でき、
+## 条件がそれぞれ違い(回数の少ない条件から選ぶ)、遊んだ時間が入っている。マルチプレイ・MOD つきでは記録しない。-- --smoke-speed-study
+## 記録は確認用の別ファイルに書く(本物の記録 user://speed_study.csv は触らない)。
+func _smoke_speed_study() -> void:
+	var SpeedStudy = load("res://scripts/speed_study.gd")
+	var real_path: String = SpeedStudy.path
+	SpeedStudy.path = "user://smoke_speed_study.csv"
+	if FileAccess.file_exists(SpeedStudy.path):
+		DirAccess.remove_absolute(SpeedStudy.path)
+	var fails := 0
+	var chk := func(c: bool, m: String) -> void:
+		print(("  ok   " if c else "  FAIL ") + m)
+		if not c:
+			fails += 1
+	var loader := OszLoader.new()
+	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+	var bm = loader.difficulties[0]
+	var conds: Array = []
+	for run in range(3):
+		var st := {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "speed_study": true}
+		if run == 2:
+			st.mods = ["storm"]   # 弾幕に効く MOD: 記録しない
+		start_game(loader, bm, st)
+		var g = _current
+		conds.append(g._study_cond)
+		await get_tree().create_timer(2.5).timeout
+		var last: float = g.sim.events[g.sim.events.size() - 1].t
+		g._audio.seek((last - 0.5) * g._rate)
+		var t0 := Time.get_ticks_msec()
+		while Time.get_ticks_msec() - t0 < 15000 and is_instance_valid(g) and _current == g:
+			await get_tree().process_frame
+		chk.call(_current != g, "%d 回目: 結果画面まで進んだ(条件: %s)" % [run + 1, conds[run] if conds[run] != "" else "なし"])
+	var rows: Array = SpeedStudy.read_rows()
+	chk.call(rows.size() == 2, "記録は、実験した 2 回ぶん(MOD つきの 3 回目は記録しない): %d 行" % rows.size())
+	chk.call(conds[0] != "" and conds[1] != "" and conds[0] != conds[1] and conds[2] == "", "条件は 1 回目と 2 回目で違い、MOD つきは実験しない: %s" % str(conds))
+	if rows.size() >= 1:
+		var r: Dictionary = rows[0]
+		chk.call(str(r.cond) == conds[0] and float(r.played_s) > 10.0 and str(r.map).contains(bm.version), "記録の中身: 条件 %s・遊んだ時間 %.0f 秒・譜面 %s" % [r.cond, r.played_s, r.map])
+	DirAccess.remove_absolute(SpeedStudy.path)
+	SpeedStudy.path = real_path
+	print("smoke-speed-study: ", "OK" if fails == 0 else "%d FAILED" % fails)
 	get_tree().quit()
 
 

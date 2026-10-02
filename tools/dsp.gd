@@ -141,6 +141,75 @@ static func saw(dur: float, freq: float, phase0 := 0.0) -> PackedFloat32Array:
 	return b
 
 
+# --- 物理モデル(モーダル合成) ---
+
+## ばち(マレット)が当たる瞬間の力: 長さ contact 秒の半周期の正弦の山(+ 同じ形のノイズを noise の割合で)。
+## 接している時間が短い(硬いばち)ほど高い周波数まで含み、長い(やわらかいばち)ほど丸い音になる。
+static func mallet(contact: float, noise: float, r: RandomNumberGenerator, dur := 0.0) -> PackedFloat32Array:
+	var b := buf(maxf(dur, contact + 0.001))
+	var n := maxi(int(contact * SR), 1)
+	for i in range(mini(n, b.size())):
+		var w := sin(PI * (float(i) + 0.5) / n)
+		b[i] = w * (1.0 + noise * (r.randf() * 2.0 - 1.0)) / (float(n) * 2.0 / PI)   # 面積を 1 に(ばちの硬さで、音の大きさが変わらない)
+	return b
+
+
+## 共振のかたまり(モーダル合成): 入力 exc で、周波数 freqs の共振(減衰の速さ decays(1/秒)、大きさ gains)を鳴らす。
+## 叩かれた物体(木・ガラス・金属)の音は、固有の振動(モード)の重ね合わせ。どのモードが鳴るかは、叩き方(exc)で決まる。
+## 共振は 2 次の帯域通過の IIR(分子 (1 - z^-2) / 2 で、直流とナイキストを通さない。共振の周波数での大きさは 1 倍)。
+## (分子が定数だと、ばちの力のゆっくりした山が、共振の低域の利得でそのまま通り、音の頭に鈍い「ボコッ」が乗る。)
+static func modal(exc: PackedFloat32Array, dur: float, freqs: Array, decays: Array, gains: Array) -> PackedFloat32Array:
+	var out := buf(dur)
+	var n := out.size()
+	for m in range(freqs.size()):
+		var f := float(freqs[m])
+		if f <= 20.0 or f >= SR * 0.45:
+			continue
+		var w := TAU * f / SR
+		var rr := exp(-float(decays[m]) / SR)
+		var a1 := 2.0 * rr * cos(w)
+		var a2 := -rr * rr
+		var g := 0.5 * float(gains[m])
+		var y1 := 0.0
+		var y2 := 0.0
+		for i in range(n):
+			var xi := exc[i] if i < exc.size() else 0.0
+			var xi2 := exc[i - 2] if i >= 2 and i - 2 < exc.size() else 0.0
+			var y := g * (xi - xi2) + a1 * y1 + a2 * y2
+			y2 = y1
+			y1 = y
+			out[i] += y
+	return out
+
+
+## サンプルホールドで粗くする(デジタルの「ざらっ」とした質感)。hold サンプルごとに値を保つ。
+static func crush(x: PackedFloat32Array, hold: int) -> PackedFloat32Array:
+	var out := x.duplicate()
+	var v := 0.0
+	for i in range(out.size()):
+		if i % maxi(hold, 1) == 0:
+			v = x[i]
+		out[i] = v
+	return out
+
+
+## モノを左右へ(等パワー)。p: -1(左)〜 1(右)。
+static func pan(x: PackedFloat32Array, p: float) -> Array:
+	var a := (clampf(p, -1.0, 1.0) + 1.0) * PI * 0.25
+	return [scaled(x, cos(a) * sqrt(2.0)), scaled(x, sin(a) * sqrt(2.0))]
+
+
+## 時間で左右に動かす(pan_fn(t 秒) -> -1..1)。
+static func pan_sweep(x: PackedFloat32Array, pan_fn: Callable) -> Array:
+	var l := x.duplicate()
+	var r := x.duplicate()
+	for i in range(x.size()):
+		var a := (clampf(float(pan_fn.call(float(i) / SR)), -1.0, 1.0) + 1.0) * PI * 0.25
+		l[i] *= cos(a) * sqrt(2.0)
+		r[i] *= sin(a) * sqrt(2.0)
+	return [l, r]
+
+
 static func white(dur: float, r: RandomNumberGenerator) -> PackedFloat32Array:
 	var b := buf(dur)
 	for i in range(b.size()):
@@ -379,6 +448,110 @@ static func reverb(x: PackedFloat32Array, room: float, damp: float, wet: float, 
 		var d := dry[i]
 		l[i] = d + l[i] * wet * 3.0
 		r[i] = d + r[i] * wet * 3.0
+	return [l, r]
+
+
+## なめらかな残響(FDN: 8 本の遅延線を Householder 行列で混ぜる)。Freeverb のような金属的な鳴きが出にくく、短い打撃音にも使える。
+## モノの入力から [左, 右] を返す。size: 部屋の大きさ(遅延の長さの倍率。0.3〜1.5)、rt60: 残響が -60 dB まで減る秒数、
+## damp: 0..1(高域の吸収。大きいほど暗い)、wet: 残響の混ぜ具合、predelay: 直接音から残響までの秒数。
+## 最初の 40 ms ほどは、左右で違う初期反射(壁からの数本の跳ね返り)も足す(音の「場」の手がかり)。
+static func room(x: PackedFloat32Array, size: float, rt60: float, damp: float, wet: float, predelay := 0.006) -> Array:
+	var base := [1031, 1327, 1523, 1777, 1949, 2207, 2459, 2687]
+	var lens: Array = []
+	var fbs: Array = []
+	var lines: Array = []
+	var idxs: Array = []
+	var lps: Array = []
+	for j in range(8):
+		var L := maxi(int(float(base[j]) * size), 32)
+		lens.append(L)
+		fbs.append(pow(10.0, -3.0 * float(L) / (SR * maxf(rt60, 0.05))))
+		var ln := PackedFloat32Array()
+		ln.resize(L)
+		lines.append(ln)
+		idxs.append(0)
+		lps.append(0.0)
+	var tail := int(rt60 * 1.1 * SR)
+	var n := x.size() + tail
+	var pd := int(predelay * SR)
+	# 入力の拡散(短いオールパス 3 段)
+	var src := PackedFloat32Array()
+	src.resize(n)
+	for i in range(x.size()):
+		if i + pd < n:
+			src[i + pd] = x[i]
+	for d in [142, 107, 379]:
+		var dl := int(float(d) * maxf(size, 0.5))
+		var ap := PackedFloat32Array()
+		ap.resize(dl)
+		var k := 0
+		for i in range(n):
+			var bo := ap[k]
+			var v := src[i] + bo * 0.6
+			ap[k] = v
+			src[i] = bo - v * 0.6
+			k = (k + 1) % dl
+	var l := PackedFloat32Array()
+	var rr := PackedFloat32Array()
+	l.resize(n)
+	rr.resize(n)
+	var dmp := clampf(damp, 0.0, 0.95)
+	var outs := PackedFloat32Array()
+	outs.resize(8)
+	for i in range(n):
+		var sum := 0.0
+		for j in range(8):
+			var ln2: PackedFloat32Array = lines[j]
+			var o := ln2[idxs[j]]
+			lps[j] = o * (1.0 - dmp) + float(lps[j]) * dmp
+			outs[j] = float(lps[j]) * float(fbs[j])
+			sum += outs[j]
+		sum *= 0.25   # Householder: y = x - (2/N) Σx
+		var inp := src[i]
+		var lo := 0.0
+		var ro := 0.0
+		for j in range(8):
+			var ln3: PackedFloat32Array = lines[j]
+			ln3[idxs[j]] = outs[j] - sum + inp
+			idxs[j] = (int(idxs[j]) + 1) % int(lens[j])
+			if j % 2 == 0:
+				lo += outs[j] * (1.0 if j % 4 == 0 else -1.0)
+			else:
+				ro += outs[j] * (1.0 if j % 4 == 1 else -1.0)
+		l[i] = lo
+		rr[i] = ro
+	# 初期反射(左右で違う時刻)
+	var er_t := [[0.0071, 0.0113, 0.0187, 0.0293, 0.0371], [0.0089, 0.0137, 0.0211, 0.0263, 0.0409]]
+	var er_g := [0.5, 0.38, 0.3, 0.22, 0.16]
+	var er: Array = []
+	for ch in range(2):
+		var e := PackedFloat32Array()
+		e.resize(n)
+		for t_i in range(5):
+			mix_into(e, x, float(er_t[ch][t_i]) * size + predelay * 0.5, float(er_g[t_i]))
+		er.append(biquad(e, "lp", 6000.0 * (1.0 - dmp * 0.6), 0.7071))
+	var dry := x.duplicate()
+	dry.resize(n)
+	var wl := wet * 0.35
+	for i in range(n):
+		l[i] = dry[i] + (l[i] * 0.5 + er[0][i]) * wl
+		rr[i] = dry[i] + (rr[i] * 0.5 + er[1][i]) * wl
+	return [l, rr]
+
+
+## ステレオの音 [左, 右] に、残響を足す(左右の定位はそのまま。残響は左右を混ぜたものから作る)。
+static func room_stereo(lr: Array, size: float, rt60: float, damp: float, wet: float) -> Array:
+	var l0: PackedFloat32Array = lr[0]
+	var r0: PackedFloat32Array = lr[1]
+	var mono := l0.duplicate()
+	for i in range(mono.size()):
+		mono[i] = (l0[i] + r0[i]) * 0.5
+	var rv := room(mono, size, rt60, damp, wet)
+	var l: PackedFloat32Array = rv[0]
+	var r: PackedFloat32Array = rv[1]
+	for i in range(mono.size()):   # 残響の中の直接音(左右を混ぜたもの)を、元の左右の音に置き換える
+		l[i] += l0[i] - mono[i]
+		r[i] += r0[i] - mono[i]
 	return [l, r]
 
 

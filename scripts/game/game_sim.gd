@@ -125,6 +125,7 @@ var _log_i := 0                         # 次に記録するサンプルの番�
 
 ## このステップで起きたこと(描画/音声側が読む)
 var sfx_queue: Array = []
+var sfx_pan: Array = []          # sfx_queue と同じ順の、音の左右の位置(-1 = 左端 〜 1 = 右端。弾の発生源の横の位置)
 var just_hit := false           # 新しい被弾が始まったステップ
 
 var active_warns: Array = []
@@ -333,6 +334,7 @@ func _move_player(p: Vector2) -> void:
 func _update(now: float, dt: float) -> void:
 	steps_total += 1
 	sfx_queue.clear()
+	sfx_pan.clear()
 	just_hit = false
 	# 予兆の開始
 	while _warn_idx < events.size() and events[_warn_idx].t - warn_lead <= now:
@@ -564,6 +566,7 @@ func _fire(e: Dictionary, now: float) -> void:
 			bullets_fired += int(s.n) * (aims.size() if s.aim else 1)
 	if e.sfx != "":
 		sfx_queue.append(e.sfx)
+		sfx_pan.append(clampf(pos.x / ARENA.x * 2.0 - 1.0, -1.0, 1.0))
 
 
 ## ランク。failed(ゲームオーバー)なら "-"(ランクなし)。ノーミス(hits == 0)は SS、それ以外は達成率(score / score_base)で S〜F。

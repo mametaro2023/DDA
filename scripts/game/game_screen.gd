@@ -142,6 +142,7 @@ var _sim_t := -LEAD_IN    # 判定側(GameSim)の時刻。_now に追いつく�
 var _hit_any := false     # このフレームのどこかのステップで、弾に当たっていたか
 var _hit_started := false # このフレームのどこかで、新しい被弾が始まったか
 var _sfx_pending: Array = []  # このフレームの発射音(まとめて鳴らす)
+var _sfx_pending_pan: Array = []  # 同じ順の、左右の位置
 var _left_col: Control
 var _right_col: Control
 var _pause_btns: Array = []
@@ -555,13 +556,14 @@ func _process(delta: float) -> void:
 
 	# 効果音は 1 回だけ消費する(シミュレーション停止後に残った分を毎フレーム鳴らさない)
 	if not sim.failed:
-		for s in _sfx_pending:
-			_sfx.play(s)
+		for i in range(_sfx_pending.size()):
+			_sfx.play(_sfx_pending[i], 1.0, float(_sfx_pending_pan[i]) if i < _sfx_pending_pan.size() else 0.0)
 		if _hit_started:
-			_sfx.play("hit")  # 新しい被弾の開始時に 1 回(触れている間は、下の touch_damage がジジジと鳴らし続ける)
+			_sfx.play("hit", 1.0, sim.player_pos.x / PatternGen.ARENA.x * 2.0 - 1.0)  # 新しい被弾の開始時に 1 回。自機の横の位置で左右に振る(触れている間は、下の touch_damage がジジジと鳴らし続ける)
 		if _hit_any:
 			_sfx.touch_damage(1.0 - sim.gauge)
 	_sfx_pending.clear()
+	_sfx_pending_pan.clear()
 	_hit_started = false
 	_hit_glow = 1.0 if _hit_any else _hit_glow * exp(-delta * 5.0)
 	_gauge_ghost = maxf(sim.gauge, _gauge_ghost - delta * 0.5)
@@ -659,6 +661,7 @@ func _step_sim(slow: bool) -> void:
 		_hit_any = _hit_any or sim.hit_now
 		_hit_started = _hit_started or sim.just_hit
 		_sfx_pending.append_array(sim.sfx_queue)
+		_sfx_pending_pan.append_array(sim.sfx_pan)
 		if sim.finished:
 			break
 	if not sim.finished:

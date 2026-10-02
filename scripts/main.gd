@@ -1039,6 +1039,11 @@ func _smoke_sfx() -> void:
 		if p.playing:
 			playing += 1
 	chk.call(playing >= 3, "鳴らすと、プレイヤーが再生を始める(%d 個)" % playing)
+	# 発射音は、発生源の横の位置で左右に振る(左端 = 左寄りのバス、真ん中 = マスター)
+	var bl: StringName = Sfx.pan_bus(-1.0)
+	var bi := AudioServer.get_bus_index(bl)
+	var pan_ok: bool = bi >= 0 and AudioServer.get_bus_effect_count(bi) > 0 and (AudioServer.get_bus_effect(bi, 0) as AudioEffectPanner).pan < 0.0
+	chk.call(pan_ok and Sfx.pan_bus(0.0) == &"Master" and Sfx.pan_bus(1.0) != bl, "発射音は左右に振れる(左端: %s / 真ん中: %s)" % [bl, Sfx.pan_bus(0.0)])
 	# 弾に触れている間のダメージ音(ループ): 触れている間は鳴り続け、離れると消える
 	var loop_ok: bool = s._dmg_player != null and s._dmg_player.stream.loop_mode == AudioStreamWAV.LOOP_FORWARD
 	chk.call(loop_ok, "ダメージ音はループ再生の設定になっている")

@@ -102,7 +102,7 @@ static func find_by_md5(md5: String) -> Dictionary:
 # --- 曲の索引(.osz を全部開かずに、一覧に出す情報を得る) ---
 
 const INDEX_PATH := "user://song_index.json"
-const INDEX_VERSION := 1
+const INDEX_VERSION := 2   # 2: 読めない理由の文言を変えた(入っていた譜面のモードを添える)
 
 ## 場所+大きさ+更新時刻 → 情報。ファイルに保存して、次の起動でも .osz を開き直さない(曲が多くても選曲画面がすぐ開く)。
 static var _index := {}
@@ -126,7 +126,7 @@ static func info(path: String) -> Dictionary:
 	var z := ZIPReader.new()
 	var err := z.open(path)
 	if err != OK:
-		out.error = "osz を開けません: %s (%s)" % [path.get_file(), error_string(err)]
+		out.error = OszLoader.zip_error_message(err)
 	else:
 		var names: Array = []
 		for f in z.get_files():
@@ -134,11 +134,13 @@ static func info(path: String) -> Dictionary:
 				names.append(f)
 		names.sort()
 		var best := ""
+		var modes: Array = []
 		for f in names:
 			var text := z.read_file(f).get_string_from_utf8()
 			var key := OsuParser.play_key(text)
 			out.ids[key] = f
 			var q := OsuParser.quick_info(text)
+			modes.append(int(q.mode))
 			if q.mode == 0 and q.objects > 0:
 				if not out.ok:
 					out.title = q.title
@@ -149,7 +151,7 @@ static func info(path: String) -> Dictionary:
 		z.close()
 		out.md5 = best
 		if not out.ok:
-			out.error = "osu!standard の譜面が見つかりません"
+			out.error = OszLoader.no_standard_message(modes)
 	_index[ck] = out
 	_index_dirty = true
 	return out

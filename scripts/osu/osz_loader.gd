@@ -11,15 +11,35 @@ var difficulties: Array = []
 
 var _reader: ZIPReader
 
+## osu! の譜面のモード(Mode の番号)の名前
+const MODE_NAMES := {0: "osu!standard", 1: "taiko", 2: "catch", 3: "mania"}
+
+
+## osu!standard の譜面がないときの説明。入っていた譜面のモードを添える(mania だけの曲を開いた、などが分かるように)。
+static func no_standard_message(modes: Array) -> String:
+	var names: Array = []
+	for m in modes:
+		var nm: String = MODE_NAMES.get(int(m), "?")
+		if int(m) != 0 and not names.has(nm):
+			names.append(nm)
+	var inside := ("(入っているのは %s の譜面だけです)" % "・".join(names)) if not names.is_empty() else ""
+	return "osu!standard(通常モード)の譜面が入っていません%s。このアプリは osu!standard の譜面にだけ対応しています" % inside
+
+
+## zip として開けないときの説明。
+static func zip_error_message(err: int) -> String:
+	return "zip として開けません(%s)。ダウンロードが途中で終わっていないか、確かめてください" % error_string(err)
+
 
 func open(p: String) -> bool:
 	path = p
 	_reader = ZIPReader.new()
 	var err := _reader.open(p)
 	if err != OK:
-		error = "osz を開けません: %s (%s)" % [p, error_string(err)]
+		error = zip_error_message(err)
 		_reader = null
 		return false
+	var modes: Array = []   # 入っていた譜面のモード(osu!standard がないときの説明に使う)
 	for f in _reader.get_files():
 		if f.to_lower().ends_with(".osu"):
 			var bytes := _reader.read_file(f)
@@ -30,10 +50,11 @@ func open(p: String) -> bool:
 				var head := p.get_file().split(" ")[0]
 				if head.is_valid_int():
 					bm.beatmapset_id = int(head)
+			modes.append(bm.mode)
 			if bm.mode == 0 and not bm.hit_objects.is_empty():
 				difficulties.append(bm)
 	if difficulties.is_empty():
-		error = "osu!standard の譜面が見つかりません"
+		error = no_standard_message(modes)
 		close()
 		return false
 	# 暫定の並び(物量密度順)。メニューで DDA 難易度の順に並べ直す。

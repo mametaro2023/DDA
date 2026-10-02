@@ -43,7 +43,12 @@ const SKIP_LEAD := 1.5
 const SKIP_MIN_GAIN := 1.0
 ## 表示スコアのイージング: 目標値との差を毎秒この割合で詰める ease-out(1/RATE 秒ほどで大半が追いつく)
 const SCORE_EASE_RATE := 9.0
-const END_DELAY_FAIL := 2.9
+## ゲームオーバーから結果画面へ移るまでの秒数(曲のテープストップ 1.7 秒・弾が消えるのを待ってから)
+const END_DELAY_FAIL := 2.0
+## プレイ中に R をこの秒数だけ押し続けると、すぐにリトライ(ひとりのときだけ)
+const RETRY_HOLD := 0.6
+## 休憩のカウントダウンの輪の半径
+const BREAK_R := 62.0
 ## 判定・進行(GameSim)を進める刻み。描画のフレームレートとは独立に、ms 単位(1000 Hz)で当たり判定を行う。
 ## 1 フレームぶんの経過時間を、この刻みで割って(ceil)、その回数だけ sim を進める(60 fps なら 1 フレームで約 17 回)。
 ## 1 フレームで進める回数の上限(重い場面で処理が追いつかなくなったときは、刻みを粗くして時刻だけは合わせる)
@@ -155,7 +160,10 @@ var _ff_t := -1.0           # 撃破 MOD: 早送り(ボーナスタイム)の経
 var _ff_jumped := false
 var _break_a := 0.0       # 休憩のカウントダウンの表示度(なめらかに出入りする)
 var _break_left := 0.0    # 休憩が終わるまでの残り秒
-var _break_frac := 0.0    # カウントダウンバーの残り割合(1 → 0)
+var _break_frac := 0.0    # カウントダウンの輪の残り割合(1 → 0)
+var _break_sec := -1      # いま出している残り秒(整数。-1 = 数えていない)
+var _break_pop := 0.0     # 数字が変わったときの弾み(1 → 0)
+var _break_in := 0.0      # 輪が現れるときの伸び(0 → 1)
 var _done := false        # リザルトへ渡した後(以降は何もしない)
 var _outro_t := -1.0      # クリアのフェードアウトの経過秒(始まるまで -1)
 var _bg_nodes: Array = [] # 背景(フェードアウトしない)
@@ -178,6 +186,10 @@ const RESUME_KEYS := [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER, KEY_LEFT, KEY_RIGHT, K
 const PAUSE_ROWS := 6       # 再開 / リトライ / メニューへ / 全体音量 / 音楽 / 効果音
 var _pause_cover: ColorRect   # ポーズ中、アリーナ(弾・自機)を覆う
 var _resume_wait := false     # 「再開」のあと、使う人の操作を待っている(自機だけを見せている。ゲームは止まったまま)
+var _resume_hint: Label       # 再開の待ちの案内(「クリックで再開」など)
+var _retry_hold := 0.0        # R を押し続けている秒数(RETRY_HOLD でリトライ)
+var _retry_armed := false     # R を一度離したか(ポーズ・結果画面の R でリトライした押しっぱなしで、また始まらないように)
+var _retry_ui: Control        # R 長押しの進み具合の輪
 var _wait_t := 0.0
 var _wait_lock := 0.0         # 待ちに入った直後は、操作を受けない(再開ボタンのダブルクリックで、すぐ始まらないように)
 var _pause_cd := 0.0          # 再開してから、またポーズできるようになるまでの残り秒
@@ -318,6 +330,8 @@ func _ready() -> void:
 		_low_vis = _low_target()
 		_score_disp = sim.score
 		_break_a = 1.0 if _update_break_count() else 0.0
+		_break_in = _break_a
+		_break_sec = int(ceil(_break_left)) if _break_a > 0.0 else -1
 		_update_hud_fade(0.0, true)
 		_update_kiai(0.0, true)
 		if sim.failed:
@@ -364,12 +378,11 @@ func _arrive() -> void:
 	_guiding = false
 	CursorOverlay.cancel_fly()
 	if _mouse_mode and not _menu_open():
-		if _can_skip():   # スキップのボタンを押せるように、まだ捕まえない(_update_skip_button が、できなくなったら捕まえる)
+		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
+		if _can_skip():   # スキップのボタンを押せるように、まだ捕まえない(自機がマウスの位置へ動き、カーソルの代わりになる。_update_skip_button が、できなくなったら捕まえる)
 			_skip_free = true
 			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		else:
-			var at: Vector2 = ARENA_POS + sim.player_pos
-			Input.warp_mouse(get_viewport().get_screen_transform() * at)
 			_capture_mouse()
 	# 自機が、その場で弾んで現れる(輪が広がり、小さな音)
 	if UiStyle.animate and not _dead:
@@ -616,7 +629,15 @@ func _process(delta: float) -> void:
 	delta = minf(delta, 0.05)
 	_pause_cd = maxf(_pause_cd - delta, 0.0)
 	_ui_time += delta
-	if not _audio_started:
+	if _update_retry_hold(delta):
+		return
+	if _dead:
+		# ゲームオーバー: ゲームの時間も、テープストップ(曲の減速)と同じ割合で遅くなって止まる。
+		# 弾はそのまま進み続けて(当たり判定はなし)、曲と一緒に減速して止まる。予兆・危険エリアなどの動きも同じ
+		var dt_game := delta * _tape_speed()
+		_now += dt_game
+		field.update(dt_game, Vector2(-1.0e6, -1.0e6), 0.0, false)
+	elif not _audio_started:
 		if _mp != null:   # マルチプレイ: 開始の合図まで待ち、合図のあとは全員で共通の時計で READY を数える(同じ瞬間に曲が始まる)
 			_now = maxf(-LEAD_IN + (net.shared_time() - _mp.start_shared), -LEAD_IN) if _mp.started else -LEAD_IN
 		else:
@@ -743,7 +764,10 @@ func _step_sim(slow: bool) -> void:
 	var dt := span / float(n)
 	var move := Vector2.ZERO
 	var d := Vector2.ZERO
-	if _mouse_mode:
+	if _ship_is_cursor():   # スキップできる間: 自機がカーソルの代わり(マウスの位置へ、そのまま動く)
+		d = (get_viewport().get_mouse_position() - ARENA_POS - sim.player_pos) / float(n)
+		_mouse_accum = Vector2.ZERO
+	elif _mouse_mode:
 		var mult: float = float(settings.get("mouse_sens", 1.0)) * (GameSim.MOUSE_SLOW_FACTOR if slow else 1.0)
 		d = _mouse_accum * mult / float(n)
 		_mouse_accum = Vector2.ZERO
@@ -781,6 +805,11 @@ func _begin_death(with_sound: bool) -> void:
 	_view_over.material = add
 
 
+## ゲームオーバーのテープストップの速さ(1 = ふつう → 0 = 止まった)。曲の再生速度と、ゲームの時間の進み方の両方に使う。
+func _tape_speed() -> float:
+	return pow(1.0 - clampf(_death_t / TAPE_STOP_TIME, 0.0, 1.0), 2.0)
+
+
 ## 演出の経過に合わせて、曲の減速・弾のフェード・GAME OVER 表示を更新する。
 func _apply_death_fx() -> void:
 	var t := _death_t
@@ -788,12 +817,12 @@ func _apply_death_fx() -> void:
 	# テープストップ: 音量は保ったまま、再生速度(=音程)がなめらかに 0 へ落ちていく
 	if _audio.playing:
 		var x := clampf(t / TAPE_STOP_TIME, 0.0, 1.0)
-		_audio.pitch_scale = maxf(_rate * pow(1.0 - x, 2.0), 0.02)
+		_audio.pitch_scale = maxf(_rate * _tape_speed(), 0.02)
 		_audio.volume_db = linear_to_db(clampf((1.0 - x) / 0.12, 0.001, 1.0))  # 完全に止まる直前だけ消す
 		if x >= 1.0:
 			_audio.stop()
-	# 弾は固まってから消える
-	field.modulate.a = clampf(1.0 - (t - 0.5) / 0.9, 0.0, 1.0)
+	# 弾は(曲と一緒に減速して)止まってから消える
+	field.modulate.a = clampf(1.0 - (t - 1.0) / 0.8, 0.0, 1.0)
 	# GAME OVER 表示
 	var a := clampf((t - 0.45) / 0.5, 0.0, 1.0)
 	_center_label.text = "GAME OVER"
@@ -858,6 +887,7 @@ func _stats() -> Dictionary:
 		"hit_log": sim.hit_log,
 		"breaks": sim.breaks,
 		"first_fire": sim.first_fire_time,
+		"last_fire": sim.log_end_t if sim.boss != null else sim.last_fire_time,   # 撃破は曲が繰り返すので、戦いの終わりまで
 	}
 	if sim.boss != null:   # 撃破 MOD: 結果画面に、倒せたか・倒すまでの時間(最初の発射から。実時間)・残りの HP・周回数を出す
 		d["boss"] = {"defeated": sim.boss.defeated, "defeat_t": maxf(float(sim.boss.defeat_t) - maxf(sim.first_fire_time, 0.0), 0.0),
@@ -1180,25 +1210,15 @@ func _update_hud_fade(delta: float, instant := false) -> void:
 
 func _draw_hud() -> void:
 
-	var font := ThemeDB.fallback_font
 	var ax := ARENA_POS.x
 
 	# --- 体力が低いときの、画面の左右端の赤み(残量に応じてなめらかに強まる。点滅・脈動なし) ---
 	_draw_low_vignette()
 
 
-	# 休憩のカウントダウン(フィールド中央。数字は小数点以下 2 桁、下に残り時間のバー)
+	# 休憩のカウントダウン(フィールド中央の輪と、残り秒)
 	if _break_a > 0.01:
-		var cx := ax + PatternGen.ARENA.x * 0.5
-		var num := "%.2f" % _break_left
-		var nw := _score_font.get_string_size("00.00", HORIZONTAL_ALIGNMENT_LEFT, -1, 64).x   # 桁が変わっても位置がぶれないよう、幅は固定
-		var ky := 300.0 - (1.0 - _break_a) * 8.0
-		_hud.draw_string(font, Vector2(cx - 100.0, ky - 64.0), "BREAK", HORIZONTAL_ALIGNMENT_CENTER, 200.0, 14, Color(0.62, 0.9, 1.0, 0.8 * _break_a))
-		_hud.draw_string(_score_font, Vector2(cx - nw * 0.5 + 2.0, ky + 2.0), num, HORIZONTAL_ALIGNMENT_LEFT, -1, 64, Color(0, 0, 0, 0.5 * _break_a))
-		_hud.draw_string(_score_font, Vector2(cx - nw * 0.5, ky), num, HORIZONTAL_ALIGNMENT_LEFT, -1, 64, Color(1, 1, 1, 0.95 * _break_a))
-		var bw := 280.0
-		_hud.draw_rect(Rect2(cx - bw * 0.5, ky + 16.0, bw, 4.0), Color(1, 1, 1, 0.14 * _break_a))
-		_hud.draw_rect(Rect2(cx - bw * 0.5, ky + 16.0, bw * _break_frac, 4.0), Color(0.62, 0.9, 1.0, 0.9 * _break_a))
+		_draw_break_count()
 
 	# 進行バー(フィールド下端。休憩地帯は淡い区間で示す)
 	# 撃破 MOD では曲が繰り返すので、いまの周の中の位置を出す(時刻は 1 周目に戻して数える)
@@ -1352,6 +1372,7 @@ func _build_skip_button() -> void:
 	_skip_btn.add_theme_stylebox_override("pressed", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.4), UiStyle.ACCENT, 2, 6, 14, 8))
 	_skip_btn.pressed.connect(func(): if _can_skip(): _request_skip())
 	add_child(_skip_btn)
+	move_child(_skip_btn, _arena.get_index())   # アリーナ(自機)より奥: 自機をボタンに重ねても、自機が文字に隠れない
 
 
 ## ボタンの表示と、マウスの扱いを合わせる。スキップできる間は、マウスを捕まえず(カーソルが見えて、ボタンを押せる)、
@@ -1376,10 +1397,21 @@ func _update_skip_button() -> void:
 		_skip_free = true
 		_mouse_accum = Vector2.ZERO
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))   # 自機がマウスの位置へ跳ばないように
 	elif not can and _skip_free:
 		_skip_free = false
 		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
 		_capture_mouse()
+	if _ship_is_cursor():   # アリーナの中では、独自カーソルを出さない(自機とカーソルが 2 つ並ばない)
+		var m: float = GameSim.PLAYER_MARGIN * sim.player_scale
+		CursorOverlay.hide_in(Rect2(ARENA_POS + Vector2(m, m), PatternGen.ARENA - Vector2(m, m) * 2.0))
+
+
+## スキップのボタンを押せる間(マウスを捕まえていない): 自機がマウスの位置へそのまま動き、カーソルの代わりになる。
+## 自機をボタンへ重ねてクリックすれば押せる。スキップできなくなったら、その位置のままマウスを捕まえる(自機は跳ばない)。
+func _ship_is_cursor() -> bool:
+	return _mouse_mode and _skip_free and _arrived and not _menu_open() and not _dead \
+		and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN
 
 
 func _set_paused(p: bool) -> void:
@@ -1404,6 +1436,7 @@ func _set_paused(p: bool) -> void:
 		return
 	_paused = true
 	_resume_wait = false
+	_show_resume_hint(false)
 	_set_ship_only(false)
 	_pause_layer.visible = true
 	UiSfx.play("open")
@@ -1432,8 +1465,29 @@ func _begin_resume_wait() -> void:
 	_set_ship_only(true)
 	if _skip_btn != null:
 		_skip_btn.visible = false   # 待ちの間、Space は「動き出す」操作になるので、スキップの案内は隠す(動き出したら、また出る)
+	_show_resume_hint(true)
 	if _mouse_mode:
 		_capture_mouse()
+
+
+## 再開の待ちの案内(どうすれば動き出すか)。自機のすぐ下(下の端に近いときは上)に、短く出す。
+func _show_resume_hint(on: bool) -> void:
+	if _resume_hint == null:
+		if not on:
+			return
+		_resume_hint = UiStyle.label("", 18, UiStyle.TEXT, true)
+		_resume_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_resume_hint.size = Vector2(320, 26)
+		_resume_hint.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+		_resume_hint.add_theme_constant_override("outline_size", 5)
+		add_child(_resume_hint)
+	_resume_hint.visible = on
+	if not on:
+		return
+	_resume_hint.text = "クリックで再開" if _mouse_mode else "移動キー・Space で再開"
+	var below: bool = sim.player_pos.y < PatternGen.ARENA.y - 110.0
+	_resume_hint.position = ARENA_POS + sim.player_pos + Vector2(-160.0, 66.0 if below else -92.0)
+	UiStyle.tween(_resume_hint, "modulate:a", 0.0, 1.0, 0.25)
 
 
 func _tick_resume_wait(delta: float) -> void:
@@ -1446,6 +1500,7 @@ func _tick_resume_wait(delta: float) -> void:
 ## 操作された: ゲームが進み始め、弾が RESUME_VEIL 秒かけて現れる。そこから PAUSE_COOLDOWN 秒は、またポーズできない。
 func _finish_resume() -> void:
 	_resume_wait = false
+	_show_resume_hint(false)
 	_paused = false
 	_set_ship_only(false)
 	_pause_cd = PAUSE_COOLDOWN
@@ -1479,6 +1534,54 @@ func _pause_enter() -> void:
 ## ポーズ(マルチプレイでは、ゲームを止めないメニュー)が開いているか。
 func _menu_open() -> bool:
 	return _paused or _mp_menu
+
+
+## R の長押しでリトライ(プレイ中・ゲームオーバーの演出中。ひとりのときだけ)。押している間は、アリーナの上に進み具合の輪を出す。
+## リトライしたら true(このフレームの処理をやめる)。
+func _update_retry_hold(delta: float) -> bool:
+	var held := Input.is_physical_key_pressed(KEY_R)
+	if not held:
+		_retry_armed = true
+	if held and _retry_armed and _mp == null and not _menu_open():
+		_retry_hold += delta
+	else:
+		_retry_hold = maxf(_retry_hold - delta * 4.0, 0.0)   # 離したら、すばやく戻る
+	if _retry_hold > 0.0 or (_retry_ui != null and _retry_ui.modulate.a > 0.0):
+		_update_retry_ui()
+	if _retry_hold < RETRY_HOLD:
+		return false
+	_done = true
+	UiSfx.play("confirm")
+	_audio.stop()
+	retry_requested.emit()
+	return true
+
+
+func _update_retry_ui() -> void:
+	if _retry_ui == null:
+		_retry_ui = Control.new()
+		_retry_ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_retry_ui.position = ARENA_POS + Vector2(PatternGen.ARENA.x * 0.5 - 60.0, 84.0)
+		_retry_ui.size = Vector2(120, 96)
+		_retry_ui.draw.connect(_draw_retry_ui)
+		add_child(_retry_ui)
+	_retry_ui.modulate.a = clampf(_retry_hold / 0.12, 0.0, 1.0)
+	_retry_ui.queue_redraw()
+
+
+## R 長押しの輪: 暗い円の上に、押している長さだけ時計回りに伸びる輪と「リトライ」。
+func _draw_retry_ui() -> void:
+	var c := Vector2(60, 32)
+	var k := clampf(_retry_hold / RETRY_HOLD, 0.0, 1.0)
+	var a := UiStyle.ACCENT
+	_retry_ui.draw_circle(c, 29.0, Color(0, 0, 0, 0.55))
+	_retry_ui.draw_arc(c, 24.0, 0.0, TAU, 48, Color(1, 1, 1, 0.15), 4.0, true)
+	if k > 0.0:
+		_retry_ui.draw_arc(c, 24.0, -PI * 0.5, -PI * 0.5 + TAU * k, 48, a, 4.5, true)
+	var font := UiStyle.bold()
+	_retry_ui.draw_string(font, c + Vector2(-30, 7), "R", HORIZONTAL_ALIGNMENT_CENTER, 60.0, 20, Color(1, 1, 1, 0.95))
+	_retry_ui.draw_string_outline(font, Vector2(0, 84), "リトライ", HORIZONTAL_ALIGNMENT_CENTER, 120.0, 15, 5, Color(0, 0, 0, 0.8))
+	_retry_ui.draw_string(font, Vector2(0, 84), "リトライ", HORIZONTAL_ALIGNMENT_CENTER, 120.0, 15, Color(a.r, a.g, a.b, 0.95))
 
 
 ## ポーズ画面の項目の実行(0 = 再開、1 = リトライ、2 = メニューへ)。
@@ -1595,7 +1698,7 @@ func _animate_hud(delta: float) -> void:
 	_update_hud_fade(delta)
 	_update_kiai(delta)
 	_dark_scale += ((DARK_SLOW_SCALE if sim.slow else 1.0) - _dark_scale) * (1.0 - exp(-delta * 9.0))
-	_break_a = move_toward(_break_a, 1.0 if _update_break_count() else 0.0, delta * 4.0)
+	_tick_break_count(delta)
 	_update_boss_hud(delta)
 
 
@@ -1795,6 +1898,63 @@ func _draw_bonus_hud() -> void:
 	var bw := 260.0
 	_hud.draw_rect(Rect2(cx - bw * 0.5, y + 10.0, bw, 4.0), Color(1, 1, 1, 0.15 * env))
 	_hud.draw_rect(Rect2(cx - bw * 0.5, y + 10.0, bw * (left / dur), 4.0), gold)
+
+
+## 休憩のカウントダウンの動き: 出入り(なめらか)・輪が伸びて現れる・秒が変わるたびの弾み。
+## 残り 3 秒からは、1 秒ごとに輪が広がる(音はなし)。終わると、輪が外へ広がって消える(動き出す合図)。
+func _tick_break_count(delta: float) -> void:
+	var counting := _update_break_count()
+	_break_a = move_toward(_break_a, 1.0 if counting else 0.0, delta * 4.0)
+	_break_pop = maxf(_break_pop - delta * 3.5, 0.0)
+	if counting:
+		_break_in = minf(_break_in + delta / 0.5, 1.0) if UiStyle.animate else 1.0
+		var sec := int(ceil(_break_left - 0.0001))
+		if sec != _break_sec:
+			if _break_sec >= 0:
+				_break_pop = 1.0
+				if sec >= 1 and sec <= 3:
+					UiFx.ring(_hud, _break_center(), Color(UiStyle.GOLD.r, UiStyle.GOLD.g, UiStyle.GOLD.b, 0.7), BREAK_R, BREAK_R + 46.0, 0.6, 3.0)
+			_break_sec = sec
+	elif _break_sec >= 0:
+		if _break_left < 0.25:   # 休憩が終わった(途中で消えたのではない): 表示はすぐ消して、輪が外へ広がって消える
+			_break_a = 0.0
+			UiFx.ring(_hud, _break_center(), Color(UiStyle.GOLD.r, UiStyle.GOLD.g, UiStyle.GOLD.b, 0.9), BREAK_R, BREAK_R + 120.0, 0.55, 4.0)
+			UiFx.ring(_hud, _break_center(), Color(1, 1, 1, 0.5), BREAK_R * 0.6, BREAK_R + 60.0, 0.45, 2.0)
+		_break_sec = -1
+		_break_in = 0.0
+
+
+func _break_center() -> Vector2:
+	return ARENA_POS + Vector2(PatternGen.ARENA.x * 0.5, 330.0)
+
+
+## 休憩のカウントダウン: 暗い円の上に、残り時間の輪(真上から時計回りに減る)と、残り秒(整数)。下に BREAK。
+## 残り 3 秒からは、輪と数字が金色になる。数字は変わるたびに少し弾む。
+func _draw_break_count() -> void:
+	var c := _break_center()
+	var a := _break_a
+	var warm := smoothstep(3.4, 2.9, _break_left)   # 残り 3 秒で、なめらかに金色へ
+	var cool := Color(0.62, 0.9, 1.0)
+	var col := cool.lerp(UiStyle.GOLD, warm)
+	var grow := 1.0 - pow(1.0 - _break_in, 3.0)   # 現れるとき、輪が 0 から今の残りまで伸びる
+	var frac := _break_frac * grow
+	_hud.draw_circle(c, BREAK_R + 16.0, Color(0, 0, 0, 0.3 * a))
+	_hud.draw_arc(c, BREAK_R, 0.0, TAU, 72, Color(1, 1, 1, 0.1 * a), 6.0, true)
+	if frac > 0.002:
+		var end := -PI * 0.5 + TAU * frac
+		_hud.draw_arc(c, BREAK_R, -PI * 0.5, end, 72, Color(col.r, col.g, col.b, 0.92 * a), 6.0, true)
+		_hud.draw_circle(c + Vector2.from_angle(end) * BREAK_R, 5.0, Color(1, 1, 1, 0.9 * a))   # 輪の先端
+	# 残り秒: 変わるたびに少し大きく現れて、戻る
+	var p := _break_pop * _break_pop
+	var sc := 1.0 + 0.22 * p
+	var txt := str(maxi(_break_sec, 0))
+	var fs := 54
+	_hud.draw_set_transform(c, 0.0, Vector2(sc, sc))
+	var base := Vector2(-80.0, fs * 0.36)
+	_hud.draw_string(_score_font, base + Vector2(2, 2), txt, HORIZONTAL_ALIGNMENT_CENTER, 160.0, fs, Color(0, 0, 0, 0.45 * a))
+	_hud.draw_string(_score_font, base, txt, HORIZONTAL_ALIGNMENT_CENTER, 160.0, fs, Color(1, 1, 1, 0.96 * a).lerp(Color(col.r, col.g, col.b, a), 0.25 + 0.5 * p))
+	_hud.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	_hud.draw_string(_score_font, c + Vector2(-80.0, BREAK_R + 40.0), "BREAK", HORIZONTAL_ALIGNMENT_CENTER, 160.0, 14, Color(cool.r, cool.g, cool.b, 0.75 * a))
 
 
 ## 休憩のカウントダウン(弾を一掃してから休憩が終わるまで)の残りを更新する。表示すべきなら true。

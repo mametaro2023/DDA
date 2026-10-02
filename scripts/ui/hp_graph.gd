@@ -45,6 +45,24 @@ static func points_from_log(log: PackedFloat32Array, step: float, end_t: float, 
 	return pts
 
 
+## 点列を、時刻 t0〜t1 の範囲だけに切る(境目は補間する)。途中で終わっている点列(ゲームオーバー)は、終わりのまま。
+static func clip_range(pts: PackedVector2Array, t0: float, t1: float) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for i in range(pts.size()):
+		var q := pts[i]
+		var prev := pts[i - 1] if i > 0 else q
+		if q.x < t0:
+			continue
+		if out.is_empty() and i > 0 and prev.x < t0:   # 左端: t0 の位置の値を補間して始める
+			out.append(Vector2(t0, lerpf(prev.y, q.y, (t0 - prev.x) / maxf(q.x - prev.x, 0.0001))))
+		if q.x > t1:   # 右端: t1 の位置の値を補間して終える
+			if not out.is_empty():
+				out.append(Vector2(t1, lerpf(prev.y, q.y, (t1 - prev.x) / maxf(q.x - prev.x, 0.0001))))
+			break
+		out.append(q)
+	return out
+
+
 ## 少ない点数(0..100 の整数が等間隔)に間引かれたものから、点列を作る(他の参加者の分。dur: 全体の長さ秒)。
 static func points_from_samples(samples: Array, dur: float) -> PackedVector2Array:
 	var pts := PackedVector2Array()
@@ -152,7 +170,8 @@ func _draw() -> void:
 			else:
 				draw_polyline(line, col, thick, true)
 			tip = line[line.size() - 1]
-			if reveal < 1.0:
+			var drawing := reveal < 1.0 and tip.x >= clip_x - 0.5   # まだ描き進んでいる(線が途中で終わっていれば、描き終わり)
+			if drawing:
 				draw_circle(tip, thick + 2.0, Color(1, 1, 1, 0.95))
 			elif bool(s.get("end_mark", false)):   # ゲームオーバー: 終わりの位置に赤い点
 				draw_circle(tip, thick + 3.0, Color(1.0, 0.4, 0.42, 1.0))

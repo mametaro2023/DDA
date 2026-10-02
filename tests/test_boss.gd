@@ -148,7 +148,7 @@ func _test_path(gen: Dictionary) -> void:
 	var lag := 0.0
 	var prev: Vector2 = b.pos_at(b.appear_t + Boss.ENTER_TIME)
 	var t: float = b.appear_t + Boss.ENTER_TIME
-	while t < float(sim._last_fire):
+	while t < float(sim.last_fire_time):
 		t += 0.01
 		var q: Vector2 = b.pos_at(t)
 		top = maxf(top, q.distance_to(prev) / 0.01)

@@ -108,7 +108,7 @@ var zone_debuff := ""              # いま自機が受けているデバフ("" 
 var hit_mult := 1.0                # 巨大のデバフ中の、当たり判定の倍率(描画の点の大きさにも使う)
 var contact_extra := 0.0           # 参加者: まだホストへ送っていない、デバフによる追加ダメージ(被弾時間に換算した秒)
 var _zone_i := 0
-var _last_fire := -1.0
+var last_fire_time := -1.0        # 最後のノーツ(発射)の時刻。結果画面の体力グラフの右端
 ## 発射地点の印を記録するか(暗闇 MOD。弾が見えなくても、どこから撃ったかを表示するため)
 var track_fires := false
 var recent_fires: Array = []     # {pos, t, color}: 発射から FIRE_MARK_TIME 秒だけ残る
@@ -227,6 +227,7 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 	_graze_tau = maxf(GRAZE_TAU_MIN, GRAZE_TAU_PER_EVENT * events.size())
 	bullets_total = 0
 	first_fire_time = -1.0
+	last_fire_time = -1.0
 	var last_fire := -1.0
 	for e in events:
 		if e.shots.is_empty():
@@ -234,7 +235,7 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 		if first_fire_time < 0.0:
 			first_fire_time = e.t
 		last_fire = e.t
-		_last_fire = e.t
+		last_fire_time = e.t
 		if not in_break(e.t):
 			for s in e.shots:
 				bullets_total += int(s.n)
@@ -615,6 +616,25 @@ func cell_of(p: Vector2) -> int:
 func cell_rect(c: int) -> Rect2:
 	var cs := move_rect.size / 3.0
 	return Rect2(move_rect.position + Vector2(float(c % 3) * cs.x, float(c / 3) * cs.y), cs)
+
+
+## 位置 p にいる人の、当たり判定の倍率(巨大のデバフ)。状態は変えない。
+## 描画用: マルチプレイで、他の人の当たり判定の点を、その人の実際の大きさで描く(デバフは位置と時刻だけで決まる)。
+func hit_mult_at(p: Vector2, now: float) -> float:
+	if zones.is_empty() or in_break(now):
+		return 1.0
+	for i in range(_zone_i, zones.size()):
+		var z: Dictionary = zones[i]
+		if float(z.t) > now:
+			break
+		if float(z.end) <= now:
+			continue
+		var cell := cell_of(p)   # 小型化では、動ける範囲のマス
+		for c in z.cells:
+			if int(c.c) == cell:
+				return ZONE_BIG if str(c.type) == "big" else 1.0
+		return 1.0
+	return 1.0
 
 
 ## 盤面全体の 3×3 のマス番号(0..8。左上から横に数える)。

@@ -45,6 +45,21 @@ func _test_generation() -> void:
 	var gh := PatternGen.generate(hard)
 	_check(str(ge.zones) == str(PatternGen.generate(easy).zones), "決定的(同じ譜面なら同じ予定)")
 	_check(ge.zones.size() >= 3 and gh.zones.size() >= 10, "エリアの予定がある(入門 %d 回・Chimera %d 回)" % [ge.zones.size(), gh.zones.size()])
+	# 休憩地帯とは重ねない(予告も含めて)。休憩のある譜面(Renatus [Hard]: 122〜140 秒)で確かめる
+	var sol := OszLoader.new()
+	sol.open("C:/Desktop/my_apps/DDA/241526 Soleily - Renatus.osz")
+	var with_break = null
+	for bm in sol.difficulties:
+		if bm.version == "Hard" and not bm.breaks.is_empty():
+			with_break = bm
+	if with_break != null:
+		var gb := PatternGen.generate(with_break)
+		var clash := 0
+		for z in gb.zones:
+			for b in gb.breaks:
+				if float(z.t) - float(z.lead) < float(b[1]) and float(z.end) > float(b[0]):
+					clash += 1
+		_check(clash == 0 and gb.zones.size() >= 3, "休憩地帯と重なるエリア(予告を含む)がない(%d 回中 重なり %d)" % [gb.zones.size(), clash])
 	# 各回: 1〜8 マス・重複なし・0..8・最低 1 マスは安全
 	var ok := true
 	var min_n := 99
@@ -194,6 +209,9 @@ func _test_sim() -> void:
 	s3b.field.add(near, Vector2.ZERO, 6.0, 0, 0.0)
 	_run(s3b, 0.0, 0.05, null)
 	_check(s3.gauge < 1.0 and s3b.gauge == 1.0 and absf(s3.hit_mult - GameSim.ZONE_BIG) < 1e-9, "巨大: 通常は当たらない距離(10px)の弾に当たる(当たり判定 %.1f 倍)" % s3.hit_mult)
+	# 他の人の当たり判定の点の大きさ(描画用): 位置だけから、本人の判定と同じ倍率が求まる
+	_check(absf(s3.hit_mult_at(mid, 0.05) - GameSim.ZONE_BIG) < 1e-9 and absf(s3.hit_mult_at(Vector2(10, 10), 0.05) - 1.0) < 1e-9,
+		"他の人の当たり判定の倍率: 巨大のマスの中は %.1f 倍、外は 1 倍" % GameSim.ZONE_BIG)
 	# マウス操作(相対移動)でも、鈍足が効く
 	var f2 := _make([_zone(0.0, 50.0, [{"c": 4, "type": "slow"}])])
 	var s4 = f2[0]

@@ -41,6 +41,13 @@ func _init() -> void:
 	var mid := HpGraph.downsample(pts, 5)
 	_check(mid.size() == 5 and mid[0] == 100 and mid[1] == 100 and mid[4] == 50, "5 個に間引いても、形が保たれる: %s" % str(mid))
 	_check(HpGraph.downsample(PackedVector2Array(), 8).is_empty(), "点がなければ空")
+	# グラフの横軸を、最初のノーツ〜最後のノーツに切る(境目は補間。途中で終わる線は、そのまま)
+	var line := PackedVector2Array([Vector2(0, 1.0), Vector2(4, 0.6), Vector2(8, 0.2), Vector2(12, 1.0)])
+	var cut := HpGraph.clip_range(line, 2.0, 10.0)
+	_check(cut.size() == 4 and cut[0].is_equal_approx(Vector2(2, 0.8)) and cut[3].is_equal_approx(Vector2(10, 0.6)),
+		"範囲の両端を補間して切る(%s)" % str(cut))
+	var dead := HpGraph.clip_range(PackedVector2Array([Vector2(0, 1.0), Vector2(4, 0.5), Vector2(6, 0.0)]), 2.0, 10.0)
+	_check(dead.size() == 3 and is_equal_approx(dead[dead.size() - 1].x, 6.0), "ゲームオーバーの線は、範囲の途中で終わる(%s)" % str(dead))
 
 	# ゲーム側の記録
 	var sim := GameSim.new()

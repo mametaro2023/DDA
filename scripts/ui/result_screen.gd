@@ -295,29 +295,113 @@ func skip_animation() -> void:
 	_graph.reveal = 1.0
 
 
-## ランクの文字を叩きつける: 大きく透明な状態から、加速しながら縮んで着地 → 衝撃波・粒・低い音・パネルがずんと沈む。
+## ランクの演出の強さ: 3 = SS / 2 = S / 1 = A・B / 0 = C・D / -1 = F。高いランクほど、溜め・衝撃・光の粒が大きくなる。
+func _rank_tier() -> int:
+	match _rank:
+		"SS":
+			return 3
+		"S":
+			return 2
+		"A", "B":
+			return 1
+		"C", "D":
+			return 0
+	return -1
+
+
+## ランクの文字を叩きつける:
+##   溜め … 大きく薄い文字が一瞬浮かんで、少しだけ縮む(SS・S は、周りから光の輪が集まってくる)
+##   着地 … 加速しながら縮んで着地。着地の瞬間に白く光り、横につぶれてから弾んで戻る
+##   衝撃 … 衝撃波・粒・低い音・パネルがずんと沈む(ランクが高いほど大きい。SS・S は光の粒が舞い上がり、文字の後ろに淡い光が残る)
+##   F    … 光らず、重く鈍く落ちる(灰色の砂ぼこりが下へ落ちる)
 func _stamp(big: Label, delay: float) -> void:
 	big.pivot_offset = big.get_minimum_size() * 0.5
 	if not UiStyle.animate or not is_inside_tree():
 		big.modulate.a = 1.0
 		return
+	var tier := _rank_tier()
+	var top := tier >= 2
 	big.modulate.a = 0.0
 	big.scale = Vector2(2.8, 2.8)
 	var t := create_tween()
 	t.tween_interval(delay)
-	t.tween_callback(func(): big.modulate.a = 0.9)
-	t.tween_property(big, "scale", Vector2.ONE, 0.2).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_IN)
-	t.parallel().tween_property(big, "modulate:a", 1.0, 0.2)
+	# 溜め
+	var hold := 0.22 if top else (0.14 if tier >= 0 else 0.08)
 	t.tween_callback(func():
-		var at := big.get_global_rect().get_center()
-		UiFx.ring(self, at, _accent, 40.0, 330.0, 0.7, 4.0)
-		UiFx.ring(self, at, Color(1, 1, 1, 0.5), 20.0, 200.0, 0.5, 2.0)
-		UiFx.burst(self, at, _accent, 26, 560.0, 0.9, 4.6, 160.0, 1.9)
-		UiSfx.play("stamp")
-		_left.pivot_offset = _left.size * 0.5   # パネルが、ずんと沈んで戻る
-		var th := _left.create_tween()
-		th.tween_property(_left, "scale", Vector2(0.985, 0.985), 0.05).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		th.tween_property(_left, "scale", Vector2.ONE, 0.4).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
+		if top:
+			UiSfx.play("whoosh", 1.2 if tier == 3 else 1.0, 0.8)
+			UiFx.ring(self, big.get_global_rect().get_center(), Color(_accent.r, _accent.g, _accent.b, 0.55), 260.0, 70.0, hold + 0.12, 3.0)   # 周りから集まる輪
+	)
+	t.tween_property(big, "modulate:a", 0.32, hold * 0.6)
+	t.parallel().tween_property(big, "scale", Vector2(2.5, 2.5), hold).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	# 着地
+	var fall := 0.14 if top else (0.17 if tier >= 0 else 0.24)
+	t.tween_property(big, "scale", Vector2.ONE, fall).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_IN)
+	t.parallel().tween_property(big, "modulate:a", 1.0, fall)
+	t.tween_callback(func(): _impact(big, big.get_global_rect().get_center(), tier))   # 位置は着地の時点で(パネルが滑り込む途中でもずれない)
+
+
+## 着地の瞬間の演出(ランクの強さ tier ごと)。
+func _impact(big: Label, at: Vector2, tier: int) -> void:
+	var a := _accent
+	# 文字: 横につぶれてから、弾んで戻る。F 以外は、白く光ってから元の色へ
+	var squash: Vector2 = [Vector2(1.06, 0.94), Vector2(1.1, 0.9), Vector2(1.14, 0.88), Vector2(1.18, 0.86), Vector2(1.2, 0.84)][tier + 1]
+	big.scale = squash
+	var ts := big.create_tween()
+	ts.tween_property(big, "scale", Vector2.ONE, 0.5 if tier >= 0 else 0.3).set_trans(Tween.TRANS_ELASTIC if tier >= 2 else Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	if tier >= 0:
+		big.modulate = Color(2.4, 2.4, 2.4, 1.0)
+		var tf := big.create_tween()
+		tf.tween_property(big, "modulate", Color(1, 1, 1, 1), 0.45).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	# 衝撃波と粒
+	match tier:
+		3, 2:
+			var gold := Color(1.0, 0.9, 0.55) if tier == 2 else Color(0.85, 1.0, 1.0)
+			UiFx.ring(self, at, a, 40.0, 380.0, 0.8, 5.0)
+			UiFx.ring(self, at, Color(1, 1, 1, 0.65), 20.0, 240.0, 0.55, 2.5)
+			UiFx.burst(self, at, a, 34 if tier == 3 else 28, 640.0, 1.0, 5.0, 160.0, 1.9)
+			UiFx.burst(self, at, gold, 22 if tier == 3 else 14, 150.0, 1.8, 2.4, -70.0, 0.9)   # ゆっくり舞い上がる光の粒
+			if tier == 3:
+				get_tree().create_timer(0.12).timeout.connect(func():
+					if is_inside_tree():
+						UiFx.ring(self, at, gold, 30.0, 300.0, 0.9, 3.0))   # 2 つ目の衝撃波
+			UiSfx.play("stamp", 1.0)
+			UiSfx.play("confirm", 1.5 if tier == 3 else 1.3, 0.7)   # 明るい響き
+			_glow_behind(big, a, 0.55 if tier == 3 else 0.4)
+		1:
+			UiFx.ring(self, at, a, 40.0, 330.0, 0.7, 4.0)
+			UiFx.ring(self, at, Color(1, 1, 1, 0.5), 20.0, 200.0, 0.5, 2.0)
+			UiFx.burst(self, at, a, 24, 540.0, 0.9, 4.4, 160.0, 1.9)
+			UiSfx.play("stamp")
+		0:
+			UiFx.ring(self, at, a, 36.0, 240.0, 0.6, 3.0)
+			UiFx.burst(self, at, a, 12, 380.0, 0.75, 3.6, 220.0, 2.2)
+			UiSfx.play("stamp", 0.88)
+		_:
+			UiFx.ring(self, at, Color(a.r, a.g, a.b, 0.6), 36.0, 180.0, 0.5, 3.0)
+			UiFx.burst(self, at + Vector2(0, 40), Color(0.6, 0.6, 0.65, 0.8), 14, 220.0, 0.9, 3.0, 520.0, 2.6)   # 灰色の砂ぼこりが落ちる
+			UiSfx.play("stamp", 0.7)
+	# パネルが、ずんと沈んで戻る(ランクが高いほど深い)
+	var dip: float = [0.99, 0.988, 0.985, 0.978, 0.97][tier + 1]
+	_left.pivot_offset = _left.size * 0.5
+	var th := _left.create_tween()
+	th.tween_property(_left, "scale", Vector2(dip, dip), 0.05).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	th.tween_property(_left, "scale", Vector2.ONE, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+## 文字の後ろに、淡い光を残す(SS・S)。ふわっと現れて、そのまま残る(点滅しない)。
+func _glow_behind(big: Label, col: Color, strength: float) -> void:
+	var g := Control.new()
+	g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	g.show_behind_parent = true
+	g.size = big.size
+	g.draw.connect(func():
+		var c := g.size * 0.5
+		for k in range(7):
+			g.draw_circle(c, 18.0 + 13.0 * k, Color(col.r, col.g, col.b, strength * 0.07)))
+	big.add_child(g)
+	g.modulate.a = 0.0
+	UiStyle.tween(g, "modulate:a", 0.0, 1.0, 0.6)
 
 
 ## MOD によるベーススコアの倍率の注記(なければ空)。
@@ -427,11 +511,20 @@ func _update_graph() -> void:
 		series.append({"pts": own, "color": UiStyle.ACCENT, "thick": 3.0, "by_hp": true, "end_mark": failed})
 		if stats.has("mp"):
 			_legend.add_child(UiStyle.label("チーム共通の体力", 12, UiStyle.TEXT_DIM))
-	var t1 := 1.0
-	for s in series:
-		t1 = maxf(t1, (s.pts as PackedVector2Array)[(s.pts as PackedVector2Array).size() - 1].x)
+	# 横軸は、最初のノーツから最後のノーツまで(ゲームオーバーなら、線は途中で終わる)
 	var ff: float = float(stats.get("first_fire", -1.0))
-	var t0 := maxf(ff - 1.0, 0.0) if ff >= 0.0 and ff < t1 - 5.0 else 0.0
+	var lf: float = float(stats.get("last_fire", -1.0))
+	var t0 := 0.0
+	var t1 := 1.0
+	if ff >= 0.0 and lf > ff:
+		t0 = ff
+		t1 = lf
+		for s in series:
+			s.pts = HpGraph.clip_range(s.pts, t0, t1)
+		series = series.filter(func(s): return (s.pts as PackedVector2Array).size() >= 2)
+	else:   # ノーツの時刻が分からない(古い記録など): 記録の全体
+		for s in series:
+			t1 = maxf(t1, (s.pts as PackedVector2Array)[(s.pts as PackedVector2Array).size() - 1].x)
 	_graph.set_data(series, t0, t1, stats.get("breaks", []), stats.get("hit_log", PackedFloat32Array()), GameSim.GAUGE_LOW_THRESHOLD)
 
 

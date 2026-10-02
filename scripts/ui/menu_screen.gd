@@ -122,7 +122,7 @@ func _ready() -> void:
 	_song_scroll = ScrollContainer.new()
 	_song_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_place(_song_scroll, 32, 118, 404, 494)
-	_song_smooth = SmoothScroll.attach(_song_scroll)
+	_song_smooth = SmoothScroll.attach(_song_scroll, true)   # ドラッグでもスクロールできる(左 = ふつう・右 = 速い)
 	_song_smooth.active = _lists_active
 	_song_box = VBoxContainer.new()
 	_song_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -148,7 +148,7 @@ func _ready() -> void:
 	_diff_scroll = ScrollContainer.new()
 	_diff_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_place(_diff_scroll, 468, 168, 780, 384)
-	_diff_smooth = SmoothScroll.attach(_diff_scroll)
+	_diff_smooth = SmoothScroll.attach(_diff_scroll, true)
 	_diff_smooth.active = _lists_active
 	_diff_box = VBoxContainer.new()
 	_diff_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL

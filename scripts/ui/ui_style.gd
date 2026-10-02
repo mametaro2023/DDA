@@ -20,6 +20,8 @@ const LEVEL_STOPS := [
 ]
 
 static var _bold: FontVariation
+## いまの押し下げで、一覧をドラッグしてスクロールした(そのクリックではカードを選ばない)。smooth_scroll.gd が設定する
+static var drag_moved := false
 
 
 static func bold() -> FontVariation:
@@ -222,15 +224,32 @@ static func card(min_h: float, on_click: Callable, on_double := Callable()) -> P
 	c.mouse_filter = Control.MOUSE_FILTER_STOP
 	c.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
+			# ドラッグでスクロールできる一覧の中では、離したときに選ぶ(ドラッグしてスクロールしたときは選ばない)
+			var on_release := _in_drag_scroll(c)
 			if ev.pressed:
 				_card_press(c, 0.975, 0.06, false)
-				on_click.call()
+				c.set_meta("double", ev.double_click and on_double.is_valid())
+				if not on_release:
+					on_click.call()
 				if ev.double_click and on_double.is_valid():
 					on_double.call()
 			else:
-				_card_press(c, 1.0, 0.3, true))
+				_card_press(c, 1.0, 0.3, true)
+				if on_release and not drag_moved and not bool(c.get_meta("double", false)) \
+						and c.get_global_rect().has_point(ev.global_position):
+					on_click.call())
 	c.mouse_exited.connect(func(): _card_press(c, 1.0, 0.2, false))
 	return c
+
+
+## c が、ドラッグでスクロールできる一覧(smooth_scroll.gd の attach(..., true))の中にあるか。
+static func _in_drag_scroll(c: Control) -> bool:
+	var n := c.get_parent()
+	while n != null:
+		if n is ScrollContainer:
+			return n.has_meta("drag_scroll")
+		n = n.get_parent()
+	return false
 
 
 static func _card_press(c: Control, to: float, dur: float, back: bool) -> void:

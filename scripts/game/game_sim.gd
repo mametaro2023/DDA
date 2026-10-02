@@ -84,7 +84,7 @@ var zone_debuff := ""              # いま自機が受けているデバフ("" 
 var hit_mult := 1.0                # 巨大のデバフ中の、当たり判定の倍率(描画の点の大きさにも使う)
 var contact_extra := 0.0           # 参加者: まだホストへ送っていない、デバフによる追加ダメージ(被弾時間に換算した秒)
 var _zone_i := 0
-var _last_fire := -1.0
+var last_fire_time := -1.0        # 最後のノーツ(発射)の時刻。結果画面の体力グラフの右端
 ## 発射地点の印を記録するか(暗闇 MOD。弾が見えなくても、どこから撃ったかを表示するため)
 var track_fires := false
 var recent_fires: Array = []     # {pos, t, color}: 発射から FIRE_MARK_TIME 秒だけ残る
@@ -186,6 +186,7 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 	_graze_tau = maxf(GRAZE_TAU_MIN, GRAZE_TAU_PER_EVENT * events.size())
 	bullets_total = 0
 	first_fire_time = -1.0
+	last_fire_time = -1.0
 	var last_fire := -1.0
 	for e in events:
 		if e.shots.is_empty():
@@ -193,7 +194,7 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 		if first_fire_time < 0.0:
 			first_fire_time = e.t
 		last_fire = e.t
-		_last_fire = e.t
+		last_fire_time = e.t
 		if not in_break(e.t):
 			for s in e.shots:
 				bullets_total += int(s.n)

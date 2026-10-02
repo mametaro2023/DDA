@@ -45,6 +45,21 @@ func _test_generation() -> void:
 	var gh := PatternGen.generate(hard)
 	_check(str(ge.zones) == str(PatternGen.generate(easy).zones), "決定的(同じ譜面なら同じ予定)")
 	_check(ge.zones.size() >= 3 and gh.zones.size() >= 10, "エリアの予定がある(入門 %d 回・Chimera %d 回)" % [ge.zones.size(), gh.zones.size()])
+	# 休憩地帯とは重ねない(予告も含めて)。休憩のある譜面(Renatus [Hard]: 122〜140 秒)で確かめる
+	var sol := OszLoader.new()
+	sol.open("C:/Desktop/my_apps/DDA/241526 Soleily - Renatus.osz")
+	var with_break = null
+	for bm in sol.difficulties:
+		if bm.version == "Hard" and not bm.breaks.is_empty():
+			with_break = bm
+	if with_break != null:
+		var gb := PatternGen.generate(with_break)
+		var clash := 0
+		for z in gb.zones:
+			for b in gb.breaks:
+				if float(z.t) - float(z.lead) < float(b[1]) and float(z.end) > float(b[0]):
+					clash += 1
+		_check(clash == 0 and gb.zones.size() >= 3, "休憩地帯と重なるエリア(予告を含む)がない(%d 回中 重なり %d)" % [gb.zones.size(), clash])
 	# 各回: 1〜8 マス・重複なし・0..8・最低 1 マスは安全
 	var ok := true
 	var min_n := 99

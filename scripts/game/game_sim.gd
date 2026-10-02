@@ -478,6 +478,25 @@ func _update_zone_debuff(now: float) -> void:
 			return
 
 
+## 位置 p にいる人の、当たり判定の倍率(巨大のデバフ)。状態は変えない。
+## 描画用: マルチプレイで、他の人の当たり判定の点を、その人の実際の大きさで描く(デバフは位置と時刻だけで決まる)。
+func hit_mult_at(p: Vector2, now: float) -> float:
+	if zones.is_empty() or in_break(now):
+		return 1.0
+	for i in range(_zone_i, zones.size()):
+		var z: Dictionary = zones[i]
+		if float(z.t) > now:
+			break
+		if float(z.end) <= now:
+			continue
+		var cell := zone_cell(p)
+		for c in z.cells:
+			if int(c.c) == cell:
+				return ZONE_BIG if str(c.type) == "big" else 1.0
+		return 1.0
+	return 1.0
+
+
 ## 盤面の 3×3 のマス番号(0..8。左上から横に数える)。
 static func zone_cell(p: Vector2) -> int:
 	return clampi(int(p.y / (ARENA.y / 3.0)), 0, 2) * 3 + clampi(int(p.x / (ARENA.x / 3.0)), 0, 2)

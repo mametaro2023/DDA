@@ -2,6 +2,7 @@ extends CanvasLayer
 ## アプリ独自のマウスカーソル。OS のカーソルはウィンドウの中では隠し(MOUSE_MODE_HIDDEN)、代わりに小さな輪と点を描く。
 ## ボタンなど押せるものの上では輪がなめらかに大きくなり、押している間は小さくなる(点滅・揺れはない)。
 ## プレイ中のマウス操作(MOUSE_MODE_CAPTURED)のときは何も描かない。ウィンドウの外・別のアプリを触っているときも描かない。
+## スキップのボタンを押せる間(マウスを捕まえていない)も、アリーナの中では描かない(自機がカーソルの代わりになる。hide_in)。
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
@@ -29,6 +30,10 @@ var _fly_dur := 0.6
 var _fly_from := Vector2.ZERO
 var _fly_to := Vector2.ZERO
 var _fly_done := Callable()
+## 自機がカーソルの代わりをしている範囲(プレイ中、スキップのボタンを押せる間のアリーナ)。この中では描かない。
+## 使う側が毎フレーム hide_in で設定する。呼ばれなくなったら(ポーズ・画面を出た)、すぐ元に戻る
+static var _hide_rect := Rect2()
+static var _hide_frame := -10
 
 
 func _ready() -> void:
@@ -72,6 +77,12 @@ static func cancel_fly() -> void:
 		inst._fly_t = -1.0
 
 
+## このフレームは、rect(画面の座標)の中ではカーソルを描かない(自機がカーソルの代わり)。毎フレーム呼ぶ。
+static func hide_in(rect: Rect2) -> void:
+	_hide_rect = rect
+	_hide_frame = Engine.get_process_frames()
+
+
 func _hide_os_cursor() -> void:
 	if Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
@@ -92,6 +103,9 @@ func _input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	_hide_os_cursor()   # ポーズ・画面の切り替えなどで、OS のカーソルが戻ってきたら、また隠す
 	var show := (_inside and _focused and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN) or _fly_t >= 0.0
+	if show and _fly_t < 0.0 and Engine.get_process_frames() - _hide_frame <= 1 \
+			and _hide_rect.has_point(get_viewport().get_mouse_position() if debug_pos.x < 0.0 else debug_pos):
+		show = false   # 自機がカーソルの代わり(外へ出ると、またカーソルが出る)
 	if _draw.visible != show:
 		_draw.visible = show
 	if not show:

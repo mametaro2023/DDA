@@ -122,20 +122,29 @@ func _snapshot() -> void:
 
 
 ## 聴き比べのページ(ブラウザで開く)。音ごとに、今の変種・前の変種(あれば)・スペクトログラムを並べる。
-## 「連打」ボタンは、ゲーム中のように変種をランダムに(同じものを続けずに)短い間隔で 8 回鳴らす。
+## 音と画像は base64 でページの中に埋め込む(ファイルを直接開いても、静的な表示でも、相対パスに頼らず鳴る)。
+## 再生は Web Audio(最初に 1 回だけ解読して使い回す)。「連打」は、ゲーム中のように変種をランダムに(同じものを続けずに)
+## 決まった間隔で 8 回、時刻を正確に予約して鳴らす。
 func _write_index() -> void:
 	var rows := ""
+	var data := {}   # ボタンの鍵(ファイル名)→ WAV の base64
 	for nm in Recipes.SPEC:
 		var count := int(Recipes.SPEC[nm][0])
 		var now_files: Array = []
 		var before_files: Array = []
 		for k in range(16):
-			if k < count and FileAccess.file_exists("%s/%s_%d.wav" % [PREVIEW_DIR, nm, k]):
-				now_files.append("%s_%d.wav" % [nm, k])
-			if FileAccess.file_exists("%s/%s_%d.wav" % [BEFORE_DIR, nm, k]):
-				before_files.append("before/%s_%d.wav" % [nm, k])
-		rows += "<tr><th>%s</th><td>%s</td><td>%s</td><td><img src=\"%s.png\" loading=\"lazy\"></td></tr>\n" % [
-			nm, _cell(now_files), _cell(before_files) if not before_files.is_empty() else "<span class=dim>なし</span>", nm]
+			var a := "%s_%d.wav" % [nm, k]
+			var b := "before/%s_%d.wav" % [nm, k]
+			if k < count and FileAccess.file_exists(PREVIEW_DIR + "/" + a):
+				now_files.append(a)
+				data[a] = Marshalls.raw_to_base64(FileAccess.get_file_as_bytes(PREVIEW_DIR + "/" + a))
+			if FileAccess.file_exists(PREVIEW_DIR + "/" + b):
+				before_files.append(b)
+				data[b] = Marshalls.raw_to_base64(FileAccess.get_file_as_bytes(PREVIEW_DIR + "/" + b))
+		var png := "%s/%s.png" % [PREVIEW_DIR, nm]
+		var img := "<img src=\"data:image/png;base64,%s\">" % Marshalls.raw_to_base64(FileAccess.get_file_as_bytes(png)) if FileAccess.file_exists(png) else ""
+		rows += "<tr><th>%s</th><td>%s</td><td>%s</td><td>%s</td></tr>\n" % [
+			nm, _cell(now_files), _cell(before_files) if not before_files.is_empty() else "<span class=dim>なし</span>", img]
 	var html := """<!doctype html><html lang="ja"><meta charset="utf-8"><title>DDA 効果音の聴き比べ</title>
 <style>
 body{background:#0b0d16;color:#dde;font:14px/1.5 system-ui,sans-serif;margin:24px}
@@ -143,17 +152,44 @@ table{border-collapse:collapse}td,th{border-bottom:1px solid #223;padding:8px 10
 th{font-size:16px;color:#9cf;white-space:nowrap}img{width:360px;border-radius:4px}
 button{background:#1b2440;color:#dde;border:1px solid #345;border-radius:6px;padding:3px 9px;margin:2px;cursor:pointer}
 button:hover{background:#263257}.dim{color:#667}.rap{background:#2a2050}
+#status{position:fixed;right:16px;top:12px;color:#f88}
 </style>
 <h1>DDA 効果音の聴き比べ</h1>
+<div id=status></div>
 <p class=dim>「今」= assets/sfx(tools/sfx_forge.gd -- --preview で作り直した音)/「前」= sfx_preview/before(-- --snapshot で取っておいた音)。
 数字のボタンで変種を 1 つずつ、「連打」でゲーム中のように変種をランダムに 8 回鳴らします。</p>
 <table><tr><th>音</th><th>今</th><th>前</th><th>スペクトログラム(今の 0 番)</th></tr>
-%s</table>
+{ROWS}</table>
 <script>
-function play(src){const a=new Audio(src);a.play();}
-function rapid(list,gap){let last=-1;for(let i=0;i<8;i++){let k=Math.floor(Math.random()*list.length);if(list.length>1&&k===last)k=(k+1)%%list.length;last=k;const s=list[k];setTimeout(()=>play(s),i*gap);}}
+const S = {DATA};
+let ctx = null;
+const cache = {};
+function err(e){ document.getElementById('status').textContent = '再生できません: ' + e; console.error(e); }
+async function ready(){ if(!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); if(ctx.state !== 'running') await ctx.resume(); }
+async function buf(k){
+  if(!cache[k]){
+    const bin = atob(S[k]); const u = new Uint8Array(bin.length);
+    for(let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    cache[k] = await ctx.decodeAudioData(u.buffer);
+  }
+  return cache[k];
+}
+function start(b, when){ const s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start(when); }
+async function play(k){ try{ await ready(); start(await buf(k), 0); }catch(e){ err(e); } }
+async function rapid(list, gap){
+  try{
+    await ready();
+    const bufs = []; for(const k of list) bufs.push(await buf(k));
+    const t0 = ctx.currentTime + 0.05; let last = -1;
+    for(let i = 0; i < 8; i++){
+      let k = Math.floor(Math.random() * bufs.length);
+      if(bufs.length > 1 && k === last) k = (k + 1) % bufs.length;
+      last = k; start(bufs[k], t0 + i * gap / 1000);
+    }
+  }catch(e){ err(e); }
+}
 </script></html>
-""" % rows
+""".replace("{ROWS}", rows).replace("{DATA}", JSON.stringify(data))
 	var f := FileAccess.open(PREVIEW_DIR + "/index.html", FileAccess.WRITE)
 	f.store_string(html)
 	f.close()

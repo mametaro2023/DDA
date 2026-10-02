@@ -194,6 +194,9 @@ func _test_sim() -> void:
 	s3b.field.add(near, Vector2.ZERO, 6.0, 0, 0.0)
 	_run(s3b, 0.0, 0.05, null)
 	_check(s3.gauge < 1.0 and s3b.gauge == 1.0 and absf(s3.hit_mult - GameSim.ZONE_BIG) < 1e-9, "巨大: 通常は当たらない距離(10px)の弾に当たる(当たり判定 %.1f 倍)" % s3.hit_mult)
+	# 他の人の当たり判定の点の大きさ(描画用): 位置だけから、本人の判定と同じ倍率が求まる
+	_check(absf(s3.hit_mult_at(mid, 0.05) - GameSim.ZONE_BIG) < 1e-9 and absf(s3.hit_mult_at(Vector2(10, 10), 0.05) - 1.0) < 1e-9,
+		"他の人の当たり判定の倍率: 巨大のマスの中は %.1f 倍、外は 1 倍" % GameSim.ZONE_BIG)
 	# マウス操作(相対移動)でも、鈍足が効く
 	var f2 := _make([_zone(0.0, 50.0, [{"c": 4, "type": "slow"}])])
 	var s4 = f2[0]

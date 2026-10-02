@@ -20,7 +20,6 @@ var ship_in := 1.0
 const TRAIL_LIFE := 0.2
 var _trail: Array = []
 var _trail_now := -1.0
-var _speed_vis := 0.0   # 自機の動きの速さ(0..1。尾の炎の長さ)
 var _slider_nodes := {}   # スライダーの軌道の描画ノード(key → {body, core})
 ## マルチプレイ: 自分の機体の色と、他の人の機体 [{pos, color, name, slow, alpha}](mp_game.gd が決める)
 var own_color := Color(0.32, 0.80, 1.0)
@@ -231,7 +230,6 @@ func _make_line_group(points: PackedVector2Array, color: Color, width: float) ->
 func _update_trail() -> void:
 	if now == _trail_now:
 		return
-	var dt := clampf(now - _trail_now, 0.0, 0.1) if _trail_now >= 0.0 else 0.0
 	_trail_now = now
 	var p: Vector2 = sim.player_pos
 	var moved := 0.0
@@ -241,13 +239,8 @@ func _update_trail() -> void:
 		_trail.append({"p": p, "t": now})
 	while not _trail.is_empty() and (now - _trail[0].t > TRAIL_LIFE or _trail.size() > 80):
 		_trail.remove_at(0)
-	# 動きの速さ(0..1)。尾の炎の長さに使う。なめらかに追従する
-	var target := clampf(moved / maxf(dt, 0.001) / 380.0, 0.0, 1.0) if dt > 0.0 else 0.0
-	_speed_vis += (target - _speed_vis) * (1.0 - exp(-maxf(dt, 0.0) * 10.0))
 
 
-## 自機の機体: 鋭い矢じり型(2 トーンの塗り分け + 中央の明るい背骨 + 淡い光)と、動くと伸びる尾。
-## **弾の下の層(layer 0)に描く**: 巨大化 MOD などで自機が大きくても、機体の下にある弾が隠れず、弾が機体の上に見える。
 ## 自機を、自機の位置を軸に ship_in 倍で描くための変換(描画の前に呼ぶ。終わったら _end_ship_scale)。見えないときは false。
 func _begin_ship_scale() -> bool:
 	if ship_in >= 0.999 and ship_in <= 1.001:
@@ -271,13 +264,12 @@ func _draw_player_body() -> void:
 	_end_ship_scale()
 
 
+## 自機の機体: 1 色の矢じり + 淡い光 + 動くと伸びる尾。中心の白い点(当たり判定)は _draw_player_marks が描く。
+## **弾の下の層(layer 0)に描く**: 巨大化 MOD などで自機が大きくても、機体の下にある弾が隠れず、弾が機体の上に見える。
 func _draw_player_body_scaled() -> void:
 	var p: Vector2 = sim.player_pos
 	var sc: float = sim.player_scale   # MOD で自機が大きくなる(当たり判定の点も同じ倍率)
-	var base := own_color
-	var body := base.lerp(Color(1.0, 0.32, 0.34), hit_glow)
-	var wing := Color(body.r * 0.52, body.g * 0.6, body.b * 0.92).lerp(Color(0.85, 0.2, 0.25), hit_glow * 0.5)
-	var spine := body.lerp(Color.WHITE, 0.82)
+	var body := own_color.lerp(Color(1.0, 0.32, 0.34), hit_glow)   # 被弾中は赤みがかる
 
 	# 尾(軌跡): 1 本の帯。古いほど細く薄い(線分の重なりによる縞が出ないよう、頂点ごとに幅と透明度を変えた四角形でつなぐ)
 	if _trail.size() >= 2:
@@ -304,36 +296,26 @@ func _draw_player_body_scaled() -> void:
 				if absf((tb - ta).cross(tc - ta)) > 0.01:
 					draw_primitive(PackedVector2Array([ta, tb, tc]), PackedColorArray([tri[3], tri[4], tri[5]]), PackedVector2Array())
 	# 淡い光
-	draw_circle(p + Vector2(0, 1) * sc, 21.0 * sc, Color(body.r, body.g, body.b, 0.06))
-	draw_circle(p + Vector2(0, 1) * sc, 13.0 * sc, Color(body.r, body.g, body.b, 0.10))
-	# 後ろの炎(動くほど長く伸びる)
-	var fl := (4.0 + 7.0 * _speed_vis) * sc
-	draw_colored_polygon(PackedVector2Array([p + Vector2(-2.6, 7.0) * sc, p + Vector2(2.6, 7.0) * sc, p + Vector2(0, 7.0 + fl / sc) * sc]),
-		Color(body.r, body.g, body.b, 0.5))
-	draw_colored_polygon(PackedVector2Array([p + Vector2(-1.3, 7.0) * sc, p + Vector2(1.3, 7.0) * sc, p + Vector2(0, 7.0 + fl * 0.6 / sc) * sc]),
-		Color(1, 1, 1, 0.75))
+	draw_circle(p, 20.0 * sc, Color(body.r, body.g, body.b, 0.06))
+	draw_circle(p, 13.0 * sc, Color(body.r, body.g, body.b, 0.10))
+	# 機体: 1 色の矢じり(暗い縁取り + 明るい線)
+	var dart := _dart(p, sc * sim.hit_mult)
+	draw_colored_polygon(dart, Color(body.r, body.g, body.b, 0.85))
+	dart.append(dart[0])
+	draw_polyline(dart, Color(0, 0, 0, 0.5), 3.6, true)
+	draw_polyline(dart, body.lerp(Color.WHITE, 0.6), 1.6, true)
 
-	# 機体: 外形 → 翼の暗い面 → 中央の明るい背骨 → 縁
-	var hull := PackedVector2Array([
-		Vector2(0, -15), Vector2(5.5, -5), Vector2(11, 8), Vector2(6, 6.5), Vector2(3, 9),
-		Vector2(0, 6), Vector2(-3, 9), Vector2(-6, 6.5), Vector2(-11, 8), Vector2(-5.5, -5)])
+
+## 機体の形(矢じり)。中心 c = 当たり判定の中心。s = 大きさの倍率(巨大のデバフで当たり判定が大きくなると、機体も同じだけ大きくなる)。
+## 中心の白い点(当たり判定)が、機体の内側に収まる形にしてある。
+static func _dart(c: Vector2, s: float) -> PackedVector2Array:
 	var pts := PackedVector2Array()
-	for v in hull:
-		pts.append(p + v * sc)
-	draw_colored_polygon(pts, body)
-	for s in [1.0, -1.0]:
-		var w := PackedVector2Array([Vector2(2.4 * s, 0), Vector2(5.5 * s, -5), Vector2(11 * s, 8), Vector2(6 * s, 6.5), Vector2(3.4 * s, 3.5)])
-		var wp := PackedVector2Array()
-		for v in w:
-			wp.append(p + v * sc)
-		draw_colored_polygon(wp, wing)
-	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -12) * sc, p + Vector2(2.4, 2) * sc, p + Vector2(0, 6) * sc, p + Vector2(-2.4, 2) * sc]), spine)
-	pts.append(pts[0])
-	draw_polyline(pts, Color(1, 1, 1, 0.92), 1.2, true)
+	for v in [Vector2(0, -15), Vector2(10.5, 9), Vector2(0, 6), Vector2(-10.5, 9)]:
+		pts.append(c + v * s)
+	return pts
 
 
-
-## 自機の目印(弾の上の層 layer 1 に描く): 低速時に回る 4 本の弧、ゲージの残量リング、被弾リング、中心の当たり判定の点。
+## 自機の目印(弾の上の層 layer 1 に描く): 低速時に回る 4 本の弧、ゲージの残量リング、被弾リング、中心の当たり判定の白い点。
 ## どれも細いので、弾を隠さない。当たり判定の点は、機体が大きくても位置が分かるように最前面に置く。
 func _draw_player_marks() -> void:
 	if not _begin_ship_scale():
@@ -360,9 +342,14 @@ func _draw_player_marks_scaled() -> void:
 		draw_arc(p, 34.0 * sc, 0.0, TAU, 48, Color(zc.r, zc.g, zc.b, 0.85), 2.5, true)
 	if hit_glow > 0.01:
 		draw_arc(p, 17.0 * sc, 0.0, TAU, 32, Color(1.0, 0.35, 0.35, 0.7 * hit_glow), 2.5, true)
-	# 当たり判定の点(白い縁 + 赤い芯)
-	draw_circle(p, 4.5 * sc * sim.hit_mult, Color(1, 1, 1, 1.0))
-	draw_circle(p, 2.5 * sc * sim.hit_mult, Color(1.0, 0.25, 0.3, 1.0))
+	_draw_hitbox(p, sim.player_r * sim.hit_mult)
+
+
+## 当たり判定の点(自分も他の人も、まったく同じ見た目): 白い円の縁が、そのまま当たり判定の縁(大きさも同じ)。
+## 暗い縁取りで、明るい弾の上でも縁が見える。hr = 当たり判定の半径。
+func _draw_hitbox(p: Vector2, hr: float) -> void:
+	draw_circle(p, hr + 1.4, Color(0, 0, 0, 0.6))
+	draw_circle(p, hr, Color.WHITE)
 
 
 ## 決まった疑似乱数(0..1)。i = 粒の番号、salt = 用途ごとにずらす値。毎回同じ配置になる。
@@ -479,33 +466,22 @@ func _draw_death() -> void:
 		draw_circle(pos, 1.6 + 1.4 * hh, Color(col.r, col.g, col.b, 0.55 * env))
 
 
-## 他の人の機体(マルチプレイ)。自機と同じ形で、その人の色。尾・炎はなし。弾の下の層に描く(対戦では淡いゴースト)。
+## 他の人の機体(マルチプレイ)。自機と同じ矢じりで、その人の色。尾はなし。弾の下の層に描く(対戦では淡いゴースト)。
 func _draw_remote_ship(r: Dictionary) -> void:
 	var p: Vector2 = r.pos
 	var sc: float = sim.player_scale
 	var a: float = r.alpha
 	var body: Color = r.color
-	var wing := Color(body.r * 0.52, body.g * 0.6, body.b * 0.92)
-	var spine := body.lerp(Color.WHITE, 0.82)
-	draw_circle(p + Vector2(0, 1) * sc, 21.0 * sc, Color(body.r, body.g, body.b, 0.05 * a))
-	var hull := PackedVector2Array([
-		Vector2(0, -15), Vector2(5.5, -5), Vector2(11, 8), Vector2(6, 6.5), Vector2(3, 9),
-		Vector2(0, 6), Vector2(-3, 9), Vector2(-6, 6.5), Vector2(-11, 8), Vector2(-5.5, -5)])
-	var pts := PackedVector2Array()
-	for v in hull:
-		pts.append(p + v * sc)
-	draw_colored_polygon(pts, Color(body.r, body.g, body.b, a))
-	for s in [1.0, -1.0]:
-		var wp := PackedVector2Array()
-		for v in [Vector2(2.4 * s, 0), Vector2(5.5 * s, -5), Vector2(11 * s, 8), Vector2(6 * s, 6.5), Vector2(3.4 * s, 3.5)]:
-			wp.append(p + v * sc)
-		draw_colored_polygon(wp, Color(wing.r, wing.g, wing.b, a))
-	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -12) * sc, p + Vector2(2.4, 2) * sc, p + Vector2(0, 6) * sc, p + Vector2(-2.4, 2) * sc]), Color(spine.r, spine.g, spine.b, a))
-	pts.append(pts[0])
-	draw_polyline(pts, Color(1, 1, 1, 0.9 * a), 1.2, true)
+	draw_circle(p, 20.0 * sc, Color(body.r, body.g, body.b, 0.05 * a))
+	var dart := _dart(p, sc * sim.hit_mult_at(p, now))   # 巨大のデバフ中は、自機と同じく大きくなる
+	draw_colored_polygon(dart, Color(body.r, body.g, body.b, 0.85 * a))
+	dart.append(dart[0])
+	draw_polyline(dart, Color(0, 0, 0, 0.5 * a), 3.6, true)
+	draw_polyline(dart, Color(body.r, body.g, body.b, a).lerp(Color(1, 1, 1, a), 0.6), 1.6, true)
 
 
-## 他の人の目印(弾の上の層): 低速の弧・当たり判定の小さな点・名前。どれも細く淡いので、弾を隠さない。
+## 他の人の目印(弾の上の層): 低速の弧・当たり判定の点・名前。どれも細く淡いので、弾を隠さない。
+## 当たり判定の点だけは、色・濃さ・大きさを自分のものとまったく同じにする(_draw_hitbox)。
 func _draw_remote_marks() -> void:
 	var font := ThemeDB.fallback_font
 	for r in remotes:
@@ -517,6 +493,5 @@ func _draw_remote_marks() -> void:
 			for i in range(4):
 				var a0 := now * 1.6 + TAU * float(i) / 4.0
 				draw_arc(p, 21.0 * sc, a0, a0 + 0.9, 10, Color(c.r, c.g, c.b, 0.5 * a), 1.5, true)
-		draw_circle(p, 3.2 * sc, Color(1, 1, 1, 0.75 * a))
-		draw_circle(p, 1.8 * sc, Color(c.r, c.g, c.b, a))
+		_draw_hitbox(p, sim.player_r * sim.hit_mult_at(p, now))
 		draw_string(font, p + Vector2(-60, -22.0 * sc - 4.0), str(r.name), HORIZONTAL_ALIGNMENT_CENTER, 120.0, 11, Color(c.r, c.g, c.b, 0.7 * a))

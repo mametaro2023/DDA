@@ -340,12 +340,11 @@ func _arrive() -> void:
 	_guiding = false
 	CursorOverlay.cancel_fly()
 	if _mouse_mode and not _menu_open():
-		if _can_skip():   # スキップのボタンを押せるように、まだ捕まえない(_update_skip_button が、できなくなったら捕まえる)
+		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
+		if _can_skip():   # スキップのボタンを押せるように、まだ捕まえない(自機がマウスの位置へ動き、カーソルの代わりになる。_update_skip_button が、できなくなったら捕まえる)
 			_skip_free = true
 			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		else:
-			var at: Vector2 = ARENA_POS + sim.player_pos
-			Input.warp_mouse(get_viewport().get_screen_transform() * at)
 			_capture_mouse()
 	# 自機が、その場で弾んで現れる(輪が広がり、小さな音)
 	if UiStyle.animate and not _dead:
@@ -700,7 +699,10 @@ func _step_sim(slow: bool) -> void:
 	var dt := span / float(n)
 	var move := Vector2.ZERO
 	var d := Vector2.ZERO
-	if _mouse_mode:
+	if _ship_is_cursor():   # スキップできる間: 自機がカーソルの代わり(マウスの位置へ、そのまま動く)
+		d = (get_viewport().get_mouse_position() - ARENA_POS - sim.player_pos) / float(n)
+		_mouse_accum = Vector2.ZERO
+	elif _mouse_mode:
 		var mult: float = float(settings.get("mouse_sens", 1.0)) * (GameSim.MOUSE_SLOW_FACTOR if slow else 1.0)
 		d = _mouse_accum * mult / float(n)
 		_mouse_accum = Vector2.ZERO
@@ -1289,6 +1291,7 @@ func _build_skip_button() -> void:
 	_skip_btn.add_theme_stylebox_override("pressed", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.4), UiStyle.ACCENT, 2, 6, 14, 8))
 	_skip_btn.pressed.connect(func(): if _can_skip(): _request_skip())
 	add_child(_skip_btn)
+	move_child(_skip_btn, _arena.get_index())   # アリーナ(自機)より奥: 自機をボタンに重ねても、自機が文字に隠れない
 
 
 ## ボタンの表示と、マウスの扱いを合わせる。スキップできる間は、マウスを捕まえず(カーソルが見えて、ボタンを押せる)、
@@ -1313,10 +1316,21 @@ func _update_skip_button() -> void:
 		_skip_free = true
 		_mouse_accum = Vector2.ZERO
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))   # 自機がマウスの位置へ跳ばないように
 	elif not can and _skip_free:
 		_skip_free = false
 		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
 		_capture_mouse()
+	if _ship_is_cursor():   # アリーナの中では、独自カーソルを出さない(自機とカーソルが 2 つ並ばない)
+		var m: float = GameSim.PLAYER_MARGIN * sim.player_scale
+		CursorOverlay.hide_in(Rect2(ARENA_POS + Vector2(m, m), PatternGen.ARENA - Vector2(m, m) * 2.0))
+
+
+## スキップのボタンを押せる間(マウスを捕まえていない): 自機がマウスの位置へそのまま動き、カーソルの代わりになる。
+## 自機をボタンへ重ねてクリックすれば押せる。スキップできなくなったら、その位置のままマウスを捕まえる(自機は跳ばない)。
+func _ship_is_cursor() -> bool:
+	return _mouse_mode and _skip_free and _arrived and not _menu_open() and not _dead \
+		and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN
 
 
 func _set_paused(p: bool) -> void:

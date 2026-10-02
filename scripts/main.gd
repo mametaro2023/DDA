@@ -1443,11 +1443,36 @@ func _smoke_skip() -> void:
 		await get_tree().create_timer(1.2).timeout
 		print("   +2.2s: now=%.2f bullets=%d fired=%d" % [g._now, g.field.count, g.sim.bullets_fired])
 	# マウス操作: スキップできる間は、マウスを捕まえず、ボタンで飛ばせる。飛ばしたら、自機の位置で捕まえる
+	# その間、自機はマウスの位置へ動き(カーソルの代わり)、アリーナの中では独自カーソルを出さない。画面写真: --shots <接頭辞>
+	var args := OS.get_cmdline_user_args()
+	var si := args.find("--shots")
+	var shots: String = str(args[si + 1]) if si >= 0 and args.size() > si + 1 else ""
 	var fails := 0
+	var cur := CursorOverlay.new()
+	add_child(cur)
+	cur._inside = true
+	cur._focused = true
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "mouse", "sfx_volume": 0})
 	var gm = _current
 	await get_tree().create_timer(1.6).timeout
 	var ok1: bool = gm._skip_btn.visible and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN
+	for spot in [["in", Vector2(500, 300)], ["button", gm._skip_btn.get_rect().get_center()], ["out", Vector2(60, 300)]]:
+		var at: Vector2 = spot[1]
+		Input.warp_mouse(get_viewport().get_screen_transform() * at)
+		var mv := InputEventMouseMotion.new()
+		mv.position = at
+		mv.global_position = at
+		Input.parse_input_event(mv)
+		for k in range(6):
+			await get_tree().process_frame
+		var ship: Vector2 = gm.ARENA_POS + gm.sim.player_pos
+		var inside: bool = spot[0] != "out"
+		var ok: bool = (ship.distance_to(at) < 1.0) if inside else (absf(ship.y - at.y) < 1.0 and ship.x > at.x)
+		ok = ok and cur._draw.visible != inside
+		print("[mouse %s] cursor at %s ship at %s cursor drawn=%s: %s" % [spot[0], str(at), str(ship), str(cur._draw.visible), "OK" if ok else "FAIL"])
+		fails += 0 if ok else 1
+		if shots != "":
+			get_viewport().get_texture().get_image().save_png("%s_%s.png" % [shots, spot[0]])
 	var now0: float = gm._now
 	gm._skip_btn.pressed.emit()
 	await get_tree().create_timer(0.3).timeout

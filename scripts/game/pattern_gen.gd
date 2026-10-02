@@ -73,7 +73,7 @@ const SRC_MARGIN := Vector2(24, 24)
 
 ## 危険エリア(盤面の 3×3 のマス)。特定の小節ごとに、いくつかのマスを選ぶ(_make_zones)。
 ##   間隔(小節数): 約 ZONE_SECONDS_EASY〜ZONE_SECONDS_HARD 秒(★が高いほど短い)ぶんの小節(3〜8 小節)。そのうち最後の 2 小節は、エリアなし(次のエリアの予告だけ出す。予告は 2 小節前から)。
-##   最初の弾の発射前(予告も)には出さない。
+##   最初の弾の発射前(予告も)には出さない。休憩地帯とも重ねない(予告も。発動してから休憩に入るときは、休憩の始まりで終わる)。
 ##   数 1〜8: ★が高いほど多く、その区間のノーツの密度・キアイ・疑似乱数で ±。全マスが危険になることはない(最低 1 マスは安全)。
 ##   安全に残すマスのひとつは、その区間のノーツの重心のマス(譜面の流れに沿って、安全地帯が動く)。
 ##   デバフの種類は、★が高いほど増える(slow・fragile → poison → big)。
@@ -391,6 +391,10 @@ static func _make_zones(bm: Beatmap, k: float) -> Array:
 	var span := maxf(t_last - t_first, 1.0)
 	var avg_rate := float(bm.hit_objects.size()) / span
 	var seed := (bm.hit_objects.size() * 2654435 + int(t_first * 1000.0)) & 0x7fffffff
+	var brs: Array = []   # 休憩地帯 [始まり, 終わり](秒。始まりの順)。エリアは休憩と重ねない(休憩中は効かないので、見せない)
+	for b in bm.breaks:
+		brs.append([b[0] / 1000.0, b[1] / 1000.0])
+	brs.sort_custom(func(a, b): return a[0] < b[0])
 	var zones: Array = []
 	var i := 2   # 予告は 2 小節前から出すので、3 小節目以降
 	while i < ms.size():
@@ -406,6 +410,19 @@ static func _make_zones(bm: Beatmap, k: float) -> Array:
 		if last_idx < i:
 			last_idx = i
 		var end: float = float(ms[last_idx][0]) + float(ms[last_idx][1])
+		# 休憩と重なるとき: 発動してから休憩に入るなら、休憩の始まりで終える。予告・発動の時点が休憩と重なるなら、この小節には置かない
+		var skip := false
+		for b in brs:
+			if float(b[1]) <= start - lead or float(b[0]) >= end:
+				continue
+			if float(b[0]) > start:
+				end = minf(end, float(b[0]))
+			else:
+				skip = true
+			break
+		if skip or end - start < float(ms[i][1]) - 0.001:   # 休憩で切れて 1 小節に満たないときも置かない
+			i += 1
+			continue
 		# この区間のノーツ: 密度と、重心(安全に残すマス)
 		var cnt := 0
 		var sum := Vector2.ZERO

@@ -140,6 +140,12 @@ func _ready() -> void:
 	if args.has("--smoke-drag"):
 		_smoke_drag()
 		return
+	if args.has("--smoke-retryhold"):
+		_smoke_retryhold()
+		return
+	if args.has("--smoke-break"):
+		_smoke_break()
+		return
 	if args.has("--smoke-death"):
 		_smoke_death()
 		return
@@ -743,6 +749,9 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 					vw.now += 0.01
 					vw._update_trail()
 				vw.queue_redraw()
+			if extra.has("retry"):   # R 長押しの途中(進み具合の輪)を撮る
+				_current._retry_hold = _current.RETRY_HOLD * 0.6
+				_current._update_retry_ui()
 			if extra.has("kiai"):   # キアイの光のピークを撮る(拍の頭)
 				_current._kiai_a = 1.0
 				_current._beat_glow = 1.0
@@ -818,7 +827,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			var rl := OszLoader.new()
 			rl.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 			var rbm = rl.difficulties[rl.difficulties.size() - 1]
-			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "dmg": 0.16, "damage": 0.16, "graze": 123, "score": 1013000.0 if extra.has("ss") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
+			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "dmg": 0.16, "damage": 0.16, "graze": 123, "score": 1013000.0 if extra.has("ss") or extra.has("s") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
 				"score_base": 1060000.0, "mod_ids": ["hell", "rush"], "mods": "地獄 + 加速",
 				"bg": rl.load_image(rbm.background) if rbm.background != "" else null}.merged(_fake_hp(1, 118.0, extra.size() > 0 and extra[0] == "failed", 3)))
 			_current.skip_animation()   # スクリーンショットでは、演出を待たない
@@ -828,7 +837,9 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		var t0 := Time.get_ticks_msec()
 		var k := 0
 		var times := [0.1, 0.3, 0.6, 1.2, 2.5]
-		for e in extra:   # 例: t=0.7,0.8,0.9 で、撮る時刻(開いてからの秒)を指定できる
+		for e in extra:   # 例: t=0.7,0.8,0.9 で、撮る時刻(開いてからの秒)を指定できる。slow=0.2 で、動きを 0.2 倍にゆっくりにする(短い演出を撮る)
+			if str(e).begins_with("slow="):
+				Engine.time_scale = float(str(e).trim_prefix("slow="))
 			if str(e).begins_with("t="):
 				times = str(e).trim_prefix("t=").split(",")
 				times = times.map(func(x): return float(x))
@@ -872,7 +883,7 @@ func _fake_hp(seed_n: int, dur: float, fail: bool, n_hits: int) -> Dictionary:
 		g = clampf(g + 0.015 * 0.25, 0.0, 1.0)
 		log.append(g)
 		t += 0.25
-	return {"hp_log": log, "hp_step": 0.25, "hp_end": 0.0 if fail else g, "hp_t_end": end_t, "hit_log": hit_times, "breaks": [[48.0, 60.0]], "first_fire": 8.0}
+	return {"hp_log": log, "hp_step": 0.25, "hp_end": 0.0 if fail else g, "hp_t_end": end_t, "hit_log": hit_times, "breaks": [[48.0, 60.0]], "first_fire": 8.0, "last_fire": dur - 4.0}
 
 
 ## 開発用: 動かずに被弾するまで待ち、ゲームオーバー演出→リザルト遷移を確認する。-- --smoke-death
@@ -1491,6 +1502,74 @@ func _smoke_drag() -> void:
 	get_tree().quit()
 
 
+## 開発用: 休憩のカウントダウンの動き(現れる・残り 3 秒からの合図・終わり)を、実際のプレイで確かめる。-- --smoke-break [--shots <接頭辞>]
+## 曲の途中に、4.5 秒の休憩を作って、弾を一掃した状態にする。
+func _smoke_break() -> void:
+	var args := OS.get_cmdline_user_args()
+	var si := args.find("--shots")
+	var shots: String = str(args[si + 1]) if si >= 0 and args.size() > si + 1 else ""
+	var loader := OszLoader.new()
+	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
+	start_game(loader, loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	var g = _current
+	await get_tree().create_timer(2.5).timeout
+	var t0: float = g._now
+	g.sim.breaks.append([t0, t0 + 4.5])
+	g.sim.break_clear_t = t0
+	g.sim.break_end_t = t0 + 4.5
+	var fails := 0
+	var secs: Array = []
+	var start_ms := Time.get_ticks_msec()
+	var k := 0
+	for at in [0.15, 0.4, 1.0, 1.6, 2.6, 3.6, 4.65, 5.2]:
+		while (Time.get_ticks_msec() - start_ms) / 1000.0 < at:
+			await get_tree().process_frame
+		secs.append(g._break_sec)
+		print("  +%.2fs  shown=%d  left=%.2f  ring=%.2f  alpha=%.2f  pop=%.2f" % [at, g._break_sec, g._break_left, g._break_frac * (1.0 - pow(1.0 - g._break_in, 3.0)), g._break_a, g._break_pop])
+		if shots != "":
+			get_viewport().get_texture().get_image().save_png("%s_%d.png" % [shots, k])
+		k += 1
+	var ok: bool = secs[0] == 5 and secs[3] == 3 and secs[5] == 1 and secs[7] == -1 and g._break_a < 0.5
+	print("smoke-break: ", "OK" if ok else "FAIL %s" % str(secs))
+	get_tree().quit()
+
+
+## 開発用: プレイ中の R 長押しでリトライできるか確かめる。-- --smoke-retryhold
+## 短く押しただけではリトライしない / 長押しでリトライ / 押したまま新しいプレイが始まっても、離すまでは次のリトライをしない。
+func _smoke_retryhold() -> void:
+	var loader := OszLoader.new()
+	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
+	var bm = loader.difficulties[0]
+	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	await get_tree().create_timer(1.0).timeout
+	var key := func(down: bool):
+		var e := InputEventKey.new()
+		e.keycode = KEY_R
+		e.physical_keycode = KEY_R
+		e.pressed = down
+		Input.parse_input_event(e)
+	var fails := 0
+	var g0 = _current
+	key.call(true)
+	await get_tree().create_timer(0.3).timeout
+	key.call(false)
+	await get_tree().create_timer(0.3).timeout
+	var ok1: bool = _current == g0
+	print("[tap 0.3s] no retry: %s" % ("OK" if ok1 else "FAIL"))
+	key.call(true)
+	await get_tree().create_timer(0.9).timeout
+	var g1 = _current
+	var ok2: bool = g1 != g0 and is_instance_valid(g1) and "sim" in g1   # 新しいプレイ画面になった
+	print("[hold 0.9s] retried: %s" % ("OK" if ok2 else "FAIL"))
+	await get_tree().create_timer(1.2).timeout   # 押したまま: 新しいプレイは、離すまでリトライしない
+	var ok3: bool = _current == g1
+	print("[keep holding 1.2s] no second retry: %s" % ("OK" if ok3 else "FAIL"))
+	key.call(false)
+	fails += (0 if ok1 else 1) + (0 if ok2 else 1) + (0 if ok3 else 1)
+	print("smoke-retryhold: ", "OK" if fails == 0 else "%d FAILED" % fails)
+	get_tree().quit()
+
+
 ## 開発用: ゲームオーバーで、弾の動きが曲のテープストップと同じように遅くなって止まるか確かめる。-- --smoke-tapestop
 func _smoke_tapestop() -> void:
 	var loader := OszLoader.new()
@@ -1511,7 +1590,7 @@ func _smoke_tapestop() -> void:
 	var prev: Vector2 = g.field.pos[0]
 	var prev_now: float = g._now
 	var speeds: Array = []
-	for k in range(9):   # 0.25 秒ごとに、弾の動いた距離と、ゲームの時間の進みを測る
+	for k in range(7):   # 0.25 秒ごとに、弾の動いた距離と、ゲームの時間の進みを測る(2 秒で結果画面へ移るので、その前まで)
 		await get_tree().create_timer(0.25).timeout
 		var p: Vector2 = g.field.pos[0] if g.field.count > 0 else prev
 		speeds.append([p.distance_to(prev) / 0.25, (g._now - prev_now) / 0.25, g._audio.pitch_scale if g._audio.playing else 0.0])
@@ -1519,7 +1598,7 @@ func _smoke_tapestop() -> void:
 		prev = p
 		prev_now = g._now
 	var slowing: bool = speeds[0][0] > 1.0 and speeds[2][0] < speeds[0][0] and speeds[5][1] < 0.2
-	var stopped: bool = speeds[7][0] < 0.5 and speeds[8][1] < 0.01
+	var stopped: bool = speeds[6][0] < 1.0 and speeds[6][1] < 0.01
 	print("smoke-tapestop: bullets keep moving then slow down: %s / stopped after the tape stop: %s" % ["OK" if slowing else "FAIL", "OK" if stopped else "FAIL"])
 	fails += (0 if slowing else 1) + (0 if stopped else 1)
 	print("smoke-tapestop: ", "OK" if fails == 0 else "%d FAILED" % fails)

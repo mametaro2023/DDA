@@ -29,9 +29,9 @@ const GAUGE_DRAIN_TIME := 0.25   # ゲージ満タンぶんの被弾時間(通�
 const GAUGE_LOW_THRESHOLD := 0.2 # ゲージがこれ以下のとき、
 const GAUGE_LOW_FACTOR := 0.5    # 被ダメージはこの倍率になる
 const GAUGE_REGEN := 0.015       # 被弾していないときの回復(ゲージ全体に対する割合 / 秒)
-## 実際の弾・自機の大きさの倍率。難易度(Lv)の計算には入れない(表示する難易度に対して、体感が易しいため、見た目と当たり判定だけを大きくする)
-const BULLET_SIZE_MUL := 1.25
-const PLAYER_SIZE_MUL := 1.15
+## 実際の弾・自機の大きさの倍率(見た目と当たり判定)。値は PatternGen が持つ(Lv の計算の危険半径と、同じ値を使うため)。
+const BULLET_SIZE_MUL := PatternGen.BULLET_SIZE_MUL
+const PLAYER_SIZE_MUL := PatternGen.PLAYER_SIZE_MUL
 const CLEAR_TIMEOUT := 8.0       # 最後の弾を撃ってからこの秒数たっても弾が残っていたら、消してクリアにする
 ## 自機の周りが「落ち着いている」とみなす範囲(休憩の一掃・クリア判定): 近くの弾は SAFE_NEAR_R 以内、接近中の弾は SAFE_LOOK_T 秒以内に自機から SAFE_APPROACH_R 以内を通る弾
 const SAFE_NEAR_R := 120.0

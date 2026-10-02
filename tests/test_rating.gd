@@ -5,6 +5,8 @@ extends SceneTree
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
+const GameSim = preload("res://scripts/game/game_sim.gd")
+const BulletField = preload("res://scripts/game/bullet_field.gd")
 
 ## 譜面セットごとの公式星評価(難易度名 → ★)。ファイルが無いセットは飛ばす。
 const SETS := [
@@ -45,6 +47,24 @@ func _init() -> void:
 	_check(mono, "目標の弾数は★に対して単調に増える(★6.7 より上でも)")
 	_check(sym, "target_score_for と stars_for_score が互いに逆(★1〜11)")
 	_check(PatternGen.target_score_for(8.3) > PatternGen.target_score_for(6.7) + 30.0, "★8.3 の目標は★6.7 より十分大きい")
+
+	# 危険半径は実際の当たり判定と同じ式(弾・自機の大きさの倍率を含む)。基準の大きさでは補正が 1(Lv の数値は倍率に左右されない)
+	_check(PatternGen.HIT_SCALE == BulletField.HIT_SCALE and PatternGen.PLAYER_HIT_R == GameSim.PLAYER_HIT_R \
+			and GameSim.BULLET_SIZE_MUL == PatternGen.BULLET_SIZE_MUL and GameSim.PLAYER_SIZE_MUL == PatternGen.PLAYER_SIZE_MUL,
+		"Lv の計算の当たり判定の値が、実際の弾・自機と同じ")
+	_check(is_equal_approx(PatternGen.danger_radius(6.75), PatternGen.DANGER_REF), "基準の弾サイズ 6.75 では、弾サイズの補正が 1")
+	_check(is_equal_approx(PatternGen.danger_radius(8.0, 7.0), BulletField.HIT_SCALE * 8.0 * GameSim.BULLET_SIZE_MUL + 7.0 * GameSim.PLAYER_SIZE_MUL),
+		"危険半径 = 実際の弾の当たり判定 + 実際の自機の当たり判定(巨人など自機の半径を変えても)")
+
+	# 長さの補正は休憩地帯を除いて測る(計測区間 10〜70 秒の中の休憩は引き、区間の外は影響しない)
+	var two: Array = [{"t": 10.0, "pos": Vector2(480, 360), "warn": true, "shots": [{"n": 1, "speed": 150.0, "a0": 0.0, "spread": TAU, "fan": false, "aim": false, "size": 6.75, "color": 0, "turn": 0.0}], "sfx": ""},
+		{"t": 70.0, "pos": Vector2(480, 360), "warn": true, "shots": [{"n": 1, "speed": 150.0, "a0": 0.0, "spread": TAU, "fan": false, "aim": false, "size": 6.75, "color": 0, "turn": 0.0}], "sfx": ""}]
+	var d_all: float = PatternGen.measure(two).duration
+	var d_in: float = PatternGen.measure(two, [[20.0, 40.0]]).duration
+	var d_edge: float = PatternGen.measure(two, [[0.0, 15.0], [65.0, 90.0]]).duration
+	var d_out: float = PatternGen.measure(two, [[80.0, 90.0]]).duration
+	_check(is_equal_approx(d_all, 60.0) and is_equal_approx(d_in, 40.0) and is_equal_approx(d_edge, 50.0) and is_equal_approx(d_out, 60.0),
+		"長さは休憩を除いて測る: 休憩なし %.1f / 中に 20 秒 %.1f / 端にかかる 5+5 秒 %.1f / 区間の外 %.1f" % [d_all, d_in, d_edge, d_out])
 
 	var rows: Array = []
 	for s in SETS:

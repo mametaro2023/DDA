@@ -9,7 +9,7 @@ extends RefCounted
 ##   1. 各弾が画面から出るまでの時間を解析的に求め、0.1 秒ごとの画面内の弾数 N(t) を得る(measure)。
 ##   2. score = 0.5 * 平均(N) + 0.5 * 上位5%点(N)                                    ← 密度
 ##   3. adj   = score * (弾速 / BASE_SPEED)^SPEED_EXP * (危険半径 / DANGER_REF)^SIZE_EXP  ← 弾速・弾サイズの補正
-##   4. adj に長さ(持久力)の補正 length_factor(最初のノーツ〜最後の発射の時間 T)を掛ける(LENGTH_*)
+##   4. adj に長さ(持久力)の補正 length_factor(最初のノーツ〜最後の発射の時間 T。休憩地帯は除く)を掛ける(LENGTH_*)
 ##   5. Lv    = TARGET_TABLE の逆引き(adj → ★換算)- LEVEL_SHIFT(1.0)                 ← 本家の星と同じ目盛り(ただし 1 だけ厳しい: 同じ Lv なら、弾が多い)
 ##
 ## 生成の側は、本家 osu! の星評価(基準: star_rating.gd の推定値)に近づけるために、
@@ -41,11 +41,16 @@ const SPEED_VAR := 0.15
 ## SPEED_EXP = 1 だと弾速は Lv に影響せず、1 を超えたぶんだけ「速いほど難しい」になる(1.25 なら弾速 2 倍で Lv の元の値が約 1.19 倍)。
 ## 0.5 では速い弾ほど Lv が下がってしまうため 1 を超える値にした(1.5 は大きすぎたので 1.25)(MOD「暴風雨」の弾速上昇で顕在化)。実測が難しいので控えめな値。
 const SPEED_EXP := 1.25
-## 危険半径 = 弾の当たり判定半径 + 自機の当たり判定半径(bullet_field.gd の HIT_SCALE と game_sim.gd の PLAYER_HIT_R と同じ値)。
+## 危険半径 = 弾の当たり判定半径 + 自機の当たり判定半径(実際の当たり判定と同じ式。HIT_SCALE は bullet_field.gd と同じ値。tests/test_rating.gd で確かめる)。
 ## Lv は危険半径の SIZE_EXP 乗に比例する(ボット実験: 弾サイズ 4 倍の幅 ≒ 弾数 2.5 倍の幅で、指数はおよそ 1)。
 const HIT_SCALE := 0.7
 const PLAYER_HIT_R := 3.5
-const DANGER_REF := 8.225   # 弾サイズ 6.75 のときの危険半径
+## 実際の弾・自機の大きさの倍率(見た目と当たり判定。game_sim.gd はこの値を使う)。v0.5.0 で、表示する Lv は変えずに、実際の大きさだけを大きくした
+## (表示する難易度に対して、体感が易しかったため)。危険半径はこの倍率を入れた実際の大きさで測り、基準 DANGER_REF も同じ式で測る:
+## 基準の大きさでは補正が 1 のまま(= Lv の数値は変わらない)で、弾サイズ・自機サイズが変わったときの比(MOD の巨人・地獄、弾サイズの吸収)が、実際の当たり判定に合う。
+const BULLET_SIZE_MUL := 1.25
+const PLAYER_SIZE_MUL := 1.15
+const DANGER_REF := HIT_SCALE * BULLET_SIZE_MUL * 6.75 + PLAYER_HIT_R * PLAYER_SIZE_MUL   # 弾サイズ 6.75 のときの危険半径
 const SIZE_EXP := 1.0
 const SIZE_ABSORB_MIN := 0.6
 const SIZE_ABSORB_MAX := 1.4
@@ -53,7 +58,7 @@ const SIZE_ABSORB_MAX := 1.4
 const STAR_MIN := 1.0
 const STAR_MAX := 6.6
 
-## 長さ(持久力)の補正: 最初のノーツ〜最後の発射の時間 T(休憩地帯を含む)に応じて Lv を上下させる。
+## 長さ(持久力)の補正: 最初のノーツ〜最後の発射の時間 T(休憩地帯は除く。弾が来ない休憩は持久力に数えない)に応じて Lv を上下させる。
 ##   length_factor = clamp((T / LENGTH_REF)^LENGTH_EXP, LENGTH_MIN, LENGTH_MAX)   を adj に掛ける
 ## 基準の長さ(標準的な 1 曲 = 2 分)で 1。5 分なら約 1.15 倍、30 秒なら約 0.81 倍。密度が同じなら、長い譜面ほど難しい。
 ## 弾の生成(目標の弾数の調整)には入れない: 生成は密度だけで目標に合わせ、長さは Lv の計算でだけ足す。
@@ -117,13 +122,16 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	# 目標の adj(弾速・弾サイズの補正後スコア)。density_mul が 1 なら目標 Lv = 推定★
 	var target_adj := target_score_for(stars + LEVEL_SHIFT) * float(opts.get("density_mul", 1.0))
 	var target_level := maxf(stars_for_score(target_adj) - LEVEL_SHIFT, 0.0)
+	var br: Array = []   # 休憩地帯 [始まり, 終わり](秒)。長さの補正は、休憩を除いた時間で測る
+	for b in bm.breaks:
+		br.append([b[0] / 1000.0, b[1] / 1000.0])
 	# 1) 弾数の倍率 mul を自動調整して、adj を目標に合わせる
 	var mul := 1.0
 	var out := {}
 	var rating := {}
 	for i in range(6):
 		out = _generate(bm, k, mul, speed, size)
-		rating = measure(out.events)
+		rating = measure(out.events, br)
 		var adj := adjusted_score(rating.score, speed, size)
 		if rating.score < 0.5 or absf(adj - target_adj) <= target_adj * 0.05:
 			break
@@ -132,14 +140,11 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	var adj_now := adjusted_score(rating.score, speed, size)
 	if rating.score >= 0.5 and absf(adj_now - target_adj) > target_adj * 0.03:
 		var danger := danger_radius(size) * target_adj / adj_now
-		var absorbed := clampf((danger - PLAYER_HIT_R) / HIT_SCALE, size * SIZE_ABSORB_MIN, size * SIZE_ABSORB_MAX)
+		var absorbed := clampf((danger - PLAYER_HIT_R * PLAYER_SIZE_MUL) / (HIT_SCALE * BULLET_SIZE_MUL), size * SIZE_ABSORB_MIN, size * SIZE_ABSORB_MAX)
 		if not is_equal_approx(absorbed, size):
 			size = absorbed
 			out = _generate(bm, k, mul, speed, size)
 	out["rating"] = rating
-	var br: Array = []
-	for b in bm.breaks:
-		br.append([b[0] / 1000.0, b[1] / 1000.0])
 	out["breaks"] = br
 	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration)
 	out["speed"] = speed
@@ -172,9 +177,9 @@ static func base_size(k: float) -> float:
 	return lerpf(7.5, 6.0, k)
 
 
-## 弾サイズ → 危険半径(当たり判定 + 自機の当たり判定)。
+## 弾サイズ → 危険半径(実際の当たり判定: 弾 + 自機)。player_r は倍率をかける前の自機の半径(MOD の巨人なら PLAYER_HIT_R × 2)。
 static func danger_radius(size: float, player_r := PLAYER_HIT_R) -> float:
-	return HIT_SCALE * size + player_r
+	return HIT_SCALE * BULLET_SIZE_MUL * size + player_r * PLAYER_SIZE_MUL
 
 
 ## 弾速・弾サイズの補正をかけた難易度スコア adj。
@@ -182,7 +187,7 @@ static func adjusted_score(score: float, speed: float, size: float, player_r := 
 	return score * pow(speed / BASE_SPEED, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, SIZE_EXP)
 
 
-## 長さ(持久力)の補正の倍率。duration = 最初のノーツ〜最後の発射の秒数(0 以下なら補正なし)。
+## 長さ(持久力)の補正の倍率。duration = 最初のノーツ〜最後の発射の秒数(休憩地帯を除く。0 以下なら補正なし)。
 static func length_factor(duration: float) -> float:
 	if duration <= 0.0:
 		return 1.0
@@ -628,9 +633,10 @@ static func _exit_time(p: Vector2, d: Vector2, speed: float) -> float:
 	return maxf(minf(tx, ty), 0.0) / speed
 
 
-## DDA 難易度 v1: 画面内の弾数 N(t) から {mean, p95, peak, score} を返す(events は時刻順)。
+## DDA 難易度 v1: 画面内の弾数 N(t) から {mean, p95, peak, score, duration} を返す(events は時刻順)。
 ##   score = 0.5 * mean + 0.5 * p95   (最初〜最後の発射の間を 0.1 秒ごとに評価)
-static func measure(events: Array) -> Dictionary:
+##   duration = 最初〜最後の発射の秒数から、休憩地帯 breaks([[始まり, 終わり], ...] 秒)と重なる時間を引いたもの(長さの補正に使う)
+static func measure(events: Array, breaks := []) -> Dictionary:
 	if events.is_empty():
 		return {"mean": 0.0, "p95": 0.0, "peak": 0.0, "score": 0.0, "duration": 0.0}
 	# 計測の区間は「最初のノーツ(最初に弾を撃つイベント)」から「最後の発射」まで。
@@ -674,7 +680,10 @@ static func measure(events: Array) -> Dictionary:
 	counts.sort()
 	var p95 := float(counts[mini(int(counts.size() * 0.95), counts.size() - 1)]) if counts.size() > 0 else 0.0
 	var peak := float(counts[counts.size() - 1]) if counts.size() > 0 else 0.0
-	return {"mean": mean, "p95": p95, "peak": peak, "score": 0.5 * mean + 0.5 * p95, "duration": t1 - t0}
+	var dur := t1 - t0
+	for bk in breaks:
+		dur -= maxf(minf(float(bk[1]), t1) - maxf(float(bk[0]), t0), 0.0)
+	return {"mean": mean, "p95": p95, "peak": peak, "score": 0.5 * mean + 0.5 * p95, "duration": maxf(dur, 0.0)}
 
 
 ## idx 番目のオブジェクト周辺(前後 RATE_WINDOW 秒)のノーツ密度(個/秒)。

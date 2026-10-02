@@ -160,7 +160,7 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 		out.breaks = breaks
 	out["time_rate"] = rate
 	# MOD 適用後の弾幕で難易度を測り直す
-	var rating := PatternGen.measure(events)
+	var rating := PatternGen.measure(events, out.get("breaks", []))   # 休憩地帯は、再生速度を反映したもの
 	var speed: float = float(gen.speed) * float(p.speed_mul)
 	var size: float = float(gen.size) * float(p.size_mul)
 	out.rating = rating

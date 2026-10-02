@@ -137,11 +137,17 @@ func _ready() -> void:
 	if args.has("--smoke-skip"):
 		_smoke_skip()
 		return
-	if args.has("--smoke-score"):
-		_smoke_score()
+	if args.has("--smoke-drag"):
+		_smoke_drag()
 		return
 	if args.has("--smoke-death"):
 		_smoke_death()
+		return
+	if args.has("--smoke-score"):
+		_smoke_score()
+		return
+	if args.has("--smoke-tapestop"):
+		_smoke_tapestop()
 		return
 	if args.has("--smoke"):
 		_smoke()
@@ -1411,6 +1417,112 @@ func _prof_play() -> void:
 ", " / "))
 	print("prof-play: screen=%s worst frame %.1f ms | long frames (>22ms): %s" % [g.get_script().resource_path.get_file(), worst, ", ".join(log)])
 	Settings.restore(orig)
+	get_tree().quit()
+
+
+## 開発用: 選曲画面の一覧を、ドラッグでスクロールできるか確かめる(左 = つかんだ分だけ / 右 = 速く)。-- --smoke-drag
+## ドラッグしたときは曲を選ばず、動かさずにクリックしたときだけ選ぶ。
+func _smoke_drag() -> void:
+	var fails := 0
+	show_menu()
+	await get_tree().create_timer(0.5).timeout
+	var m = _current
+	while m._job_pending:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.8).timeout
+	if m._songs.size() < 30:   # 曲が少ないとスクロールできないので、一覧だけ水増しする(ファイルは触らない)
+		var base: Array = m._songs.duplicate()
+		while m._songs.size() < 30:
+			m._songs.append_array(base)
+		m._rebuild_song_cards(false)
+		await get_tree().create_timer(0.3).timeout
+	var sc: ScrollContainer = m._song_scroll
+	var mx: float = sc.get_v_scroll_bar().max_value - sc.get_v_scroll_bar().page
+	var at := sc.get_global_rect().position + Vector2(150, 300)
+	var send := func(ev: InputEvent): Input.parse_input_event(ev); await get_tree().process_frame
+	var button := func(idx: int, down: bool, pos: Vector2) -> InputEventMouseButton:
+		var e := InputEventMouseButton.new()
+		e.button_index = idx
+		e.pressed = down
+		e.position = pos
+		e.global_position = pos
+		return e
+	var motion := func(pos: Vector2) -> InputEventMouseMotion:
+		var e := InputEventMouseMotion.new()
+		e.position = pos
+		e.global_position = pos
+		return e
+	for btn in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
+		m._song_smooth._target = 0.0
+		m._song_smooth._pos = 0.0
+		m._song_smooth._apply()
+		await get_tree().process_frame
+		var sel0: int = m._song_sel
+		Input.warp_mouse(get_viewport().get_screen_transform() * at)
+		await send.call(motion.call(at))
+		await send.call(button.call(btn, true, at))
+		for k in range(1, 7):
+			await send.call(motion.call(at - Vector2(0, 5.0 * k)))   # 上へ 30px(一覧は下へ進む)
+		await send.call(button.call(btn, false, at - Vector2(0, 30)))
+		await get_tree().create_timer(0.5).timeout
+		var moved: float = sc.scroll_vertical
+		# しきい値(6px)を越えたのは 10px の時点。そこから動いた 20px ぶん(右は FAST_MIN 倍以上)。左は離したあと少し滑る(行き過ぎない)
+		var mul: float = maxf(4.0, mx / (sc.size.y * 0.8))
+		var expect := 20.0 if btn == MOUSE_BUTTON_LEFT else 20.0 * mul
+		var ok: bool = moved >= expect - 2.0 and (btn == MOUSE_BUTTON_RIGHT or moved <= expect + 80.0) and m._song_sel == sel0
+		print("[%s drag 30px] scroll %d (expect %d..%d, max %d)  song_sel %d -> %d: %s" % ["left" if btn == MOUSE_BUTTON_LEFT else "right", moved, int(expect), int(expect + 80.0), int(mx), sel0, m._song_sel, "OK" if ok else "FAIL"])
+		fails += 0 if ok else 1
+	# 動かさずにクリック: その曲を選ぶ
+	var want := -1
+	var cp := Vector2.ZERO
+	for i in range(m._song_cards.size()):   # 見えているカードのうち、選んでいないもの
+		var c: Vector2 = (m._song_cards[i] as Control).get_global_rect().get_center()
+		if i != m._song_sel and sc.get_global_rect().grow(-30.0).has_point(c):
+			want = i
+			cp = c
+			break
+	await send.call(motion.call(cp))
+	await send.call(button.call(MOUSE_BUTTON_LEFT, true, cp))
+	await send.call(button.call(MOUSE_BUTTON_LEFT, false, cp))
+	var ok2: bool = want < 0 or m._song_sel == want
+	print("[click] song_sel=%d (expect %d): %s" % [m._song_sel, want, "OK" if ok2 else "FAIL"])
+	fails += 0 if ok2 else 1
+	print("smoke-drag: ", "OK" if fails == 0 else "%d FAILED" % fails)
+	get_tree().quit()
+
+
+## 開発用: ゲームオーバーで、弾の動きが曲のテープストップと同じように遅くなって止まるか確かめる。-- --smoke-tapestop
+func _smoke_tapestop() -> void:
+	var loader := OszLoader.new()
+	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
+	var bm = loader.difficulties[loader.difficulties.size() - 1]
+	start_game(loader, bm, {"mods": [], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	var g = _current
+	await get_tree().create_timer(1.0).timeout
+	if g._can_skip():
+		g._request_skip()
+	while g.field.count < 20:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.5).timeout
+	g.sim.gauge = 0.0   # 次の判定で、ゲームオーバーになる
+	while not g._dead:
+		await get_tree().process_frame
+	var fails := 0
+	var prev: Vector2 = g.field.pos[0]
+	var prev_now: float = g._now
+	var speeds: Array = []
+	for k in range(9):   # 0.25 秒ごとに、弾の動いた距離と、ゲームの時間の進みを測る
+		await get_tree().create_timer(0.25).timeout
+		var p: Vector2 = g.field.pos[0] if g.field.count > 0 else prev
+		speeds.append([p.distance_to(prev) / 0.25, (g._now - prev_now) / 0.25, g._audio.pitch_scale if g._audio.playing else 0.0])
+		print("  +%.2fs  bullet %.1f px/s  game time x%.2f  pitch %.2f" % [0.25 * (k + 1), speeds[k][0], speeds[k][1], speeds[k][2]])
+		prev = p
+		prev_now = g._now
+	var slowing: bool = speeds[0][0] > 1.0 and speeds[2][0] < speeds[0][0] and speeds[5][1] < 0.2
+	var stopped: bool = speeds[7][0] < 0.5 and speeds[8][1] < 0.01
+	print("smoke-tapestop: bullets keep moving then slow down: %s / stopped after the tape stop: %s" % ["OK" if slowing else "FAIL", "OK" if stopped else "FAIL"])
+	fails += (0 if slowing else 1) + (0 if stopped else 1)
+	print("smoke-tapestop: ", "OK" if fails == 0 else "%d FAILED" % fails)
 	get_tree().quit()
 
 

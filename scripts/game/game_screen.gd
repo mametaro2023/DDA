@@ -157,6 +157,7 @@ const RESUME_KEYS := [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER, KEY_LEFT, KEY_RIGHT, K
 const PAUSE_ROWS := 6       # 再開 / リトライ / メニューへ / 全体音量 / 音楽 / 効果音
 var _pause_cover: ColorRect   # ポーズ中、アリーナ(弾・自機)を覆う
 var _resume_wait := false     # 「再開」のあと、使う人の操作を待っている(自機だけを見せている。ゲームは止まったまま)
+var _resume_hint: Label       # 再開の待ちの案内(「クリックで再開」など)
 var _wait_t := 0.0
 var _wait_lock := 0.0         # 待ちに入った直後は、操作を受けない(再開ボタンのダブルクリックで、すぐ始まらないように)
 var _pause_cd := 0.0          # 再開してから、またポーズできるようになるまでの残り秒
@@ -579,7 +580,13 @@ func _process(delta: float) -> void:
 	delta = minf(delta, 0.05)
 	_pause_cd = maxf(_pause_cd - delta, 0.0)
 	_ui_time += delta
-	if not _audio_started:
+	if _dead:
+		# ゲームオーバー: ゲームの時間も、テープストップ(曲の減速)と同じ割合で遅くなって止まる。
+		# 弾はそのまま進み続けて(当たり判定はなし)、曲と一緒に減速して止まる。予兆・危険エリアなどの動きも同じ
+		var dt_game := delta * _tape_speed()
+		_now += dt_game
+		field.update(dt_game, Vector2(-1.0e6, -1.0e6), 0.0, false)
+	elif not _audio_started:
 		if _mp != null:   # マルチプレイ: 開始の合図まで待ち、合図のあとは全員で共通の時計で READY を数える(同じ瞬間に曲が始まる)
 			_now = maxf(-LEAD_IN + (net.shared_time() - _mp.start_shared), -LEAD_IN) if _mp.started else -LEAD_IN
 		else:
@@ -740,6 +747,11 @@ func _begin_death(with_sound: bool) -> void:
 	_view_over.material = add
 
 
+## ゲームオーバーのテープストップの速さ(1 = ふつう → 0 = 止まった)。曲の再生速度と、ゲームの時間の進み方の両方に使う。
+func _tape_speed() -> float:
+	return pow(1.0 - clampf(_death_t / TAPE_STOP_TIME, 0.0, 1.0), 2.0)
+
+
 ## 演出の経過に合わせて、曲の減速・弾のフェード・GAME OVER 表示を更新する。
 func _apply_death_fx() -> void:
 	var t := _death_t
@@ -747,12 +759,12 @@ func _apply_death_fx() -> void:
 	# テープストップ: 音量は保ったまま、再生速度(=音程)がなめらかに 0 へ落ちていく
 	if _audio.playing:
 		var x := clampf(t / TAPE_STOP_TIME, 0.0, 1.0)
-		_audio.pitch_scale = maxf(_rate * pow(1.0 - x, 2.0), 0.02)
+		_audio.pitch_scale = maxf(_rate * _tape_speed(), 0.02)
 		_audio.volume_db = linear_to_db(clampf((1.0 - x) / 0.12, 0.001, 1.0))  # 完全に止まる直前だけ消す
 		if x >= 1.0:
 			_audio.stop()
-	# 弾は固まってから消える
-	field.modulate.a = clampf(1.0 - (t - 0.5) / 0.9, 0.0, 1.0)
+	# 弾は(曲と一緒に減速して)止まってから消える
+	field.modulate.a = clampf(1.0 - (t - 1.0) / 0.8, 0.0, 1.0)
 	# GAME OVER 表示
 	var a := clampf((t - 0.45) / 0.5, 0.0, 1.0)
 	_center_label.text = "GAME OVER"
@@ -1355,6 +1367,7 @@ func _set_paused(p: bool) -> void:
 		return
 	_paused = true
 	_resume_wait = false
+	_show_resume_hint(false)
 	_set_ship_only(false)
 	_pause_layer.visible = true
 	UiSfx.play("open")
@@ -1383,8 +1396,29 @@ func _begin_resume_wait() -> void:
 	_set_ship_only(true)
 	if _skip_btn != null:
 		_skip_btn.visible = false   # 待ちの間、Space は「動き出す」操作になるので、スキップの案内は隠す(動き出したら、また出る)
+	_show_resume_hint(true)
 	if _mouse_mode:
 		_capture_mouse()
+
+
+## 再開の待ちの案内(どうすれば動き出すか)。自機のすぐ下(下の端に近いときは上)に、短く出す。
+func _show_resume_hint(on: bool) -> void:
+	if _resume_hint == null:
+		if not on:
+			return
+		_resume_hint = UiStyle.label("", 18, UiStyle.TEXT, true)
+		_resume_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_resume_hint.size = Vector2(320, 26)
+		_resume_hint.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+		_resume_hint.add_theme_constant_override("outline_size", 5)
+		add_child(_resume_hint)
+	_resume_hint.visible = on
+	if not on:
+		return
+	_resume_hint.text = "クリックで再開" if _mouse_mode else "移動キー・Space で再開"
+	var below: bool = sim.player_pos.y < PatternGen.ARENA.y - 110.0
+	_resume_hint.position = ARENA_POS + sim.player_pos + Vector2(-160.0, 66.0 if below else -92.0)
+	UiStyle.tween(_resume_hint, "modulate:a", 0.0, 1.0, 0.25)
 
 
 func _tick_resume_wait(delta: float) -> void:
@@ -1397,6 +1431,7 @@ func _tick_resume_wait(delta: float) -> void:
 ## 操作された: ゲームが進み始め、弾が RESUME_VEIL 秒かけて現れる。そこから PAUSE_COOLDOWN 秒は、またポーズできない。
 func _finish_resume() -> void:
 	_resume_wait = false
+	_show_resume_hint(false)
 	_paused = false
 	_set_ship_only(false)
 	_pause_cd = PAUSE_COOLDOWN

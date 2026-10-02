@@ -4,7 +4,7 @@ extends Node
 ##   pop = ふつう(打撃音)/ whistle = 口笛 / clap = 手拍子 / boom = 大きな弾(重い衝撃)/ tick = 細かい弾(木の小さな粒)
 ## 弾に触れている間は、ダメージが続く。触れた瞬間に hit(ツッ)を 1 回鳴らし、触れている間は hit_loop(ジジジ…)をループ再生する(touch_damage を毎フレーム呼ぶ。呼ばれなくなると、少しの間で消える)。
 ## 発射音は 6 種類の変種からランダムに選び(同じ変種が続けて鳴らない)、さらに音程も少し揺らして、同じ音の繰り返しに聞こえないようにする
-## (揺らし幅は音ごと。音程のはっきりした whistle・tick はほとんど揺らさず、曲と音程がずれないようにする)。被弾(hit)・爆発(explosion)は揺らさない。
+## (揺らし幅は音ごと。音程のはっきりした whistle はほとんど揺らさず、曲と音程がずれないようにする)。被弾(hit)・爆発(explosion)は揺らさない。
 ## 発射音は、弾の発生源の横の位置に合わせて左右に振る(pan: -1 = 左端 〜 1 = 右端。振り幅は PAN_WIDTH まで。左右の振り分けは、音量を変える専用のバスで行う)。
 
 const SfxBank = preload("res://scripts/sfx_bank.gd")
@@ -30,7 +30,7 @@ const DAMAGE_RELEASE := 0.14
 const DAMAGE_HOLD := 0.07
 
 ## 発射音と、その音程の揺らし幅(± の割合)
-const PITCH_JITTER := {"pop": 0.03, "clap": 0.04, "boom": 0.02, "whistle": 0.004, "tick": 0.0}
+const PITCH_JITTER := {"pop": 0.03, "clap": 0.04, "boom": 0.02, "whistle": 0.004, "tick": 0.04}
 ## 左右の振り幅(0..1)と、振り分けの段階(バスの数。奇数で、真ん中はマスターへそのまま送る)
 const PAN_WIDTH := 0.5
 const PAN_STEPS := 7

@@ -55,6 +55,35 @@ func _mono_of(w: AudioStreamWAV) -> PackedFloat32Array:
 	return out
 
 
+## 音程のはっきりさ(0..1): 500 Hz〜10 kHz のエネルギーのうち、いちばん強い周波数の ±3% に集まっている割合。純音に近いほど 1、ノイズに近いほど 0。
+func _tonality(x: PackedFloat32Array) -> float:
+	var n := 8192
+	var re := PackedFloat32Array()
+	var im := PackedFloat32Array()
+	re.resize(n)
+	im.resize(n)
+	for i in range(mini(n, x.size())):
+		re[i] = x[i]
+	D.fft(re, im)
+	var pw := PackedFloat32Array()
+	pw.resize(n / 2)
+	var total := 1e-12
+	var best := 1
+	for k in range(1, n / 2):
+		var f := float(k) * D.SR / n
+		if f < 500.0 or f > 10000.0:
+			continue
+		pw[k] = re[k] * re[k] + im[k] * im[k]
+		total += pw[k]
+		if pw[k] > pw[best]:
+			best = k
+	var near := 0.0
+	for k in range(1, n / 2):
+		if absf(float(k - best)) <= best * 0.03:
+			near += pw[k]
+	return near / total
+
+
 func _init() -> void:
 	var dump := OS.get_cmdline_user_args().has("wav")
 	if dump:
@@ -139,10 +168,12 @@ func _init() -> void:
 		_check(info.hit.dur < 350.0 and info.hit.cen > 600.0, "hit は触れた瞬間の短い合図で、小さなスピーカーでも聞こえる(%dms / 重心 %d Hz)" % [info.hit.dur, info.hit.cen])
 		_check(info.hit_loop.cen > 600.0 and info.hit_loop.cen < 4500.0, "hit_loop は聞き取りやすい中高域の持続音(重心 %d Hz)" % info.hit_loop.cen)
 		_check(info.explosion.cen < 600.0 and info.explosion.dur > 1000.0, "爆発は低く長い(%d Hz / %dms)" % [info.explosion.cen, info.explosion.dur])
-		var tick_pitches := {}
-		for k in range(6):
-			tick_pitches[k] = D.centroid_hz(_mono_of(SfxBank.variants("tick")[k]))
-		_check(tick_pitches[5] > tick_pitches[0] * 1.5, "tick の変種は音の高さが違う(粒がきらきら変わる): %d〜%d Hz" % [tick_pitches[0], tick_pitches[5]])
+		# tick は曲のメロディと重なって続けて鳴るので、はっきりした音程を持たない(どの変種も)。比べのため、音程のある whistle も測る
+		var worst_tone := 0.0
+		for w in SfxBank.variants("tick"):
+			worst_tone = maxf(worst_tone, _tonality(_mono_of(w)))
+		var whistle_tone := _tonality(_mono_of(SfxBank.variants("whistle")[0]))
+		_check(worst_tone < 0.25 and whistle_tone > worst_tone * 2.0, "tick ははっきりした音程を持たない(メロディとぶつからない): 音程の強さ 最大 %.2f(whistle %.2f)" % [worst_tone, whistle_tone])
 	# UI の音: 耳に刺さらない(スペクトル重心 4 kHz 未満)・長すぎない
 	for nm in ["hover", "click", "select", "back", "on", "off", "tick_ui", "count", "toast"]:
 		if info.has(nm):

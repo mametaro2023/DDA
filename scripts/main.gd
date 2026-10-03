@@ -690,6 +690,16 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
+			if extra.has("toggle"):   # 読み込みのあとで MOD を付ける(弾幕 v2 の入り切りで、曲を読み直す流れ): --shot menu out.png toggle v2
+				while _current._job_pending or _current._diff_cards.is_empty():
+					await get_tree().process_frame
+				print("toggle: 読み込み後 v2=%s Lv=%.2f" % [str(_current._gens_v2), float(_current._ratings[_current._diff_sel].level)])
+				_current.settings.mods = extra.filter(func(x): return not Mods.find(x).is_empty())
+				_current._on_mods_changed()
+				while _current._job_pending:
+					await get_tree().process_frame
+				await get_tree().process_frame
+				print("toggle: 切り替え後 v2=%s Lv=%.2f 選択=%d" % [str(_current._gens_v2), float(_current._ratings[_current._diff_sel].level), _current._diff_sel])
 			if extra.has("empty"):   # 曲が 1 つもない状態: --shot menu out.png empty
 				await _current.debug_empty()
 			if extra.has("loading"):   # 曲の読み込み中の見た目: --shot menu out.png loading

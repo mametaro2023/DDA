@@ -15,6 +15,7 @@ signal song_picked(loader, bm, settings: Dictionary, level: float)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
+const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const ModPanel = preload("res://scripts/ui/mod_panel.gd")
@@ -39,6 +40,8 @@ var pick_mode := false
 var _songs: Array = []          # [{path, title, artist}]
 var _loader                     # 選択中の OszLoader
 var _gens: Array = []           # 難易度リストと同じ並びの、MOD 適用前の弾幕(生成結果)
+var _gens_v2 := false           # _gens が弾幕 v2(MOD)で作ったものか
+var _reload_keep := ""          # MOD で弾幕の作り方(v1/v2)が変わって読み直すとき: 選んでいた難易度の version(空なら、ふつうの選曲)
 var _ratings: Array = []        # 同じ並びの DDA 難易度(MOD 適用後)
 var _song_sel := -1
 var _diff_sel := -1
@@ -471,8 +474,13 @@ func _select_song(i: int) -> void:
 	_job += 1
 	_job_pending = true
 	_set_loading(true)
+	_reload_keep = ""
+	_start_load_job(_songs[i].path)
+
+
+## 曲の読み込み(別スレッド)を始める。結果は _on_song_loaded へ(いまの _job のものだけが使われる)。
+func _start_load_job(path: String) -> void:
 	var job := _job
-	var path: String = _songs[i].path
 	var p := Mods.params(settings.mods)
 	var me: WeakRef = weakref(self)   # 読み込み中に画面が閉じられても、届け先がなければ捨てる
 	WorkerThreadPool.add_task(func():
@@ -483,6 +491,18 @@ func _select_song(i: int) -> void:
 			target._on_song_loaded.call_deferred(res)
 		elif res.get("loader") != null:
 			res.loader.close())
+
+
+## MOD で弾幕の作り方(v1 / v2)が変わった: 同じ曲を読み直す。弾幕は作り方ごとに覚えているので、戻すときは速い。
+## 選んでいた難易度はそのまま、試聴も止めない。
+func _reload_for_style() -> void:
+	if _loader == null or _job_pending or _song_sel < 0 or _song_sel >= _songs.size():
+		return
+	_reload_keep = str(_loader.difficulties[_diff_sel].version) if _diff_sel >= 0 else ""
+	_job += 1
+	_job_pending = true
+	_set_loading(true)
+	_start_load_job(_songs[_song_sel].path)
 
 
 ## 前の曲の OszLoader を、別スレッドで手放す(主スレッドで手放すと止まる)。弾幕の一覧は、キャッシュ(_gen_cache)と共有しているので、ここでは壊さない。
@@ -522,6 +542,11 @@ static func _gen_cache_put(key: String, order: Array, gens: Array) -> void:
 	_gen_mutex.unlock()
 
 
+## 弾幕を作る。v2 = MOD「弾幕 v2」(PatternGenV2)。
+static func _make_gen(bm, v2: bool) -> Dictionary:
+	return PatternGenV2.generate(bm, {}) if v2 else PatternGen.generate(bm, {})
+
+
 ## (別スレッドで動く)曲を開いて、難易度ごとの弾幕・難易度(MOD 適用後)・背景画像・試聴用の音声まで作る。画面には触らない。
 static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	var l = OszLoader.new()
@@ -535,7 +560,8 @@ static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	# 弾幕の生成が読み込みの大半(1 難易度で 20〜200 ms)。一度作った曲は覚えておき(直近 GEN_CACHE_MAX 曲)、次からは作らない。
 	# 作るときは、難易度どうしが独立なので並列に作る(generate は共有の状態を持たない)。MOD の適用は別(下の ratings)なので、MOD を変えても使える
 	var diffs: Array = l.difficulties
-	var key := "%s|%d|%d" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path)]   # ファイルが差し替わったら別物
+	var v2 := bool(mod_params.get("gen_v2", false))   # MOD「弾幕 v2」: 弾幕の作り方が違うので、覚えておくのも別(v1 / v2 の両方を覚える)
+	var key := "%s|%d|%d|%s" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path), "v2" if v2 else "v1"]   # ファイルが差し替わったら別物
 	var gens: Array = []
 	var cached := _gen_cache_get(key, diffs.size())
 	if not cached.is_empty():
@@ -546,10 +572,10 @@ static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
 		var made: Array = []
 		made.resize(diffs.size())
 		if diffs.size() > 1:
-			var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = PatternGen.generate(diffs[i], {}), diffs.size())
+			var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = _make_gen(diffs[i], v2), diffs.size())
 			WorkerThreadPool.wait_for_group_task_completion(gid)
 		else:
-			made[0] = PatternGen.generate(diffs[0], {})
+			made[0] = _make_gen(diffs[0], v2)
 		var pairs: Array = []
 		for i in range(diffs.size()):
 			pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
@@ -565,7 +591,7 @@ static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	if cropped != null:   # MP3 の途中から流すと、探す処理で数十 ms 止まる。あらかじめ、その位置から始まる音声にしておく
 		audio = cropped
 		from = 0.0
-	return {"ok": true, "loader": l, "gens": gens, "ratings": ratings, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
+	return {"ok": true, "loader": l, "gens": gens, "v2": v2, "ratings": ratings, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
 
 
 ## MP3 の、from 秒あたりから始まる音声(データの途中から切り出す。MP3 は、途中からでも読み始められる)。MP3 でない・先頭のとき・長さが分からないときは null。
@@ -588,6 +614,7 @@ func _on_song_loaded(res: Dictionary) -> void:
 		return
 	_job_pending = false
 	if not res.ok:
+		_reload_keep = ""
 		_set_status(str(res.error))
 		var bad := _song_sel
 		_song_sel = _prev_sel   # 選べなかったので、元の曲の選択に戻す
@@ -599,13 +626,14 @@ func _on_song_loaded(res: Dictionary) -> void:
 		_set_loading(false)   # 前の曲の難易度が残っていれば、それをまた選べる
 		_update_detail()
 		return
+	var reload := _reload_keep != ""   # MOD で弾幕の作り方が変わった読み直し: 曲情報は滑り込ませず、選んでいた難易度に戻し、試聴は止めない
 	_release_later(_loader)   # 前の曲の譜面は、量が多く、ここで手放すと解放だけで十数 ms かかる
 	_loader = res.loader
 	var i := _song_sel
 	var first = _loader.difficulties[0]
 	_meta_l.text = "BPM %.0f     Creator  %s" % [60000.0 / first.beat_length_at(first.first_time()), first.creator]
 	var k := 0
-	for lab in [_title_l, _artist_l, _meta_l]:   # 曲情報は順に滑り込む
+	for lab in ([] if reload else [_title_l, _artist_l, _meta_l]):   # 曲情報は順に滑り込む
 		UiStyle.pop_in(lab, k * 0.07, Vector2(30, 0), 0.45)
 		k += 1
 	var tex: Texture2D = null
@@ -613,6 +641,7 @@ func _on_song_loaded(res: Dictionary) -> void:
 		tex = ImageTexture.create_from_image(res.image)
 	_set_background(tex)
 	_gens = res.gens
+	_gens_v2 = bool(res.v2)
 	_full_audio = res.audio_full
 	_full_audio_file = str(res.audio_file)
 	# 曲を移ったときは、前に選んでいた難易度に Lv がいちばん近いものを選ぶ(Lv 7 を遊んでいる人が、曲を変えるたびに易しい譜面に戻らない)。最初の 1 回は 3 番目
@@ -633,17 +662,33 @@ func _on_song_loaded(res: Dictionary) -> void:
 		for k2 in range(_loader.difficulties.size()):
 			if _loader.difficulties[k2].version == settings.last_diff:
 				_diff_sel = k2
-	_lv_shown.clear()
-	_rebuild_diff_cards(true)
+	if reload:
+		for k2 in range(_loader.difficulties.size()):
+			if str(_loader.difficulties[k2].version) == _reload_keep:
+				_diff_sel = k2
+		_reload_keep = ""
+	else:
+		_lv_shown.clear()
+	_rebuild_diff_cards(not reload)
 	_set_loading(false)
 	if _mod_panel != null:   # MOD パネルを開いたまま曲が読み込まれた
 		_mod_panel.refresh_info()
+	if reload:
+		_reload_if_style_changed()
+		return
 	_audio.stop()
 	if res.audio != null:
 		await get_tree().process_frame   # カードを作る処理と、同じフレームにしない(音の開始も、少し時間がかかる)
 		if int(res.job) == _job and is_inside_tree():
 			_audio.stream = res.audio
 			_audio.play(float(res.audio_from))
+	_reload_if_style_changed()
+
+
+## 読み込んでいるあいだに MOD(弾幕 v2 の入り切り)が変わっていたら、弾幕を作り直すために読み直す。
+func _reload_if_style_changed() -> void:
+	if is_inside_tree() and not _job_pending and bool(Mods.params(settings.mods).gen_v2) != _gens_v2:
+		_reload_for_style()
 
 
 # --- 難易度カード ---
@@ -851,6 +896,9 @@ func open_mods() -> void:
 func _on_mods_changed() -> void:
 	if _loader == null:
 		return
+	if bool(Mods.params(settings.mods).gen_v2) != _gens_v2:   # 弾幕 v2 の入り切り: 弾幕そのものが変わるので、曲を読み直す(終わったら難易度も出る)
+		_reload_for_style()
+		return
 	_rate_all()
 	_rebuild_diff_cards()
 	if _mod_panel != null:
@@ -1009,6 +1057,10 @@ func debug_loading() -> void:
 func debug_set_mods(ids: Array) -> void:
 	settings.mods = ids
 	if _loader != null:
+		var v2 := bool(Mods.params(ids).gen_v2)
+		if v2 != _gens_v2:   # 開発用: その場で作り直す(順序は変えない)
+			_gens = _loader.difficulties.map(func(bm): return _make_gen(bm, v2))
+			_gens_v2 = v2
 		_rate_all()
 		_rebuild_diff_cards()
 	_refresh_mod_bar()

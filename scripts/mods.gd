@@ -9,11 +9,13 @@ extends RefCounted
 ##   rate         … 譜面の再生速度(曲と弾幕の発射が rate 倍で進む。弾速は変わらない)
 ##   score_mul    … ベーススコア 1,000,000 にかかる倍率(グレイズボーナスにはかからない)。6%2 つなら 1.06 × 1.06
 ##   drain_time   … ゲージ満タンぶんの被弾時間(秒)。複数なら短いほう
+##   drain_mul    … その被弾時間にかかる倍率(複数なら乗算)。弾幕 v2 は ×1.2(250ms → 300ms。回復は割合なので、絶対値でも自動で増える)。地獄(150ms)と併用なら 180ms
 ##   low_protect  … ゲージ 20% 以下で被ダメージ半減するか。1 つでも false なら false
 ##   practice     … ゲージが 0 になってもゲームオーバーにならない(練習)。1 つでも true なら true
 ##   dark         … 自機の周囲しか弾が見えない(描画だけ。判定・難易度は変わらない)。1 つでも true なら true
 ##   field_scale  … 自機が動ける範囲(盤面の中央の長方形)の縦横の倍率。発射位置は変わらない。複数なら小さいほう
 ##   boss         … 発射位置へ動くボスを、自機の自動の連射で倒す(scripts/game/boss.gd)。倒すまで曲が繰り返し、危険エリアは出ない。ひとり用。1 つでも true なら true
+##   gen_v2       … 弾幕の作り方を v2(scripts/game/pattern_gen_v2.gd)に切り替える。生成の段階で効くので、apply() は何もしない。1 つでも true なら true
 ## MOD を足すときは ALL に 1 件足すだけ(メニュー・HUD・リザルトは ALL を見て表示する)。
 ##
 ## ## 難易度は MOD を適用した弾幕で計算し直す
@@ -63,6 +65,12 @@ const ALL := [
 		"desc": "発射位置を追って動くボスを連射で倒す / 倒すまで曲が繰り返す・当てると回復・危険エリアなし(ひとり用) / ベーススコア +5%",
 		"boss": true, "score_mul": 1.05, "solo": true,
 	},
+	# 弾幕 v2: 難しくする MOD ではなく、弾幕の作り方の切り替え(スコア倍率 ×1.0)。難易度(Lv)は v2 の弾幕で測る
+	{
+		"id": "v2", "name": "弾幕 v2", "tag": "V2", "color": Color(0.45, 0.85, 1.0),
+		"desc": "譜面ごとに特徴の出る別の弾幕(連打は渦・ジャンプは交差・スライダーは幕など。止まって再発進する弾・分裂する弾もある) / 体力 300ms(+20%) / ベーススコアは変わらない",
+		"gen_v2": true, "drain_mul": 1.2, "score_mul": 1.0,
+	},
 	{
 		"id": "practice", "name": "練習", "tag": "PRACTICE", "color": Color(1.0, 0.82, 0.35),
 		"desc": "ゲージが 0 になってもゲームオーバーにならず、最後まで続けられる / ベーススコア −50%",
@@ -95,11 +103,13 @@ static func params(ids: Array) -> Dictionary:
 		"rate": 1.0,
 		"score_mul": 1.0,
 		"drain_time": GameSim.GAUGE_DRAIN_TIME,
+		"drain_mul": 1.0,
 		"low_protect": true,
 		"practice": false,
 		"dark": false,
 		"field_scale": 1.0,
 		"boss": false,
+		"gen_v2": false,
 	}
 	for id in ids:
 		var m := find(str(id))
@@ -109,11 +119,14 @@ static func params(ids: Array) -> Dictionary:
 		for key in ["size_mul", "speed_mul", "count_mul", "player_scale", "rate", "score_mul"]:
 			p[key] *= float(m.get(key, 1.0))
 		p.drain_time = minf(p.drain_time, float(m.get("drain_time", GameSim.GAUGE_DRAIN_TIME)))
+		p.drain_mul *= float(m.get("drain_mul", 1.0))
 		p.low_protect = p.low_protect and bool(m.get("low_protect", true))
 		p.practice = p.practice or bool(m.get("practice", false))
 		p.dark = p.dark or bool(m.get("dark", false))
 		p.field_scale = minf(p.field_scale, float(m.get("field_scale", 1.0)))
 		p.boss = p.boss or bool(m.get("boss", false))
+		p.gen_v2 = p.gen_v2 or bool(m.get("gen_v2", false))
+	p.drain_time *= p.drain_mul   # 最終の被弾時間(min の結果に、倍率をかける)
 	return p
 
 
@@ -152,6 +165,9 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 			var s2: Dictionary = s.duplicate()
 			s2.size = float(s.size) * float(p.size_mul)
 			s2.speed = float(s.speed) * float(p.speed_mul)
+			if s.get("keep_n", false):   # 弾幕 v2 の壁の弾など、本数を変えると形が崩れるもの(弾数の倍率は掛けない)
+				shots.append(s2)
+				continue
 			var want := float(s.n) * count_mul + carry
 			var n2 := maxi(int(floor(want + 0.000001)), 1)
 			carry = want - n2
@@ -182,7 +198,7 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 		out.breaks = breaks
 	out["time_rate"] = rate
 	# MOD 適用後の弾幕で難易度を測り直す
-	var rating := PatternGen.measure(events, out.get("breaks", []))   # 休憩地帯は、再生速度を反映したもの
+	var rating := PatternGen.measure(events, out.get("breaks", []), float(gen.size) * float(p.size_mul) if bool(gen.get("size_weight", false)) else 0.0)   # 休憩地帯は、再生速度を反映したもの。弾幕 v2 は弾ごとの大きさも数える
 	var speed: float = float(gen.speed) * float(p.speed_mul)
 	var size: float = float(gen.size) * float(p.size_mul)
 	out.rating = rating

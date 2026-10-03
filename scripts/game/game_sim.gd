@@ -755,13 +755,28 @@ func _fire(e: Dictionary, now: float) -> void:
 	var aims: Array = aim_targets_for(_ev_idx)   # 自機狙いの相手(協力では全員。ひとりでは自機)
 	aim_targets.erase(_ev_idx)
 	for s in e.shots:
+		# 弾幕 v2 の任意キー: off = 発射位置のずれ / beh = 弾の挙動 {k, a, b, c}(BulletField.BEH_*)。v1 の shot にはない
+		var src: Vector2 = pos + (s.off as Vector2) if s.has("off") else pos
+		var g := grace
+		if s.has("off") and player_pos.distance_to(src) < SAFE_RADIUS:   # 発射位置がずれている弾(壁・縁からの弾)が、自機のすぐそばに出るとき: 発射点の近くと同じ猶予
+			g = maxf(g, SAFE_GRACE_PX)
+		var bk := 0
+		var ba := 0.0
+		var bb := 0.0
+		var bc := 0.0
+		if s.has("beh"):
+			var bh: Dictionary = s.beh
+			bk = int(bh.k)
+			ba = float(bh.a)
+			bb = float(bh.b)
+			bc = float(bh.c)
 		for at in (aims if s.aim else [Vector2.ZERO]):
 			var base: float = s.a0
 			if s.aim:
-				base += (at - pos).angle()
+				base += (at - src).angle()
 			for i in range(s.n):
 				var v: Vector2 = Vector2.from_angle(PatternGen.shot_angle(s, base, i)) * s.speed
-				field.add(pos + v * late, v, s.size * BULLET_SIZE_MUL, s.color, grace, s.turn)
+				field.add(src + v * late, v, s.size * BULLET_SIZE_MUL, s.color, g, s.turn, bk, ba, bb, bc, late)
 	if track_fires and not e.shots.is_empty():
 		recent_fires.append({"pos": pos, "t": e.t, "color": e.shots[0].color})
 	if not e.shots.is_empty():

@@ -8,6 +8,7 @@ signal retry_requested
 
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
+const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const ArenaView = preload("res://scripts/game/arena_view.gd")
 const Settings = preload("res://scripts/settings.gd")
@@ -290,11 +291,15 @@ func _ready() -> void:
 		_study_cond = SpeedStudy.choose(SpeedStudy.map_key(bm), SpeedStudy.read_rows())
 	var sc: Dictionary = SpeedStudy.CONDITIONS.get(_study_cond, SpeedStudy.CONDITIONS.base)
 	var plain := is_equal_approx(dm, 1.0) and is_equal_approx(sc.speed_mul, 1.0) and is_equal_approx(sc.density_mul, 1.0)
-	gen = pre.gen if (not pre.get("gen", {}).is_empty() and plain) else PatternGen.generate(bm, {"density_mul": dm * float(sc.density_mul), "speed_mul": float(sc.speed_mul)})
 	_mods = Mods.params(settings.get("mods", []))
+	var v2: bool = _mods.gen_v2   # MOD「弾幕 v2」: 弾幕の作り方そのものを切り替える(選曲で作ったものも、同じ作り方のときだけ使う)
+	var pre_gen: Dictionary = pre.get("gen", {})
+	var same_style := (str(pre_gen.get("style", "v1")) == "v2") == v2
+	var gen_opts := {"density_mul": dm * float(sc.density_mul), "speed_mul": float(sc.speed_mul)}
+	gen = pre_gen if (not pre_gen.is_empty() and plain and same_style) else (PatternGenV2.generate(bm, gen_opts) if v2 else PatternGen.generate(bm, gen_opts))
 	gen = Mods.apply(gen, _mods)   # MOD を掛け、その弾幕で難易度(Lv)を測り直す
 	_rate = _mods.rate
-	_hp_w = HP_W * clampf(_mods.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.0)   # 体力が少ない MOD ほどバーが短い(地獄: 150ms ÷ 250ms = 0.6 倍)
+	_hp_w = HP_W * clampf(_mods.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.2)   # 体力が少ない MOD ほどバーが短い(地獄: 150ms ÷ 250ms = 0.6 倍)
 	_audio.pitch_scale = _rate
 	sim = GameSim.new()
 	_end_time = bm.last_time() / 1000.0 / _rate + 2.0   # 再生速度が上がると、曲は短くなる

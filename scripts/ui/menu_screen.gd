@@ -696,7 +696,7 @@ static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	var image: Image = l.load_image_data(first.background) if first.background != "" else null
 	if image != null and image.get_width() > 1280:   # 背景は 1280×720 の画面に出すだけ。大きい画像は、ここ(別スレッド)で縮めて、テクスチャにする負担を減らす
 		image.resize(1280, maxi(int(round(1280.0 * image.get_height() / image.get_width())), 1), Image.INTERPOLATE_BILINEAR)
-	# DDA 難易度(画面内の弾数。MOD なしの状態)の低い順に並べ替える
+	# DDA 難易度(Lv。MOD なしの状態)の低い順に並べ替える
 	# 弾幕の生成が読み込みの大半(1 難易度で 20〜200 ms)。一度作った曲は覚えておき(直近 GEN_CACHE_MAX 曲)、次からは作らない。
 	# 作るときは、難易度どうしが独立なので並列に作る(generate は共有の状態を持たない)。MOD の適用は別(下の ratings)なので、MOD を変えても使える
 	var diffs: Array = l.difficulties
@@ -719,7 +719,8 @@ static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
 		var pairs: Array = []
 		for i in range(diffs.size()):
 			pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
-		pairs.sort_custom(func(a, b): return a.g.rating.score < b.g.rating.score)
+		# 並びは表示する Lv の低い順(同じなら本家★)。生の密度(rating.score)では、弾速が AR で変わる弾幕 v2 で Lv と順が食い違う
+		pairs.sort_custom(func(a, b): return a.g.level < b.g.level if not is_equal_approx(a.g.level, b.g.level) else a.g.stars < b.g.stars)
 		l.difficulties = pairs.map(func(q): return q.bm)
 		gens = pairs.map(func(q): return q.g)
 		_gen_cache_put(key, pairs.map(func(q): return q.i), gens)

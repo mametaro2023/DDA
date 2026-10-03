@@ -7,6 +7,7 @@ extends SceneTree
 ##   ・MOD の配線、ゲーム(GameSim)で最後まで進められること
 ## godot --headless --path . --script tests/test_pattern_v2.gd [-- sets]   (sets を付けると、全難易度の一覧を出す)
 
+const Beatmap = preload("res://scripts/osu/beatmap.gd")
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
@@ -33,9 +34,11 @@ func _init() -> void:
 	_verbose = verbose
 	_test_behaviors()
 	_test_measure_estimates()
+	_test_ar_speed()
 	_test_mods()
 	var picks := _test_generation(verbose)
 	_test_diversity(picks)
+	_test_ar_independent(picks)
 	_test_mod_apply(picks)
 	_test_sizes()
 	_print_normal_reference()
@@ -180,6 +183,61 @@ func _test_measure_estimates() -> void:
 
 # --- MOD ---
 
+func _test_ar_speed() -> void:
+	var f := PatternGenV2.ar_speed_mul
+	_check(is_equal_approx(f.call(8.0), 1.0), "AR 8 の弾速は基準のまま (%.3f)" % f.call(8.0))
+	# 表(AR → アプローチ時間 ms)に反比例: 弾速の倍率 = 750 / ms
+	var table := {0: 1800.0, 1: 1680.0, 2: 1560.0, 3: 1440.0, 4: 1320.0, 5: 1200.0, 6: 1050.0, 7: 900.0, 8: 750.0, 9: 600.0, 10: 450.0}
+	for ar in table:
+		_check(is_equal_approx(f.call(float(ar)), 750.0 / float(table[ar])), "AR %d の倍率 %.3f が 750/%d に合う" % [ar, f.call(float(ar)), int(table[ar])])
+	var bm0 := Beatmap.new()
+	for ar in [0.0, 3.5, 5.0, 7.2, 10.0]:
+		bm0.ar = ar
+		_check(is_equal_approx(f.call(ar), 750.0 / bm0.preempt_ms()), "AR %.1f: Beatmap.preempt_ms と同じ式" % ar)
+	var prev := 0.0
+	var mono := true
+	for i in range(0, 101):
+		var v: float = f.call(float(i) / 10.0)
+		mono = mono and v > prev
+		prev = v
+	_check(mono, "AR が大きいほど弾速が上がる(単調増加)")
+	_check(is_equal_approx(f.call(-3.0), f.call(0.0)) and is_equal_approx(f.call(12.0), f.call(10.0)), "範囲外の AR は端に止める")
+
+
+## AR は Lv に入れない: 同じ譜面で AR だけ変えると、弾速は AR に比例して変わるが、Lv と画面内の弾数はほぼ同じで、発射する弾の数が AR に比例して増える。
+## MOD の弾速の倍率は、AR の弾速に対する比として Lv に効く。
+func _test_ar_independent(picks: Array) -> void:
+	if picks.is_empty():
+		return
+	var bm = picks[0].bm
+	var ar0: float = bm.ar
+	var res := {}
+	for ar in [2.0, 8.0, 10.0]:
+		bm.ar = ar
+		var g := PatternGenV2.generate(bm)
+		var shots := 0.0
+		for e in g.events:
+			for s in e.shots:
+				shots += float(s.n)
+		res[ar] = {"g": g, "shots": shots}
+	bm.ar = ar0
+	var lo: Dictionary = res[2.0]
+	var mid: Dictionary = res[8.0]
+	var hi: Dictionary = res[10.0]
+	_check(is_equal_approx(mid.g.speed, PatternGen.BASE_SPEED) and mid.g.speed_ref == mid.g.speed, "AR 8 の弾速は基準のまま・基準(speed_ref)と同じ")
+	_check(is_equal_approx(hi.g.speed / lo.g.speed, PatternGenV2.ar_speed_mul(10.0) / PatternGenV2.ar_speed_mul(2.0)), "AR だけ変えると弾速は倍率どおりに変わる")
+	for k in [lo, hi]:
+		_check(absf(float(k.g.level) - float(mid.g.level)) < 0.25, "AR を変えても Lv は同じ (%.2f / %.2f)" % [k.g.level, mid.g.level])
+		_check(absf(float(k.g.rating.mean) / float(mid.g.rating.mean) - 1.0) < 0.15, "AR を変えても画面内の弾数(平均)はほぼ同じ (%.0f / %.0f)" % [k.g.rating.mean, mid.g.rating.mean])
+	_check(hi.shots > mid.shots * 1.2 and mid.shots > lo.shots * 1.5, "速い弾ほど、同じ弾数を保つために発射する数が多い (AR 2/8/10: %.0f / %.0f / %.0f)" % [lo.shots, mid.shots, hi.shots])
+	# MOD の弾速の倍率は、AR の弾速に対する比で Lv に効く(AR が違っても同じだけ上がる)
+	var up_lo: float = Mods.apply(lo.g, Mods.params(["storm"])).level - float(lo.g.level)
+	var up_hi: float = Mods.apply(hi.g, Mods.params(["storm"])).level - float(hi.g.level)
+	_check(up_lo > 0.3 and up_hi > 0.3, "AR が低くても高くても、暴風雨で Lv が上がる (+%.2f / +%.2f)" % [up_lo, up_hi])
+	print("AR と弾幕(同じ譜面で AR だけ変更): AR 2 → 弾速 %.0f / Lv %.2f / 平均 %.0f 発 / 発射 %.0f、AR 8 → %.0f / %.2f / %.0f / %.0f、AR 10 → %.0f / %.2f / %.0f / %.0f" % [
+		lo.g.speed, lo.g.level, lo.g.rating.mean, lo.shots, mid.g.speed, mid.g.level, mid.g.rating.mean, mid.shots, hi.g.speed, hi.g.level, hi.g.rating.mean, hi.shots])
+
+
 func _test_mods() -> void:
 	var m := Mods.find("v2")
 	_check(not m.is_empty(), "MOD v2 が登録されている")
@@ -288,6 +346,7 @@ func _test_generation(verbose: bool) -> Array:
 	var ms_v1 := 0.0
 	var ms_v2 := 0.0
 	var worst_dev := 0.0
+	var n_raised := 0
 	var motif_total := PackedInt32Array()
 	motif_total.resize(PatternGenV2.MOTIF_N)
 	for f in files:
@@ -310,9 +369,18 @@ func _test_generation(verbose: bool) -> Array:
 			var g3 := PatternGenV2.generate(bm)
 			_check(str(g2.events).hash() == str(g3.events).hash() and is_equal_approx(g2.level, g3.level), label + ": v2 の生成が決定的でない")
 			_check(g2.style == "v2" and g1.style == "v1", label + ": style")
+			# 弾速: v2 は AR で決まる(AR 5 で基準の弾速)。v1 は★に応じた ±15% のまま
+			# (低 ★ × 低 AR で、弾数を最小にしても Lv が目標に下がりきらないときだけ、AR の弾速から上がる。上限は基準の弾速)
+			var ar_spd: float = PatternGen.BASE_SPEED * PatternGenV2.ar_speed_mul(bm.ar)
+			if is_equal_approx(g2.speed, ar_spd):
+				pass
+			else:
+				n_raised += 1
+				_check(g2.speed > ar_spd and g2.speed <= PatternGen.BASE_SPEED + 0.001, "%s: v2 の弾速 %.1f は AR %.1f の弾速 %.1f から上がる場合も、基準以下" % [label, g2.speed, bm.ar, ar_spd])
+			_check(absf(g1.speed / PatternGen.BASE_SPEED - 1.0) <= PatternGen.SPEED_VAR + 0.0001, "%s: v1 の弾速 %.1f は★に応じた範囲のまま" % [label, g1.speed])
 			# Lv(長さ補正なし)が目標に合う(v1 と同じ許容 8%)。弾数の下限/上限で合わせきれない譜面は、弾サイズで吸収される
 			var m: Dictionary = g2.rating
-			var dens_lv: float = PatternGen.level_of(m.score, g2.speed, g2.size)
+			var dens_lv: float = PatternGen.level_of(m.score, g2.speed, g2.size, PatternGen.PLAYER_HIT_R, PatternGen.LENGTH_REF, g2.speed_ref)
 			var dev := absf(dens_lv - g2.target_level) / maxf(g2.target_level, 0.01)
 			worst_dev = maxf(worst_dev, dev)
 			_check(dev <= 0.08, "%s: v2 の Lv(長さ補正なし) %.2f が目標 %.2f から 8%% 以上ずれている" % [label, dens_lv, g2.target_level])
@@ -331,6 +399,7 @@ func _test_generation(verbose: bool) -> Array:
 		if best != null:
 			picks.append(best)
 	print("生成 %d 譜面: 1 譜面あたり v1 %.0f ms / v2 %.0f ms / v2 の目標からの最大のずれ %.1f%%" % [n_gen, ms_v1 / maxf(n_gen, 1), ms_v2 / maxf(n_gen, 1), worst_dev * 100.0])
+	print("弾速が AR の値から上がった譜面: %d / %d" % [n_raised, n_gen])
 	var hist := ""
 	for i in range(PatternGenV2.MOTIF_N):
 		hist += "%s:%d " % [PatternGenV2.MOTIF_NAMES[i], motif_total[i]]

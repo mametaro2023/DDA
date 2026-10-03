@@ -204,5 +204,5 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 	out.rating = rating
 	out.speed = speed
 	out.size = size
-	out.level = PatternGen.level_of(rating.score, speed, size, PatternGen.PLAYER_HIT_R * float(p.player_scale), rating.duration)
+	out.level = PatternGen.level_of(rating.score, speed, size, PatternGen.PLAYER_HIT_R * float(p.player_scale), rating.duration, float(gen.get("speed_ref", PatternGen.BASE_SPEED)))
 	return out

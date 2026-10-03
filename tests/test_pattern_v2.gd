@@ -35,6 +35,7 @@ func _init() -> void:
 	_test_behaviors()
 	_test_measure_estimates()
 	_test_ar_speed()
+	_test_star_scaling()
 	_test_mods()
 	var picks := _test_generation(verbose)
 	_test_diversity(picks)
@@ -186,12 +187,20 @@ func _test_measure_estimates() -> void:
 func _test_ar_speed() -> void:
 	var f := PatternGenV2.ar_speed_mul
 	_check(is_equal_approx(f.call(8.0), 1.0), "AR 8 の弾速は基準のまま (%.3f)" % f.call(8.0))
-	# 表(AR → アプローチ時間 ms)に反比例: 弾速の倍率 = 750 / ms
-	var table := {0: 1800.0, 1: 1680.0, 2: 1560.0, 3: 1440.0, 4: 1320.0, 5: 1200.0, 6: 1050.0, 7: 900.0, 8: 750.0, 9: 600.0, 10: 450.0}
+	# AR 8 以下は、表(AR → アプローチ時間 ms)に反比例: 弾速の倍率 = 750 / ms
+	var table := {0: 1800.0, 1: 1680.0, 2: 1560.0, 3: 1440.0, 4: 1320.0, 5: 1200.0, 6: 1050.0, 7: 900.0, 8: 750.0}
 	for ar in table:
 		_check(is_equal_approx(f.call(float(ar)), 750.0 / float(table[ar])), "AR %d の倍率 %.3f が 750/%d に合う" % [ar, f.call(float(ar)), int(table[ar])])
+	# AR 8 より上は、アプローチ時間どおりより遅く、上がり方がだんだん小さくなり、頭打ち(1 + AR_FAST_SOFT)
+	var step_a: float = f.call(8.5) - f.call(8.0)
+	var step_b: float = f.call(9.0) - f.call(8.5)
+	var step_c: float = f.call(9.5) - f.call(9.0)
+	var step_d: float = f.call(10.0) - f.call(9.5)
+	_check(f.call(9.0) < 750.0 / 600.0 and f.call(10.0) < 750.0 / 450.0 and f.call(10.0) < 1.0 + PatternGenV2.AR_FAST_SOFT, "高 AR は、アプローチ時間どおりより遅い(AR 9: %.3f・AR 10: %.3f。上限 %.2f)" % [f.call(9.0), f.call(10.0), 1.0 + PatternGenV2.AR_FAST_SOFT])
+	_check(step_a > step_b and step_b > step_c and step_c > step_d and step_d > 0.0, "高 AR ほど、弾速の上がり方が小さい(0.5 刻みで +%.3f → +%.3f → +%.3f → +%.3f)" % [step_a, step_b, step_c, step_d])
+	_check(f.call(10.0) * PatternGen.BASE_SPEED < 200.0, "AR 10 でも弾速は 200 px/s 未満(%.0f px/s)" % (f.call(10.0) * PatternGen.BASE_SPEED))
 	var bm0 := Beatmap.new()
-	for ar in [0.0, 3.5, 5.0, 7.2, 10.0]:
+	for ar in [0.0, 3.5, 5.0, 7.2]:
 		bm0.ar = ar
 		_check(is_equal_approx(f.call(ar), 750.0 / bm0.preempt_ms()), "AR %.1f: Beatmap.preempt_ms と同じ式" % ar)
 	var prev := 0.0
@@ -204,8 +213,8 @@ func _test_ar_speed() -> void:
 	_check(is_equal_approx(f.call(-3.0), f.call(0.0)) and is_equal_approx(f.call(12.0), f.call(10.0)), "範囲外の AR は端に止める")
 
 
-## AR は Lv に入れない: 同じ譜面で AR だけ変えると、弾速は AR に比例して変わるが、Lv と画面内の弾数はほぼ同じで、発射する弾の数が AR に比例して増える。
-## MOD の弾速の倍率は、AR の弾速に対する比として Lv に効く。
+## 弾速は Lv に入る(速いほど難しい): 同じ譜面で AR だけ変えると、弾速は AR で変わる。Lv は★の目標のままになるよう、速いほど画面内の弾数は少なく、遅いほど多くなる。
+## MOD の弾速の倍率は、基準の弾速(BASE_SPEED)に対する比として Lv に効く(v1 と同じ)。
 func _test_ar_independent(picks: Array) -> void:
 	if picks.is_empty():
 		return
@@ -224,18 +233,65 @@ func _test_ar_independent(picks: Array) -> void:
 	var lo: Dictionary = res[2.0]
 	var mid: Dictionary = res[8.0]
 	var hi: Dictionary = res[10.0]
-	_check(is_equal_approx(mid.g.speed, PatternGen.BASE_SPEED) and mid.g.speed_ref == mid.g.speed, "AR 8 の弾速は基準のまま・基準(speed_ref)と同じ")
-	_check(is_equal_approx(hi.g.speed / lo.g.speed, PatternGenV2.ar_speed_mul(10.0) / PatternGenV2.ar_speed_mul(2.0)), "AR だけ変えると弾速は倍率どおりに変わる")
+	_check(is_equal_approx(mid.g.speed, PatternGen.BASE_SPEED * PatternGenV2.star_speed_mul(mid.g.stars)) and is_equal_approx(float(mid.g.speed_ref), PatternGen.BASE_SPEED), "AR 8 の弾速は、基準 × ★の倍率・Lv の弾速の基準(speed_ref)は基準の弾速")
+	_check(is_equal_approx(hi.g.speed / lo.g.speed, PatternGenV2.ar_speed_mul(10.0) / PatternGenV2.ar_speed_mul(2.0)), "AR だけ変えると弾速は倍率どおりに変わる(★の倍率は同じ)")
 	for k in [lo, hi]:
 		_check(absf(float(k.g.level) - float(mid.g.level)) < 0.25, "AR を変えても Lv は同じ (%.2f / %.2f)" % [k.g.level, mid.g.level])
-		_check(absf(float(k.g.rating.mean) / float(mid.g.rating.mean) - 1.0) < 0.15, "AR を変えても画面内の弾数(平均)はほぼ同じ (%.0f / %.0f)" % [k.g.rating.mean, mid.g.rating.mean])
-	_check(hi.shots > mid.shots * 1.2 and mid.shots > lo.shots * 1.5, "速い弾ほど、同じ弾数を保つために発射する数が多い (AR 2/8/10: %.0f / %.0f / %.0f)" % [lo.shots, mid.shots, hi.shots])
-	# MOD の弾速の倍率は、AR の弾速に対する比で Lv に効く(AR が違っても同じだけ上がる)
+	_check(lo.g.rating.mean > mid.g.rating.mean * 1.1 and mid.g.rating.mean > hi.g.rating.mean * 1.05, "速い弾ほど、同じ Lv に必要な画面内の弾数は少ない(速いほど難しい。AR 2/8/10 の平均: %.0f / %.0f / %.0f)" % [lo.g.rating.mean, mid.g.rating.mean, hi.g.rating.mean])
+	_check(lo.shots > mid.shots and mid.shots > hi.shots, "発射する数も、速いほど少ない (AR 2/8/10: %.0f / %.0f / %.0f)" % [lo.shots, mid.shots, hi.shots])
+	# MOD の弾速の倍率は、基準の弾速に対する比で Lv に効く
 	var up_lo: float = Mods.apply(lo.g, Mods.params(["storm"])).level - float(lo.g.level)
 	var up_hi: float = Mods.apply(hi.g, Mods.params(["storm"])).level - float(hi.g.level)
 	_check(up_lo > 0.3 and up_hi > 0.3, "AR が低くても高くても、暴風雨で Lv が上がる (+%.2f / +%.2f)" % [up_lo, up_hi])
 	print("AR と弾幕(同じ譜面で AR だけ変更): AR 2 → 弾速 %.0f / Lv %.2f / 平均 %.0f 発 / 発射 %.0f、AR 8 → %.0f / %.2f / %.0f / %.0f、AR 10 → %.0f / %.2f / %.0f / %.0f" % [
 		lo.g.speed, lo.g.level, lo.g.rating.mean, lo.shots, mid.g.speed, mid.g.level, mid.g.rating.mean, mid.shots, hi.g.speed, hi.g.level, hi.g.rating.mean, hi.shots])
+
+
+## ★で変える弾速(STAR_SPEED_*)と、v2 用の表(TARGET_TABLE_V2): 高★ほど弾速が上がり、★ 1 あたりの弾数が v1 より多い。
+func _test_star_scaling() -> void:
+	var s := PatternGenV2.star_speed_mul
+	_check(is_equal_approx(s.call(2.0), PatternGenV2.STAR_SPEED_LO) and is_equal_approx(s.call(4.0), PatternGenV2.STAR_SPEED_LO) and is_equal_approx(s.call(8.0), PatternGenV2.STAR_SPEED_HI) and is_equal_approx(s.call(10.0), PatternGenV2.STAR_SPEED_HI), "★の弾速の倍率: ★4 以下 %.2f・★8 以上 %.2f" % [PatternGenV2.STAR_SPEED_LO, PatternGenV2.STAR_SPEED_HI])
+	var mono := true
+	for i in range(1, 41):
+		mono = mono and s.call(4.0 + float(i) * 0.1) >= s.call(4.0 + float(i - 1) * 0.1)
+	_check(mono and s.call(6.0) > s.call(5.0), "高★ほど、弾速の倍率が大きい")
+	# v2 の表: ★(表の 5.9 = 譜面の約 4.9)までは v1 と同じ。それより上は、v1 より多く、傾きも急
+	var t1 := PatternGen.TARGET_TABLE
+	var t2 := PatternGen.TARGET_TABLE_V2
+	var same := true
+	for r in t1:
+		if r[0] <= 5.9 and PatternGen.target_score_for(float(r[0]), t2) != float(r[1]):
+			same = false
+	_check(same, "v2 の表は、表の ★5.9 以下では v1 と同じ")
+	_check(PatternGen.target_score_for(6.7, t2) > PatternGen.target_score_for(6.7, t1) + 20.0 and PatternGen.target_score_for(9.27, t2) > PatternGen.target_score_for(9.27, t1) * 1.4, "v2 の表の高★は、v1 より弾数が多い (★7.7 相当 %.0f / %.0f・★8.3 相当 %.0f / %.0f)" % [PatternGen.target_score_for(8.7, t2), PatternGen.target_score_for(8.7, t1), PatternGen.target_score_for(9.27, t2), PatternGen.target_score_for(9.27, t1)])
+	var inv := true
+	for st in [1.0, 3.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.5, 11.0]:
+		if absf(PatternGen.stars_for_score(PatternGen.target_score_for(st, t2), t2) - st) > 0.02:
+			inv = false
+	_check(inv, "v2 の表で、target_score_for と stars_for_score が互いに逆")
+	# 実際の譜面: ★5 と ★7 以上で、弾数・弾速の差が v1 より広がる
+	var easy = null
+	var hard = null
+	var o := OszLoader.new()
+	if o.open(DIR + "320118 Reol - No title.osz"):
+		for bm in o.difficulties:
+			if bm.version == "Insane":
+				easy = bm
+	var o2 := OszLoader.new()
+	if o2.open(DIR + "813569 Laur - Sound Chimera.osz"):
+		for bm in o2.difficulties:
+			if bm.version == "Chimera":
+				hard = bm
+	if easy != null and hard != null:
+		var e2 := PatternGenV2.generate(easy)
+		var h2 := PatternGenV2.generate(hard)
+		var e1 := PatternGen.generate(easy)
+		var h1 := PatternGen.generate(hard)
+		var r2: float = float(h2.rating.mean) / float(e2.rating.mean)
+		var r1: float = float(h1.rating.mean) / float(e1.rating.mean)
+		_check(r2 > r1 * 1.1 and r2 > 1.6, "★5 → ★8 の画面内の弾数の比: v2 %.2f 倍 > v1 %.2f 倍" % [r2, r1])
+		_check(float(h2.speed) / float(e2.speed) > 1.1, "★5 → ★8 の弾速の比 %.2f 倍(%.0f → %.0f px/s)" % [float(h2.speed) / float(e2.speed), e2.speed, h2.speed])
+		_check(float(h2.speed) < PatternGen.BASE_SPEED * PatternGenV2.ar_speed_mul(10.0) * 1.2 and float(h2.speed) < 230.0, "高★でも弾速は 230 px/s 未満(%.0f px/s)" % h2.speed)
 
 
 func _test_mods() -> void:
@@ -371,7 +427,7 @@ func _test_generation(verbose: bool) -> Array:
 			_check(g2.style == "v2" and g1.style == "v1", label + ": style")
 			# 弾速: v2 は AR で決まる(AR 5 で基準の弾速)。v1 は★に応じた ±15% のまま
 			# (低 ★ × 低 AR で、弾数を最小にしても Lv が目標に下がりきらないときだけ、AR の弾速から上がる。上限は基準の弾速)
-			var ar_spd: float = PatternGen.BASE_SPEED * PatternGenV2.ar_speed_mul(bm.ar)
+			var ar_spd: float = PatternGen.BASE_SPEED * PatternGenV2.ar_speed_mul(bm.ar) * PatternGenV2.star_speed_mul(g2.stars)
 			if is_equal_approx(g2.speed, ar_spd):
 				pass
 			else:
@@ -380,7 +436,7 @@ func _test_generation(verbose: bool) -> Array:
 			_check(absf(g1.speed / PatternGen.BASE_SPEED - 1.0) <= PatternGen.SPEED_VAR + 0.0001, "%s: v1 の弾速 %.1f は★に応じた範囲のまま" % [label, g1.speed])
 			# Lv(長さ補正なし)が目標に合う(v1 と同じ許容 8%)。弾数の下限/上限で合わせきれない譜面は、弾サイズで吸収される
 			var m: Dictionary = g2.rating
-			var dens_lv: float = PatternGen.level_of(m.score, g2.speed, g2.size, PatternGen.PLAYER_HIT_R, PatternGen.LENGTH_REF, g2.speed_ref)
+			var dens_lv: float = PatternGen.level_of(m.score, g2.speed, g2.size, PatternGen.PLAYER_HIT_R, PatternGen.LENGTH_REF, g2.speed_ref, g2.table)
 			var dev := absf(dens_lv - g2.target_level) / maxf(g2.target_level, 0.01)
 			worst_dev = maxf(worst_dev, dev)
 			_check(dev <= 0.08, "%s: v2 の Lv(長さ補正なし) %.2f が目標 %.2f から 8%% 以上ずれている" % [label, dens_lv, g2.target_level])

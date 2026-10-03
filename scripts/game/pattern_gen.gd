@@ -96,6 +96,13 @@ const TARGET_TABLE := [
 	[1.0, 8.0], [1.5, 12.0], [2.1, 28.0], [2.5, 40.0], [3.7, 80.0],
 	[4.4, 105.0], [5.2, 135.0], [5.9, 165.0], [6.7, 200.0],
 ]
+## 弾幕 v2 の表。★5.9 までは v1 と同じで、それより上(Lv に直すと約 ★5 以上)は、★ 1 あたりに必要な弾数を約 2 倍にしている(表の外は、最後の傾きで延ばす)。
+## v1 の表では、★5 から ★7〜8 で画面内の弾数が約 1.5 倍にしか増えず、数字ほど難しさに差が出なかったため、高★でより多くの弾を出す。
+## 表は「★ + LEVEL_SHIFT」で引くので、表の 5.9 は譜面の★約 4.9、6.7 は約 5.7、8.3 は約 7.3 に当たる。
+const TARGET_TABLE_V2 := [
+	[1.0, 8.0], [1.5, 12.0], [2.1, 28.0], [2.5, 40.0], [3.7, 80.0],
+	[4.4, 105.0], [5.2, 135.0], [5.9, 165.0], [6.7, 235.0], [7.5, 310.0], [8.3, 390.0], [9.1, 475.0], [10.0, 580.0],
+]
 
 ## 弾数の規則: 局所ノーツ密度 r(前後 RATE_WINDOW 秒のオブジェクト数 / 窓幅, 個/秒)に比例して増やす。
 ##   リングの方向数 = round(2 * mul * (RING_A + RING_B * r + RING_C * r^2))    (3..44)
@@ -128,8 +135,9 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	var speed_ref := float(opts.get("speed_ref", BASE_SPEED))
 	var size := base_size(k) * float(opts.get("size_mul", 1.0))
 	# 目標の adj(弾速・弾サイズの補正後スコア)。density_mul が 1 なら目標 Lv = 推定★
-	var target_adj := target_score_for(stars + LEVEL_SHIFT) * float(opts.get("density_mul", 1.0))
-	var target_level := maxf(stars_for_score(target_adj) - LEVEL_SHIFT, 0.0)
+	var tbl: Array = opts.get("table", TARGET_TABLE)   # ★ ⇔ 弾数の表(v1 = TARGET_TABLE / 弾幕 v2 = TARGET_TABLE_V2)
+	var target_adj := target_score_for(stars + LEVEL_SHIFT, tbl) * float(opts.get("density_mul", 1.0))
+	var target_level := maxf(stars_for_score(target_adj, tbl) - LEVEL_SHIFT, 0.0)
 	var br: Array = []   # 休憩地帯 [始まり, 終わり](秒)。長さの補正は、休憩を除いた時間で測る
 	for b in bm.breaks:
 		br.append([b[0] / 1000.0, b[1] / 1000.0])
@@ -158,7 +166,8 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	out["size_weight"] = weighted   # Mods.apply が、測り直すときに同じ数え方をする
 	out["rating"] = rating
 	out["breaks"] = br
-	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration, speed_ref)
+	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration, speed_ref, tbl)
+	out["table"] = tbl   # Mods.apply が、測り直すときに同じ表で Lv にする
 	out["speed"] = speed
 	out["speed_ref"] = speed_ref   # Mods.apply が、測り直すときに同じ基準で補正する
 	out["size"] = size
@@ -209,13 +218,12 @@ static func length_factor(duration: float) -> float:
 
 
 ## Lv(本家の星と同じ目盛り)= adj(× 長さの補正)を TARGET_TABLE で逆引きした★換算値から、LEVEL_SHIFT を引いたもの。
-static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF, speed_ref := BASE_SPEED) -> float:
-	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r, speed_ref) *length_factor(duration)) - LEVEL_SHIFT, 0.0)
+static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF, speed_ref := BASE_SPEED, tbl: Array = TARGET_TABLE) -> float:
+	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r, speed_ref) * length_factor(duration), tbl) - LEVEL_SHIFT, 0.0)
 
 
 ## TARGET_TABLE(★→スコア)の逆引き。表の外は端の傾きで延長する(下側は原点へ向かう)。
-static func stars_for_score(s: float) -> float:
-	var tbl := TARGET_TABLE
+static func stars_for_score(s: float, tbl: Array = TARGET_TABLE) -> float:
 	if s <= tbl[0][1]:
 		return tbl[0][0] * maxf(s, 0.0) / tbl[0][1]
 	for i in range(1, tbl.size()):
@@ -236,8 +244,7 @@ static func reference_stars(bm: Beatmap) -> float:
 
 
 ## 星 → 目標の難易度スコア(TARGET_TABLE を線形補間。表の外側は端の傾きで延長する)。
-static func target_score_for(stars: float) -> float:
-	var tbl := TARGET_TABLE
+static func target_score_for(stars: float, tbl: Array = TARGET_TABLE) -> float:
 	if stars <= tbl[0][0]:
 		return tbl[0][1]
 	for i in range(1, tbl.size()):

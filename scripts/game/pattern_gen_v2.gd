@@ -44,10 +44,18 @@ const WALL_HALF := 320.0        # 列の幅の半分(隙間の中心から。盤
 const WALL_SPEED := 0.75        # 列の弾速(基準の弾速に対する倍率)
 
 # 弾速は譜面の AR で決める(AR が大きいほど速い。v1 は★に応じた ±15%)。osu! のアプローチ時間(AR 0 = 1800ms … AR 5 = 1200ms … AR 10 = 450ms。
-# Beatmap.preempt_ms と同じ式)に反比例させ、AR 8(750ms)を等倍(×1.0)とする: AR 0 で ×0.42、AR 5 で ×0.63、AR 10 で ×1.67。
-# 速いほど同じ Lv に必要な弾数は減るので、弾数は PatternGen.generate が自動で合わせる(Lv は★のまま)
+# Beatmap.preempt_ms と同じ式)に反比例させ、AR 8(750ms)を等倍(×1.0)とする: AR 0 で ×0.42、AR 5 で ×0.63。
+# AR 8 より上は、アプローチ時間どおりに速くすると速すぎる(AR 10 で ×1.67 = 250 px/s)ので、上がり方をだんだん小さくして頭打ちにする(AR_FAST_SOFT。AR 9 で ×1.17、AR 10 で ×1.27、上限 ×1.3)。
+# 弾速は Lv に入る(速いほど難しい。PatternGen.SPEED_EXP)ので、速いほど同じ Lv に必要な弾数は減る。弾数は PatternGen.generate が自動で合わせる(Lv は★のまま)
 const AR_REF := 8.0             # 弾速が等倍になる AR
 const AR_REF_MS := 750.0        # その AR のアプローチ時間(ms)
+const AR_FAST_SOFT := 0.3       # 等倍より速い側の頭打ちの度合い(上限は 1 + この値)。小さいほど、高 AR の弾速が抑えられる
+# 弾速は、AR のほかに、★でも変える(高★ほど速く、低★ほど遅く): 手元の譜面では、★5 と ★7〜8 の AR の弾速がほとんど同じ(AR 9 と 9.5〜9.8。上の頭打ちで +7%)で、
+# 弾速の面で差が出ていなかった。★4 以下は ×0.92、★8 以上は ×1.12(間は直線)。AR の倍率に掛ける: ★5 で約 170 px/s、★7.3 で約 200 px/s、★8.3 で約 210 px/s(最高でも AR 10 の反比例(250 px/s)より遅い)。
+const STAR_SPEED_LO := 0.92
+const STAR_SPEED_HI := 1.12
+const STAR_SPEED_FROM := 4.0
+const STAR_SPEED_TO := 8.0
 const SPEED_FIT_TOL := 0.06     # Lv(長さ補正なし)が目標をこれ以上超えたら、弾速を上げて作り直す
 const SPEED_FIT_TRIES := 5
 
@@ -67,23 +75,25 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	o["gen_fn"] = _generate.bind(prof, asg)
 	o["style"] = "v2"
 	var adaptive := not o.has("speed_k")   # 弾速を指定されたとき(調整・テスト)は、そのまま使う
-	var sk: float = float(o.speed_k) if not adaptive else ar_speed_mul(bm.ar)
+	var stars := PatternGen.reference_stars(bm)
+	var sk: float = float(o.speed_k) if not adaptive else ar_speed_mul(bm.ar) * star_speed_mul(stars)
+	o["table"] = PatternGen.TARGET_TABLE_V2   # ★ ⇔ 弾数の表は、v2 用(高★で、より多くの弾を出す)
 	o["size_mul"] = float(opts.get("size_mul", 1.0)) * V2_SIZE_MUL
 	o["size_weight"] = true   # 弾ごとの大きさ(3 段階)を Lv に入れる
 	var out := {}
 	for i in range(SPEED_FIT_TRIES + 1):
-		o["speed_k"] = sk
-		o["speed_ref"] = PatternGen.BASE_SPEED * sk   # Lv は AR の弾速を基準にする(AR の違いは Lv に入れない。MOD の弾速の倍率だけが効く)
+		o["speed_k"] = sk   # Lv の弾速補正は、v1 と同じく基準の弾速(BASE_SPEED)に対する比(弾速は Lv に効く: 速いほど難しい)
 		out = PatternGen.generate(bm, o)
 		if not adaptive or sk >= 1.0:
 			break
 		# 遅い弾は画面に長く残るので、弾数を最小まで減らしても Lv(= 画面内の弾数)が★の目標に下がりきらない譜面がある(低 ★ × 低 AR)。
 		# そのときだけ、目標に届くまで弾速を AR の値から上げる(Lv が★に合うことを優先する。ほとんどの譜面は AR のまま)
-		var dev: float = float(PatternGen.level_of(out.rating.score, out.speed, out.size, PatternGen.PLAYER_HIT_R, PatternGen.LENGTH_REF, out.speed_ref)) / maxf(float(out.target_level), 0.01) - 1.0
+		var dev: float = float(PatternGen.level_of(out.rating.score, out.speed, out.size, PatternGen.PLAYER_HIT_R, PatternGen.LENGTH_REF, out.speed_ref, out.table)) / maxf(float(out.target_level), 0.01) - 1.0
 		if dev <= SPEED_FIT_TOL:
 			break
 		sk = minf(sk * maxf(pow(1.0 + dev, 1.5), 1.05), 1.0)
 	out["ar_speed_mul"] = ar_speed_mul(bm.ar)   # AR だけで決まる倍率(sk が上がっていれば、speed はこれより速い)
+	out["star_speed_mul"] = star_speed_mul(stars)   # ★で決まる倍率(AR の倍率に掛ける)
 	var secs: Array = []
 	for j in range(prof.sections.size()):
 		secs.append({"t0": prof.sections[j].t0, "t1": prof.sections[j].t1, "motif": asg.motifs[j]})
@@ -97,11 +107,20 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	return out
 
 
-## 譜面の AR → 基準の弾速に掛ける倍率(AR 8 で 1.0。アプローチ時間に反比例。範囲外の AR は 0〜10 に止める)。
+## ★ → 基準の弾速に掛ける倍率(STAR_SPEED_*。★4 以下 0.92 … ★8 以上 1.12)。
+static func star_speed_mul(stars: float) -> float:
+	return lerpf(STAR_SPEED_LO, STAR_SPEED_HI, clampf((stars - STAR_SPEED_FROM) / (STAR_SPEED_TO - STAR_SPEED_FROM), 0.0, 1.0))
+
+
+## 譜面の AR → 基準の弾速に掛ける倍率(AR 8 で 1.0。AR 8 以下はアプローチ時間に反比例。AR 8 より上は、上がり方がだんだん小さくなって、1 + AR_FAST_SOFT で頭打ち。
+## 範囲外の AR は 0〜10 に止める)。
 static func ar_speed_mul(ar: float) -> float:
 	var a := clampf(ar, 0.0, 10.0)
 	var ms := 1200.0 + 600.0 * (5.0 - a) / 5.0 if a < 5.0 else 1200.0 - 750.0 * (a - 5.0) / 5.0
-	return AR_REF_MS / ms
+	var v := AR_REF_MS / ms
+	if v > 1.0:   # 速い側: 傾きは AR 8 でアプローチ時間どおり(1)で、速くなるほど小さくなる
+		v = 1.0 + AR_FAST_SOFT * (1.0 - exp(-(v - 1.0) / AR_FAST_SOFT))
+	return v
 
 
 ## 区間ごとのモチーフの割り当て。{motifs: [区間ごとの M_*], signature: 看板の M_*}

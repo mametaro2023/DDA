@@ -157,6 +157,8 @@ func _show(i: int) -> void:
 			UiStyle.slide_page(_pages[i], 30.0 * dir)
 		var j := 0
 		for c in _pages[i].get_children():
+			if not c is CanvasItem:
+				continue
 			UiStyle.tween(c, "modulate:a", 0.0, 1.0, 0.3, 0.03 * j)
 			j += 1
 	_move_nav_indicator(prev < 0)
@@ -463,7 +465,7 @@ func _build_songs() -> Control:
 	dialog.dir_selected.connect(func(d: String):
 		settings.osu_songs_dir = d.replace("\\", "/")
 		apply.call())
-	box.add_child(dialog)
+	add_child(dialog)   # ページの中には入れない(ページを開く動きは、中の子すべてに透明度の動きをつけるため、画面の部品でないものがあると壊れる)
 	choose.pressed.connect(func(): dialog.popup_centered_ratio(0.7))
 	auto.pressed.connect(func():
 		settings.osu_songs_dir = ""
@@ -479,7 +481,7 @@ func _build_songs() -> Control:
 	tick.wait_time = 0.5
 	tick.autostart = true
 	tick.timeout.connect(func(): if _cur == 3 and bool(settings.get("osu_songs", false)): refresh.call())
-	box.add_child(tick)
+	add_child(tick)
 	return box
 
 

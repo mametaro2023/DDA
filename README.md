@@ -416,6 +416,7 @@ godot --path . -- --smoke-mp-ui                                       # ホス�
 godot --path . -- --smoke-upnp                                        # UPnP で本番と同じ部屋作り(ルーターのポートを一時的に開けて閉じる)。招待コードの中身を表示
 godot --headless --path . --script tests/test_import.gd                # .osz の取り込み・音量・ダウンロードリンク・アプリのバージョン比較
 godot --headless --path . --script tests/test_osu_folder.gd           # osu! の Songs フォルダ(展開済みの曲)を、そのまま曲として読む
+godot --headless --path . --script tests/test_options_pages.gd         # 設定パネルの全ページを、動きつきで開く(ページの中に画面の部品でないものがあると失敗)
 godot --path . -- --smoke-volume                                      # ホイールの音量(メーターの表示・選択・消えたら戻る・保存)を、実際の入力で確認
 godot --path . -- --smoke-open                                        # .osz を開く流れ(別のプロセスから渡す・選曲画面で選ぶ・プレイ中は画面を変えない)
 godot --path . -- --smoke-new                                          # 音量バーのドラッグ・選曲の別スレッド読み込み・なめらかスクロール・独自カーソル・どの画面でも設定・songs の見張りを、実際の入力で確認(ウィンドウが開く)

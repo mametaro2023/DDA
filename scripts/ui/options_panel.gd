@@ -1,9 +1,9 @@
 extends Control
-## 設定パネル(選曲画面の上に重ねる)。操作 / 音 / 画面 / その他 の 4 セクション(MOD は、難易度選択画面の MOD ボタンから)。
-## 使う順に並べてある: 操作(マウスが標準)→ 音(音量とオフセット)→ 画面(ウィンドウの大きさが先頭)→ その他(更新・ファイルの関連付け)。
+## 設定パネル(選曲画面の上に重ねる)。操作 / 音 / 画面 / 曲 / その他 の 5 セクション(MOD は、難易度選択画面の MOD ボタンから)。
+## 使う順に並べてある: 操作(マウスが標準)→ 音(音量とオフセット)→ 画面(ウィンドウの大きさが先頭)→ 曲(osu! の Songs フォルダ)→ その他(更新・ファイルの関連付け)。
 ## 右上の ✕、パネルの外のクリック、左下の「閉じる」、Esc で閉じる。
 ## settings(Settings.load_all の辞書)を直接書き換え、変えたら changed(kind) を出す。保存は閉じるときに呼び出し側が行う。
-##   kind: "volume" | "control" | "misc"
+##   kind: "volume" | "control" | "misc" | "songs"(osu! の Songs フォルダの使う・使わない・場所が変わった)
 
 signal changed(kind: String)
 signal closed
@@ -12,11 +12,12 @@ const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
 const FileAssoc = preload("res://scripts/file_assoc.gd")
+const SongLibrary = preload("res://scripts/song_library.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const ToggleCard = preload("res://scripts/ui/toggle_card.gd")
 const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
 
-const SECTIONS := ["操作", "音", "画面", "その他"]
+const SECTIONS := ["操作", "音", "画面", "曲", "その他"]
 
 var settings: Dictionary
 
@@ -118,7 +119,7 @@ func _ready() -> void:
 	root.add_child(content_margin)
 	var stack := Control.new()
 	content_margin.add_child(stack)
-	_pages = [_build_control(), _build_audio(), _build_screen(), _build_other()]
+	_pages = [_build_control(), _build_audio(), _build_screen(), _build_songs(), _build_other()]
 	for p in _pages:
 		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		stack.add_child(p)
@@ -422,6 +423,64 @@ func refresh_size() -> void:
 		b.set_pressed_no_signal(sz == cur and not full)
 		b.disabled = not Settings.size_fits(sz)
 	_fullscreen_btn.set_pressed_no_signal(full)
+
+
+## 曲: osu! の Songs フォルダ(osu!stable が展開した曲を、コピーせずに一覧へ加える)。使うかどうか + 場所(空なら自動で探す)+ 今の状態。
+func _build_songs() -> Control:
+	var box := _page("曲", "")
+	var st := UiStyle.label("", 13, UiStyle.TEXT_DIM)
+	st.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	var choose := Button.new()
+	choose.text = "フォルダを選ぶ…"
+	choose.focus_mode = Control.FOCUS_NONE
+	var auto := Button.new()
+	auto.text = "自動で探す"
+	auto.focus_mode = Control.FOCUS_NONE
+	var refresh := func():
+		var on: bool = bool(settings.get("osu_songs", false))
+		choose.disabled = not on
+		auto.disabled = not on or str(settings.get("osu_songs_dir", "")) == ""
+		if not on:
+			st.text = ""
+		elif SongLibrary.osu_dir == "":
+			st.text = "osu! の Songs フォルダが見つかりません。「フォルダを選ぶ…」で、osu! の Songs フォルダを指定してください。"
+		else:
+			var pr := SongLibrary.warm_progress()   # 裏で調べている。待たずに、いまの進み具合を出す
+			st.text = "使うフォルダ: %s\n%s" % [SongLibrary.osu_dir, ("準備しています… %d / %d(選曲画面は、できた曲から順に出ます)" % [pr.done, pr.total]) if pr.running else ("%d 曲" % SongLibrary.ready_count())]
+	var apply := func():
+		SongLibrary.apply_osu_settings(settings)
+		SongLibrary.start_osu_warmup()   # 曲の索引を裏で作る(選曲画面を開いたときに待たせない)
+		refresh.call()
+		changed.emit("songs")
+	box.add_child(_toggle_card("osu! の Songs フォルダの曲を使う", "osu!(osu!stable)に入っている曲を、コピーせずにそのまま選曲画面に加えます(曲が多いときは、裏で準備して、できた曲から順に選曲画面へ出します)。ふつうは自動で見つかります", UiStyle.ACCENT,
+		bool(settings.get("osu_songs", false)), "", func(on: bool):
+			settings.osu_songs = on
+			apply.call()))
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.use_native_dialog = true
+	dialog.dir_selected.connect(func(d: String):
+		settings.osu_songs_dir = d.replace("\\", "/")
+		apply.call())
+	box.add_child(dialog)
+	choose.pressed.connect(func(): dialog.popup_centered_ratio(0.7))
+	auto.pressed.connect(func():
+		settings.osu_songs_dir = ""
+		apply.call())
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	row.add_child(choose)
+	row.add_child(auto)
+	box.add_child(row)
+	box.add_child(st)
+	refresh.call()
+	var tick := Timer.new()   # 準備の進み具合を、ときどき更新する
+	tick.wait_time = 0.5
+	tick.autostart = true
+	tick.timeout.connect(func(): if _cur == 3 and bool(settings.get("osu_songs", false)): refresh.call())
+	box.add_child(tick)
+	return box
 
 
 func _build_other() -> Control:

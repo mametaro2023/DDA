@@ -16,5 +16,5 @@ if errorlevel 1 (
 copy /y dist_files\README.txt "%OUT%\README.txt" >nul
 copy /y dist_files\LICENSE-Godot.txt "%OUT%\LICENSE-Godot.txt" >nul
 copy /y dist_files\songs_README.txt "%OUT%\songs\README.txt" >nul
-powershell -NoProfile -Command "Compress-Archive -Path 'build\DDA_beta' -DestinationPath 'build\DDA_beta_v0.7.0.zip' -Force"
-echo Done: build\DDA_beta_v0.7.0.zip
+powershell -NoProfile -Command "Compress-Archive -Path 'build\DDA_beta' -DestinationPath 'build\DDA_beta_v0.8.0.zip' -Force"
+echo Done: build\DDA_beta_v0.8.0.zip

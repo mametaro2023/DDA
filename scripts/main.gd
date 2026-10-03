@@ -36,6 +36,7 @@ var _ui_layer: CanvasLayer         # 設定・選択のパネルを、画面の�
 var _settings_panel: Control       # 開いている設定パネル(どの画面からでも開ける。プレイ中は除く)
 var _settings_dict: Dictionary = {}
 var _settings_btn: Button          # 画面の右上の「設定」(タイトル・選曲画面は、自分で設定を開く入口を持つので出さない)
+var _songs_changed := false      # 設定パネルで、osu! の Songs フォルダの設定が変わった(閉じたときに、選曲画面の一覧を作り直す)
 var _watch_known := {}             # songs フォルダに、いま見えている .osz(名前|大きさ → パス)
 var _watch_pending := {}           # 見つけたが、コピーの途中かもしれないもの(大きさが落ち着くまで待つ)
 var _watch_ready := false
@@ -57,7 +58,9 @@ var _pending: Node = null
 
 func _ready() -> void:
 	UserDirMigrate.run()   # アプリの名前を変えたので、前の名前のユーザーデータ(設定・曲・記録)を移す(残っていなければ何もしない)
-	Volume.init_from(Settings.load_all())
+	var first_settings := Settings.load_all()
+	Volume.init_from(first_settings)
+	SongLibrary.apply_osu_settings(first_settings)   # osu! の Songs フォルダを使う設定のとき、その場所(スクリーンショット・動作確認の起動でも同じ)
 	var args := OS.get_cmdline_user_args()
 	var i := args.find("--shot")
 	if i >= 0 and args.size() > i + 2:
@@ -168,6 +171,7 @@ func _ready() -> void:
 		get_tree().quit()
 		return
 	var ui_settings := Settings.load_all()
+	SongLibrary.start_osu_warmup()   # osu! の Songs フォルダの曲の索引を、裏で作っておく
 	UiSfx.enabled = bool(ui_settings.ui_sound)
 	SfxBank.preload_all(["pop", "whistle", "clap", "boom", "tick", "hit", "explosion"])   # ゲーム中の効果音は、プレイ画面を開く前に読んでおく
 	Settings.apply_display(ui_settings)   # 垂直同期・ウィンドウの大きさ
@@ -386,7 +390,11 @@ func _update_settings_button() -> void:
 	_settings_btn.visible = _current != null and s != GameScreen and s != TitleScreen and s != MenuScreen and _settings_panel == null
 
 
-## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=曲 4=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+func _exit_tree() -> void:
+	SongLibrary.stop_warmup()   # 裏で索引を作っているスレッドを、閉じる前に止める
+
+
 func open_settings(section := 0) -> void:
 	if _settings_panel != null or _current == null or _current.get_script() == GameScreen:
 		return
@@ -397,6 +405,8 @@ func open_settings(section := 0) -> void:
 	p.theme = UiStyle.make_theme()
 	p.setup(_settings_dict)
 	p.changed.connect(func(kind: String):
+		if kind == "songs":
+			_songs_changed = true   # 一覧の作り直しは、パネルを閉じたとき(曲が多いと重いので、設定中は止めない)
 		if _current != null and _current.has_method("on_settings_changed"):
 			_current.on_settings_changed(kind))
 	p.closed.connect(close_settings)
@@ -419,6 +429,9 @@ func close_settings() -> void:
 		_current._options = null
 	if is_instance_valid(_current):
 		_current.set_process_input(true)
+		if _songs_changed and _current.has_method("refresh_songs"):
+			_current.refresh_songs()
+	_songs_changed = false
 	p.queue_free()
 	_update_settings_button()
 
@@ -721,7 +734,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
 			_current.open_mods()
 		"options":
-			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=その他)
+			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=曲 4=その他)
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
 			_current.open_options(int(extra[0]) if extra.size() > 0 and extra[0].is_valid_int() else 0)
 		"game":

@@ -37,7 +37,16 @@ const LAUNCH_TIME := 0.4   # PLAY を押してから、次の画面へ切り替�
 var settings: Dictionary = {}
 var pick_mode := false
 
-var _songs: Array = []          # [{path, title, artist}]
+var _songs: Array = []          # [{path, title, artist, key, key2, md5, folder}]
+var _song_keys := {}            # key → _songs の index(重複の確認が、曲が何千あっても速いように)
+var _song_key2s := {}           # key2(名前|大きさ) → index
+var _song_md5s := {}            # 譜面の識別子 → index
+var _osu_cursor := 0            # osu! の Songs の曲(SongLibrary.take_ready)を、どこまで一覧に足したか
+var _osu_gen := 0               # 足している osu! の曲の一覧の世代(SongLibrary.osu_gen)。変わったら、足し直す
+var _want_key := ""             # 前回選んでいた曲(まだ一覧に出ていなければ、出たときに選ぶ)
+var _auto_sel_idx := -1         # 自動で選んだ曲の index(その曲のまま、ユーザーが触っていないときだけ、前回の曲に選び直す)
+var _restore_key := ""          # 一覧を作り直す間、選んでいた曲(足し直されたときに、選択を戻す)
+var _pump_status_at := 0.0
 var _loader                     # 選択中の OszLoader
 var _gens: Array = []           # 難易度リストと同じ並びの、MOD 適用前の弾幕(生成結果)
 var _gens_v2 := false           # _gens が弾幕 v2(MOD)で作ったものか
@@ -210,18 +219,23 @@ func _ready() -> void:
 
 	_refresh_mod_bar()
 	_intro()
+	_want_key = SongLibrary.norm(str(settings.last_song))
+	_osu_gen = SongLibrary.osu_gen
+	SongLibrary.start_osu_warmup()   # osu! の Songs の曲は、裏で調べる。できた曲から、_process で少しずつ足す(何千曲あっても画面が止まらない)
 	_scan()
 	_rebuild_song_cards()
 	if not _songs.is_empty():
 		var pick := 0
 		for i in range(_songs.size()):
-			if _songs[i].key == SongLibrary.norm(str(settings.last_song)):
+			if _songs[i].key == _want_key:
 				pick = i
 		_select_song(pick)
+		_auto_sel_idx = pick
 
 
 func _process(delta: float) -> void:
 	_par = UiStyle.parallax(_bg_holder, _ambient, _par, delta, get_viewport())
+	_pump_osu()
 
 
 ## 画面を開いたときの入場: 見出し・下部バー・ボタンが順に滑り込み、ボタンはホバーで少し大きくなる。
@@ -268,7 +282,7 @@ func _build_empty() -> void:
 
 func _sync_empty() -> void:
 	if _empty_box != null:
-		_empty_box.visible = _songs.is_empty()
+		_empty_box.visible = _songs.is_empty() and not (SongLibrary.osu_dir != "" and bool(SongLibrary.warm_progress().running))   # osu! の曲を調べている間は、「曲がありません」を出さない
 
 
 ## 曲の読み込み中の見た目: 難易度の一覧を薄くして「読み込み中…」と出し、PLAY を押せなくする。
@@ -335,55 +349,170 @@ func _search_dirs() -> Array:
 	return SongLibrary.search_dirs()
 
 
-func _scan() -> void:
+func _clear_songs() -> void:
 	_songs.clear()
+	_song_keys.clear()
+	_song_key2s.clear()
+	_song_md5s.clear()
+
+
+## 起動時: .osz の曲を一覧にする(osu! の Songs の曲は、_pump_osu が少しずつ足す)。
+func _scan() -> void:
+	_clear_songs()
+	_osu_cursor = 0
+	var paths := SongLibrary.find_osz()   # 同じファイルは 1 つにまとめて返る
+	var failed := _add_songs(paths)
+	SongLibrary.save_index(paths)
+	_report_failed(failed)
+
+
+func _add_songs(paths: Array) -> Array:
 	var failed: Array = []
-	var paths := SongLibrary.find_all()   # 同じファイルは 1 つにまとめて返る
 	for p in paths:
 		if _add_song(p) < 0:
 			failed.append(str(p).get_file())
-	SongLibrary.save_index(paths)
+	return failed
+
+
+func _report_failed(failed: Array) -> void:
 	if not failed.is_empty():   # 読めなかった曲は、黙って飛ばさず、名前を出す
 		_set_status("読み込めなかった曲: " + ", ".join(failed.slice(0, 3)) + (" ほか %d 件" % (failed.size() - 3) if failed.size() > 3 else ""))
 
 
-## songs フォルダの中身が変わったとき(main が知らせる): 一覧を作り直す。選んでいる曲はそのまま(読み込み直さない)。
+## songs フォルダの中身が変わったとき(main が知らせる): 一覧を更新する。選んでいる曲はそのまま(読み込み直さない)。
+## すでに一覧にある曲(何千曲の osu! の曲も)は作り直さず、増えた .osz を足し、なくなった曲を外す。osu! の Songs の設定が変わったときだけ、osu! の曲を足し直す。
 func refresh_songs() -> void:
 	var cur := ""
 	if _song_sel >= 0 and _song_sel < _songs.size():
 		cur = str(_songs[_song_sel].key)
-	_scan()
-	_song_sel = -1
-	for i in range(_songs.size()):
-		if _songs[i].key == cur:
-			_song_sel = i
-	_rebuild_song_cards(false)
-	if _song_sel < 0 and not _songs.is_empty() and _loader == null:
+	var osu_reset := SongLibrary.osu_gen != _osu_gen   # osu! の Songs の設定が変わった
+	_osu_gen = SongLibrary.osu_gen
+	SongLibrary.start_osu_warmup()
+	var keep: Array = []
+	for sg in _songs:
+		if sg.folder:
+			if not osu_reset:
+				keep.append(sg)
+		elif FileAccess.file_exists(sg.path):
+			keep.append(sg)
+	var removed := keep.size() != _songs.size()
+	if removed:
+		_clear_songs()
+		for sg in keep:
+			_register_song(sg)
+	if osu_reset:
+		_osu_cursor = 0
+		if cur != "" and (not _song_keys.has(cur)):
+			_restore_key = cur   # 足し直されたときに、選択を戻す
+	var paths := SongLibrary.find_osz()
+	var failed := _add_songs(paths)
+	SongLibrary.save_index(paths)
+	_report_failed(failed)
+	_song_sel = int(_song_keys.get(cur, -1))
+	if removed:
+		_rebuild_song_cards(false)
+	else:
+		_sync_cards()
+	if _song_sel < 0 and not _songs.is_empty() and _loader == null and _restore_key == "":
 		_select_song(0)
+
+
+## osu! の Songs の、索引ができた曲を、少しずつ一覧に足す(毎フレーム、4ms まで。何千曲あっても、画面が止まらない)。
+func _pump_osu() -> void:
+	if SongLibrary.osu_dir == "" or _osu_gen != SongLibrary.osu_gen:
+		return
+	var t0 := Time.get_ticks_usec()
+	var added := false
+	while Time.get_ticks_usec() - t0 < 4000:
+		var batch := SongLibrary.take_ready(_osu_cursor, 10)
+		if batch.is_empty():
+			break
+		_osu_cursor += batch.size()
+		for e in batch:
+			var n := _songs.size()
+			var idx := _append_song(str(e.path), e.info, true)
+			if idx == n:
+				added = true
+	if added:
+		_sync_cards()
+		_pump_select()
+	_pump_progress()
+
+
+## 足した曲のうち、選び直すもの: 一覧を作り直す前に選んでいた曲(選択を戻す)/ 前回の曲(自動で選んだままなら、そこへ移す)/ 何も選ばれていなければ最初の曲。
+func _pump_select() -> void:
+	if _restore_key != "" and _song_keys.has(_restore_key):
+		_song_sel = int(_song_keys[_restore_key])
+		_restore_key = ""
+		_restyle_all()
+		return
+	if _want_key != "" and _song_keys.has(_want_key) and _auto_sel_idx >= 0 and _song_sel == _auto_sel_idx and _song_sel != int(_song_keys[_want_key]):
+		_auto_sel_idx = int(_song_keys[_want_key])
+		_select_song(_auto_sel_idx)   # ユーザーがまだ触っていないので、前回の曲へ
+		return
+	if _song_sel < 0 and _loader == null and not _job_pending and _restore_key == "" and not _songs.is_empty():
+		_auto_sel_idx = int(_song_keys.get(_want_key, 0))
+		_select_song(_auto_sel_idx)
+
+
+## osu! の曲を調べている間の、進み具合(画面の下に、薄い文字で)。
+func _pump_progress() -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	if now - _pump_status_at < 0.3 or _status == null:
+		return
+	_pump_status_at = now
+	var pr := SongLibrary.warm_progress()
+	var mine := _status.text.begins_with("osu! の曲")
+	if bool(pr.running) and (_status.text == "" or mine):
+		_status.text = "osu! の曲を準備しています… %d / %d" % [pr.done, pr.total]
+		_status.add_theme_color_override("font_color", UiStyle.TEXT_DIM)
+		_sync_empty()
+	elif mine:
+		_status.text = ""
+		_sync_empty()
 
 
 ## 追加して一覧の index を返す(重複は既存の index、読めなければ -1)。カードは _rebuild_song_cards で作る。
 func _add_song(path: String) -> int:
 	path = path.replace("\\", "/")
 	var key := SongLibrary.norm(path)
-	var size := -1
-	var fh := FileAccess.open(path, FileAccess.READ)
-	if fh != null:
-		size = fh.get_length()
-		fh.close()
+	var size := SongLibrary.file_size(path)
 	var key2 := "%s|%d" % [path.get_file().to_lower(), size]
-	for i in range(_songs.size()):   # すでに一覧にある(パスが同じ、または名前と大きさが同じ)
-		if _songs[i].key == key or (size >= 0 and _songs[i].key2 == key2):
-			return i
+	if _song_keys.has(key):   # すでに一覧にある(パスが同じ、または名前と大きさが同じ)
+		return _song_keys[key]
+	if size >= 0 and _song_key2s.has(key2):
+		return _song_key2s[key2]
 	var info := SongLibrary.info(path)   # 曲を全部は開かずに、題名などを得る(結果は保存されて、次からは開き直さない)
 	if not info.ok:
 		_last_error = str(info.error)
 		return -1
-	for i in range(_songs.size()):   # 別の名前で同じ曲が入っている(譜面の中身が同じ)ときも、1 つにする
-		if _songs[i].md5 == info.md5:
-			return i
-	_songs.append({"path": path, "title": info.title, "artist": info.artist, "key": key, "key2": key2, "md5": info.md5})
+	return _append_song(path, info, false)
+
+
+## 索引の要約(info)から、一覧に足して index を返す(重複は既存の index)。ファイルには触らない(osu! の曲を何千も足すため)。
+func _append_song(path: String, info: Dictionary, folder: bool) -> int:
+	path = path.replace("\\", "/")
+	var key := SongLibrary.norm(path)
+	if _song_keys.has(key):
+		return _song_keys[key]
+	var key2 := "%s|%d" % [path.get_file().to_lower(), -1 if folder else SongLibrary.file_size(path)]
+	if not folder and _song_key2s.has(key2):
+		return _song_key2s[key2]
+	if _song_md5s.has(info.md5):   # 別の名前で同じ曲が入っている(譜面の中身が同じ)ときも、1 つにする
+		return _song_md5s[info.md5]
+	var sg := {"path": path, "title": info.title, "artist": info.artist, "key": key, "key2": key2, "md5": info.md5, "folder": folder}
+	_songs.append(sg)
+	_register_song(sg, _songs.size() - 1)
 	return _songs.size() - 1
+
+
+func _register_song(sg: Dictionary, idx := -1) -> void:
+	if idx < 0:
+		_songs.append(sg)
+		idx = _songs.size() - 1
+	_song_keys[sg.key] = idx
+	_song_key2s[sg.key2] = idx
+	_song_md5s[sg.md5] = idx
 
 
 func _add_song_and_select(path: String) -> void:
@@ -416,29 +545,40 @@ func _rebuild_song_cards(animate := true) -> void:
 		c.queue_free()
 	_song_cards.clear()
 	for i in range(_songs.size()):
-		var card := UiStyle.card(56, func(): _select_song(i))
-		var v := VBoxContainer.new()
-		v.add_theme_constant_override("separation", 2)
-		v.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var t := UiStyle.label(_songs[i].title, 15, UiStyle.TEXT, true)
-		t.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		v.add_child(t)
-		var a := UiStyle.label(_songs[i].artist, 12, UiStyle.TEXT_DIM)
-		a.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		v.add_child(a)
-		card.add_child(v)
-		card.mouse_entered.connect(func():
-			card.set_meta("hover", true)
-			if i != _song_sel:
-				UiSfx.play("hover", 1.0)
-			_restyle_song(i))
-		card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_song(i))
-		_song_box.add_child(UiStyle.wrap_card(card, 56))
-		_song_cards.append(card)
-		_restyle_song(i)
-		if animate:
-			UiStyle.enter_card(card, 0.08 + i * 0.06, -40.0)   # 左から順に滑り込む
+		_make_song_card(i, animate)
 	_sync_empty()
+
+
+## 一覧に足された曲(_song_cards にまだないもの)のカードを作る。
+func _sync_cards() -> void:
+	for i in range(_song_cards.size(), _songs.size()):
+		_make_song_card(i, false)
+	_sync_empty()
+
+
+func _make_song_card(i: int, animate: bool) -> void:
+	var card := UiStyle.card(56, func(): _select_song(i))
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var t := UiStyle.label(_songs[i].title, 15, UiStyle.TEXT, true)
+	t.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	v.add_child(t)
+	var a := UiStyle.label(_songs[i].artist, 12, UiStyle.TEXT_DIM)
+	a.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	v.add_child(a)
+	card.add_child(v)
+	card.mouse_entered.connect(func():
+		card.set_meta("hover", true)
+		if i != _song_sel:
+			UiSfx.play("hover", 1.0)
+		_restyle_song(i))
+	card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_song(i))
+	_song_box.add_child(UiStyle.wrap_card(card, 56))
+	_song_cards.append(card)
+	_restyle_song(i)
+	if animate:
+		UiStyle.enter_card(card, 0.08 + mini(i, 10) * 0.06, -40.0)   # 左から順に滑り込む(曲が多くても、後ろの曲を待たせない)
 
 
 func _restyle_song(i: int) -> void:
@@ -1029,7 +1169,7 @@ func _input(event: InputEvent) -> void:
 func debug_empty() -> void:
 	while _job_pending:
 		await get_tree().process_frame
-	_songs.clear()
+	_clear_songs()
 	_song_sel = -1
 	_diff_sel = -1
 	_loader = null

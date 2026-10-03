@@ -44,6 +44,8 @@ var pa := PackedFloat32Array()     # 挙動のパラメータ a / b / c
 var pb := PackedFloat32Array()
 var pc := PackedFloat32Array()
 var tscale := PackedFloat32Array() # この弾の時間の倍率(時の淀み・急流の中で変わる。1 = ふつう)
+var wtgt := PackedFloat32Array()   # この弾の、時間の倍率の目標(WARP_EVAL ごとに調べる)
+var _warp_acc := 0.0
 var _ts_active := false            # 倍率が 1 でない弾がある(エリアが消えたあとも、戻る間は true)
 
 # update() の結果
@@ -62,6 +64,7 @@ var bounds := Rect2(-12, -12, 984, 744)
 var warp: Array = []
 const WARP_ENTER := 1.2
 const WARP_EXIT := 0.4
+const WARP_EVAL := 0.008   # 弾ごとの目標の倍率(どの淀みの中か)を調べる間隔(秒)。1ms 刻みで毎回調べると重い。間の刻みは、前に調べた目標を使う(8ms で 2px も進まない)
 const WARP_SLOW_TINT := Color(0.6, 0.55, 1.0)    # 遅くなっている弾の光の色(時の淀み)
 const WARP_FAST_TINT := Color(1.0, 0.4, 0.35)    # 速くなっている弾の光の色(時の急流)
 
@@ -81,6 +84,7 @@ var _buf_halo := PackedFloat32Array()
 var _buf_color := PackedFloat32Array()
 var _buf_core := PackedFloat32Array()
 var _buf_ring := PackedFloat32Array()
+var _ring_on := PackedByteArray()   # 弾の番号ごとに、リングの層に今、描く内容が入っているか(入っていなければ、毎フレーム 0 を書き直さない)
 
 
 func _init() -> void:
@@ -97,6 +101,7 @@ func _init() -> void:
 	pb.resize(MAX_BULLETS)
 	pc.resize(MAX_BULLETS)
 	tscale.resize(MAX_BULLETS)
+	wtgt.resize(MAX_BULLETS)
 
 
 ## 描画用ノードを作る(テストなど描画不要なときは呼ばない)。
@@ -111,6 +116,7 @@ func setup_render() -> void:
 	_buf_color.resize(MAX_BULLETS * 12)
 	_buf_core.resize(MAX_BULLETS * 12)
 	_buf_ring.resize(MAX_BULLETS * 12)
+	_ring_on.resize(MAX_BULLETS)
 
 
 func _make_layer(tex: Texture2D, blend: int, mat_override: Material = null) -> MultiMesh:
@@ -212,6 +218,7 @@ func add(p: Vector2, v: Vector2, radius: float, color_idx: int, grace_px := 0.0,
 	turn[count] = turn_rate
 	grazed[count] = 0
 	tscale[count] = 1.0
+	wtgt[count] = 1.0
 	kind[count] = beh_kind
 	if beh_kind != 0:
 		age[count] = age0
@@ -232,6 +239,7 @@ func _remove(i: int) -> void:
 		turn[i] = turn[count]
 		grazed[i] = grazed[count]
 		tscale[i] = tscale[count]
+		wtgt[i] = wtgt[count]
 		kind[i] = kind[count]
 		age[i] = age[count]
 		pa[i] = pa[count]
@@ -316,12 +324,26 @@ func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, ppre
 	var swept := seg2 > 4.0
 	var warped := not warp.is_empty() or _ts_active
 	var any_off := false
+	var warp_on := not warp.is_empty()
+	var eval_warp := false
+	if warp_on:
+		_warp_acc += dt_all
+		if _warp_acc >= WARP_EVAL:
+			_warp_acc = 0.0
+			eval_warp = true
+	var bx0 := b.position.x   # 範囲の判定は、メソッド呼び出しを避けて、比較だけで行う(弾の数 × 刻みの回数ぶん呼ばれる)
+	var by0 := b.position.y
+	var bx1 := b.end.x
+	var by1 := b.end.y
 	var i := count - 1
 	while i >= 0:
 		var dt := dt_all
 		if warped:
 			var ts := tscale[i]
-			var tgt := _warp_factor(pos[i]) if not warp.is_empty() else 1.0
+			var tgt := wtgt[i] if warp_on else 1.0
+			if eval_warp:
+				tgt = _warp_factor(pos[i])
+				wtgt[i] = tgt
 			if ts != tgt:
 				ts = move_toward(ts, tgt, (WARP_ENTER if absf(tgt - 1.0) > absf(ts - 1.0) else WARP_EXIT) * dt_all)
 				tscale[i] = ts
@@ -344,7 +366,7 @@ func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, ppre
 		if kd == BEH_BOUNCE and _bounce(i, p, v):
 			p = pos[i]
 			v = vel[i]
-		if not b.has_point(p):
+		if p.x < bx0 or p.x >= bx1 or p.y < by0 or p.y >= by1:
 			_remove(i)
 			i -= 1
 			continue
@@ -483,6 +505,7 @@ func sync_render() -> void:
 				_put(_buf_halo, i * 12, p.x, p.y, 0.0, c)
 				_put(_buf_core, i * 12, p.x, p.y, 0.0, c)
 				_put(_buf_ring, i * 12, p.x, p.y, 0.0, c)
+				_ring_on[i] = 0
 				continue
 			c.a = va
 		var o := i * 12
@@ -491,10 +514,13 @@ func sync_render() -> void:
 			_put(_buf_color, o, p.x, p.y, 0.0, c)
 			_put(_buf_core, o, p.x, p.y, 0.0, Color(1, 1, 1, c.a))
 			_put(_buf_ring, o, p.x, p.y, r * 2.3, c)
+			_ring_on[i] = 1
 		else:
 			_put(_buf_color, o, p.x, p.y, r * 2.3, c)
 			_put(_buf_core, o, p.x, p.y, r * HIT_SCALE * 2.0 + 2.0, Color(1, 1, 1, c.a))   # 白い芯の縁 = 当たり判定の縁(自機の白い円と同じ規則。縁のぼかし分の 2px を足す)
-			_put(_buf_ring, o, p.x, p.y, 0.0, c)
+			if _ring_on[i] != 0:   # 直前まで中抜きのリングだった弾だけ、リングの層を消す
+				_put(_buf_ring, o, p.x, p.y, 0.0, c)
+				_ring_on[i] = 0
 	var ts_fx := _ts_active
 	if halo > 0.01 or ts_fx:
 		for i in range(n):

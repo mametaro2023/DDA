@@ -55,6 +55,10 @@ const BREAK_R := 62.0
 ## 1 フレームで進める回数の上限(重い場面で処理が追いつかなくなったときは、刻みを粗くして時刻だけは合わせる)
 const SIM_STEP := 0.001
 const SIM_MAX_STEPS := 100
+## 弾が多いとき、判定の刻みを広げる。1 ステップの処理は弾の数に比例して重く(4000 発で約 1.5ms)、1ms 刻みでは、1 フレームに十数回回すと間に合わずフレームが落ちる。
+## 刻みは、弾 500 発までは SIM_STEP(1ms)で、増えるにつれて広げ、2000 発以上で SIM_STEP_MAX(4ms)。弾は 1 ステップで 1px も進まず(最大 250px/s × 4ms)、
+## 自機の移動は線分で判定し、発射は遅れたぶんだけ進めて出すので、判定は変わらない(被弾の時間・グレイズの数は、刻みによらずほぼ同じ)。
+const SIM_STEP_MAX := 0.004
 ## 曲クロックの補正: 音声とのずれを 1 秒あたりこの割合で詰める(小さいほど滑らか)。ずれが CLOCK_RESYNC 秒を超えたら直接合わせる
 const CLOCK_PULL := 4.0
 const CLOCK_RESYNC := 0.1
@@ -765,7 +769,8 @@ func _step_sim(slow: bool) -> void:
 	var span := _now - _sim_t
 	if span <= 0.0:
 		return   # 曲クロックが進んでいない(マウスの移動量は次のフレームへ持ち越す)
-	var n := clampi(ceili(span / SIM_STEP), 1, SIM_MAX_STEPS)
+	var step := clampf(float(field.count) * 0.000002, SIM_STEP, SIM_STEP_MAX)
+	var n := clampi(ceili(span / step), 1, SIM_MAX_STEPS)
 	var dt := span / float(n)
 	var move := Vector2.ZERO
 	var d := Vector2.ZERO

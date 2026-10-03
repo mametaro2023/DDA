@@ -130,6 +130,9 @@ var contact_heal := 0.0            # 参加者: まだホストへ送ってい�
 var contact_gbonus := 0.0          # 参加者: まだホストへ送っていない、エリアでのグレイズの上乗せ
 var graze_bonus := 0.0             # エリアでのグレイズの上乗せ(ボーナス点にだけ入る。表示するグレイズ数には入れない)
 var _zone_i := 0
+var _warp_t := -1.0                # 時の淀み・急流の形を最後に作った時刻と、そのときのエリアの番号(作り直しは WARP_REFRESH ごと)
+var _warp_zi := -1
+const WARP_REFRESH := 0.008
 var last_fire_time := -1.0        # 最後のノーツ(発射)の時刻。結果画面の体力グラフの右端
 ## 発射地点の印を記録するか(暗闇 MOD。弾が見えなくても、どこから撃ったかを表示するため)
 var track_fires := false
@@ -628,16 +631,20 @@ func _update_zone_debuff(now: float) -> void:
 	zone_area_type = ""
 	zone_push = Vector2.ZERO
 	hit_mult = 1.0
-	field.warp = []
 	if zones.is_empty() or in_break(now):
+		_clear_warp()
 		return
 	while _zone_i < zones.size() and float(zones[_zone_i].end) <= now:
 		_zone_i += 1
 	if _zone_i >= zones.size() or float(zones[_zone_i].t) > now:
+		_clear_warp()
 		return
 	var z: Dictionary = zones[_zone_i]
 	if z.has("areas"):
-		_update_warp(z, now)
+		if _warp_zi != _zone_i or now < _warp_t or now - _warp_t >= WARP_REFRESH:   # 淀み・急流の形は、数 ms ごとに作り直せば足りる(1ms 刻みで毎回作らない)
+			_update_warp(z, now)
+			_warp_t = now
+			_warp_zi = _zone_i
 	var a := _area_at(z, player_pos, now)
 	zone_area_type = str(a.get("type", ""))
 	if zone_area_type != "warp" and zone_area_type != "haste":   # 弾に作用するだけのエリアは、自機には何も効かない
@@ -691,7 +698,14 @@ func zone_graze_mul() -> float:
 
 
 ## 時の淀み: 効いている間、弾の側へ、淀みの形(世界の座標)を渡す。
+func _clear_warp() -> void:
+	_warp_zi = -1
+	if not field.warp.is_empty():
+		field.warp = []
+
+
 func _update_warp(z: Dictionary, now: float) -> void:
+	field.warp = []
 	var u := ZoneArea.progress(z, now)
 	for a in z.areas:
 		if str(a.type) != "warp" and str(a.type) != "haste":

@@ -201,12 +201,17 @@ func _draw_flow_field(area: Dictionary, u: float, dir: Vector2, col: Color) -> v
 	var off := fposmod(now * 70.0, step)
 	var f: Rect2 = sim.move_rect
 	var perp := Vector2(-dir.y, dir.x)
-	var n := int(ceil(maxf(f.size.x, f.size.y) / step)) + 2
+	var n := int(ceil(f.size.length() / (2.0 * step))) + 1   # 動ける範囲の対角線が収まる格子の数(向きを回した格子でも、範囲を覆う)
 	var c0 := f.get_center()
+	var shape: Dictionary = area.shape
+	var sb := ZoneArea.bounds(shape, f, u).intersection(f)   # 形の外接の長方形(毎フレーム、格子の点ごとに形を作り直さない)
+	var is_rect: bool = str(shape.k) == ZoneArea.RECT
+	var cc := sb.get_center()
+	var r2 := 0.0 if is_rect else pow(ZoneArea.world_radius(shape, f), 2.0)
 	for ix in range(-n, n):
 		for iy in range(-n, n):
 			var pt := c0 + dir * (float(ix) * step + off) + perp * (float(iy) * step)
-			if f.has_point(pt) and ZoneArea.contains(area.shape, pt, f, u):
+			if sb.has_point(pt) and (is_rect or pt.distance_squared_to(cc) <= r2):
 				_chevron(pt, dir, 12.0, col, 3.0)
 
 

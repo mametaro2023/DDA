@@ -56,10 +56,11 @@ static func area_fraction(shape: Dictionary) -> float:
 	return PI * float(shape.r) * float(shape.r) * 0.75   # 4:3 の盤面で、半径は短いほうの辺(縦)に対する割合
 
 
-## エリアの種類(type)ごとの、そのエリアの中の効果の種類。"trial" = 自機が不利になる(デバフ)/ "boon" = 有利になる / "warp" = 弾に作用する。
+## エリアの種類(type)ごとの系統。"trial" = 試練(自機が不利。時の急流は、弾が速くなるので試練)/ "boon" = 恩恵(有利)/ "warp" = 弾が遅くなる(時の淀み)。
+## 流れ(flow)は、自機を押すので試練。
 static func family_of(type: String) -> String:
 	match type:
-		"slow", "fragile", "poison", "big":
+		"slow", "fragile", "poison", "big", "haste", "flow":
 			return "trial"
 		"heal", "precise", "bonus":
 			return "boon"
@@ -68,11 +69,11 @@ static func family_of(type: String) -> String:
 	return ""
 
 
-## ある時刻 now に、点 p にいる自機に効いているエリアの種類(なければ ""。弾に作用する warp は、自機には効かないので "")。
-## z は z.areas を持つ新しい形式(弾幕 v2)。重なるときは、先に書いてあるものが勝つ。
-static func type_at(z: Dictionary, p: Vector2, now: float, field: Rect2) -> String:
+## ある時刻 now に、点 p を含むエリア(なければ空の辞書)。z は z.areas を持つ新しい形式(弾幕 v2)。重なるときは、先に書いてあるものが勝つ。
+## 流れ(flow)のエリアは、押す向き dir(単位ベクトル)を持つ。
+static func area_at(z: Dictionary, p: Vector2, now: float, field: Rect2) -> Dictionary:
 	var u := progress(z, now)
 	for a in z.areas:
 		if contains(a.shape, p, field, u):
-			return "" if str(a.type) == "warp" else str(a.type)
-	return ""
+			return a
+	return {}

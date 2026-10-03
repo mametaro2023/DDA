@@ -43,6 +43,8 @@ var age := PackedFloat32Array()    # 発射からの秒(挙動のある弾だけ
 var pa := PackedFloat32Array()     # 挙動のパラメータ a / b / c
 var pb := PackedFloat32Array()
 var pc := PackedFloat32Array()
+var tscale := PackedFloat32Array() # この弾の時間の倍率(時の淀み・急流の中で変わる。1 = ふつう)
+var _ts_active := false            # 倍率が 1 でない弾がある(エリアが消えたあとも、戻る間は true)
 
 # update() の結果
 var hit := false
@@ -53,9 +55,15 @@ var graze_count := 0
 
 var bounds := Rect2(-12, -12, 984, 744)
 
-## 時の淀み(特殊エリア。弾幕 v2): 弾の位置がこの中にあるとき、その弾の時間が f 倍で進む(動き・曲がり・挙動の時計も)。自機の位置には依存しない。
+## 時の淀み・時の急流(特殊エリア。弾幕 v2): 弾の位置がこの中にあるとき、その弾の時間が f 倍で進む(動き・曲がり・挙動の時計も)。自機の位置には依存しない。
 ## 各要素: {f: 倍率, rect: Rect2}(長方形)または {f, c: Vector2, r2: 半径の 2 乗}(円)。空なら何もしない。GameSim が毎ステップ決める。
+## 弾ごとの倍率 tscale は、そのときの目標(中なら f・外なら 1)へなめらかに近づく: 入るときは WARP_ENTER(/秒)、出るときは WARP_EXIT(/秒)で、
+## エリアが消えても、弾が急に元の速さへ戻らない(急に速くなる弾は避けにくいため。ゆっくり戻すので、見てから避けられる)。
 var warp: Array = []
+const WARP_ENTER := 1.2
+const WARP_EXIT := 0.4
+const WARP_SLOW_TINT := Color(0.6, 0.55, 1.0)    # 遅くなっている弾の光の色(時の淀み)
+const WARP_FAST_TINT := Color(1.0, 0.4, 0.35)    # 速くなっている弾の光の色(時の急流)
 
 ## 見える範囲(暗闇 MOD。描画だけで、判定には関係しない)。vis_r1 > 0 のとき、vis_center から vis_r0 までは全部見え、
 ## vis_r1 に向けてなめらかに薄れ、それより遠い弾は見えない。
@@ -88,6 +96,7 @@ func _init() -> void:
 	pa.resize(MAX_BULLETS)
 	pb.resize(MAX_BULLETS)
 	pc.resize(MAX_BULLETS)
+	tscale.resize(MAX_BULLETS)
 
 
 ## 描画用ノードを作る(テストなど描画不要なときは呼ばない)。
@@ -202,6 +211,7 @@ func add(p: Vector2, v: Vector2, radius: float, color_idx: int, grace_px := 0.0,
 	grace[count] = grace_px
 	turn[count] = turn_rate
 	grazed[count] = 0
+	tscale[count] = 1.0
 	kind[count] = beh_kind
 	if beh_kind != 0:
 		age[count] = age0
@@ -221,6 +231,7 @@ func _remove(i: int) -> void:
 		grace[i] = grace[count]
 		turn[i] = turn[count]
 		grazed[i] = grazed[count]
+		tscale[i] = tscale[count]
 		kind[i] = kind[count]
 		age[i] = age[count]
 		pa[i] = pa[count]
@@ -303,12 +314,20 @@ func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, ppre
 	var seg := Vector2.ZERO if pprev == Vector2.INF else ppos - pprev
 	var seg2 := seg.length_squared()
 	var swept := seg2 > 4.0
-	var warped := not warp.is_empty()
+	var warped := not warp.is_empty() or _ts_active
+	var any_off := false
 	var i := count - 1
 	while i >= 0:
 		var dt := dt_all
 		if warped:
-			dt = dt_all * _warp_factor(pos[i])
+			var ts := tscale[i]
+			var tgt := _warp_factor(pos[i]) if not warp.is_empty() else 1.0
+			if ts != tgt:
+				ts = move_toward(ts, tgt, (WARP_ENTER if absf(tgt - 1.0) > absf(ts - 1.0) else WARP_EXIT) * dt_all)
+				tscale[i] = ts
+			if ts != 1.0:
+				any_off = true
+			dt = dt_all * ts
 		var v := vel[i]
 		var tr := turn[i]
 		if tr != 0.0:
@@ -351,18 +370,19 @@ func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, ppre
 					grazed[i] = 1
 					graze_count += 1
 		i -= 1
+	_ts_active = any_off
 
 
-## 位置 p の弾の、時間の倍率(時の淀みの中なら f。重なるときは、いちばん遅いもの)。
+## 位置 p の弾の、時間の目標の倍率(淀み・急流の中なら f。重なるときは、遅いものがあれば遅いほう、なければ速いほう)。
 func _warp_factor(p: Vector2) -> float:
-	var f := 1.0
+	var lo := 1.0
+	var hi := 1.0
 	for w in warp:
-		if w.has("rect"):
-			if (w.rect as Rect2).has_point(p):
-				f = minf(f, float(w.f))
-		elif p.distance_squared_to(w.c) <= float(w.r2):
-			f = minf(f, float(w.f))
-	return f
+		var inside: bool = (w.rect as Rect2).has_point(p) if w.has("rect") else p.distance_squared_to(w.c) <= float(w.r2)
+		if inside:
+			lo = minf(lo, float(w.f))
+			hi = maxf(hi, float(w.f))
+	return lo if lo < 1.0 else hi
 
 
 ## 自機の経路(pprev から seg だけ動いた線分)のうち、中心 p・半径 hr の円の中を通った長さ。ほとんど動いていないとき(swept でない)は、動いた長さ。
@@ -453,6 +473,9 @@ func sync_render() -> void:
 		var p := pos[i]
 		var r := rad[i]
 		var c := PALETTE[col[i] % PALETTE.size()]
+		if _ts_active and tscale[i] != 1.0:   # 時の淀み・急流の中の弾は、本体の色も、淀み(紫)・急流(赤)へ寄せる
+			var st := clampf(absf(tscale[i] - 1.0) / 0.45, 0.0, 1.0)
+			c = c.lerp(WARP_SLOW_TINT if tscale[i] < 1.0 else WARP_FAST_TINT, 0.4 * st)
 		if vis_r1 > 0.0:
 			var va := 1.0 - smoothstep(vis_r0, vis_r1, p.distance_to(vis_center))
 			if va < 0.005:
@@ -472,16 +495,23 @@ func sync_render() -> void:
 			_put(_buf_color, o, p.x, p.y, r * 2.3, c)
 			_put(_buf_core, o, p.x, p.y, r * HIT_SCALE * 2.0 + 2.0, Color(1, 1, 1, c.a))   # 白い芯の縁 = 当たり判定の縁(自機の白い円と同じ規則。縁のぼかし分の 2px を足す)
 			_put(_buf_ring, o, p.x, p.y, 0.0, c)
-	if halo > 0.01:
+	var ts_fx := _ts_active
+	if halo > 0.01 or ts_fx:
 		for i in range(n):
 			var hc := PALETTE[col[i] % PALETTE.size()]
 			var hp := pos[i]
-			var ha := halo * 0.4
+			var ha := halo * 0.4 if halo > 0.01 else 0.0
+			var hs := 7.0
+			if ts_fx and tscale[i] != 1.0:   # 時の淀み(紫)・時の急流(赤): 効いている弾だけ、周りに強い光の玉をつける(外へ出て戻る間も、倍率に応じて薄れていく)
+				var st := clampf(absf(tscale[i] - 1.0) / 0.45, 0.0, 1.0)
+				hc = WARP_SLOW_TINT if tscale[i] < 1.0 else WARP_FAST_TINT
+				ha = maxf(ha, 0.55 * st)
+				hs = 10.0
 			if vis_r1 > 0.0:
 				ha *= 1.0 - smoothstep(vis_r0, vis_r1, hp.distance_to(vis_center))
-			_put(_buf_halo, i * 12, hp.x, hp.y, rad[i] * 7.0 if ha > 0.004 else 0.0, Color(hc.r, hc.g, hc.b, ha))
+			_put(_buf_halo, i * 12, hp.x, hp.y, rad[i] * hs if ha > 0.004 else 0.0, Color(hc.r, hc.g, hc.b, ha))
 		_mm_halo.buffer = _buf_halo
-	_mm_halo.visible_instance_count = n if halo > 0.01 else 0
+	_mm_halo.visible_instance_count = n if (halo > 0.01 or ts_fx) else 0
 	_mm_color.buffer = _buf_color
 	_mm_core.buffer = _buf_core
 	_mm_ring.buffer = _buf_ring

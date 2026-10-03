@@ -17,7 +17,9 @@ extends RefCounted
 ## gen.zones の各要素が areas(形 + 種類のリスト。形は zone_area.gd)を持つとき(= 弾幕 v2)は、3×3 のマスではなく、その形が特殊エリアになる。種類は 3 系統:
 ##   試練(自機が不利): 鈍足・脆弱・毒(+ v1 の巨大)。中でグレイズすると、ボーナス用のグレイズが ZONE_GRAZE_TRIAL 倍ぶん、上乗せされる(リスクの見返り)
 ##   恩恵(自機が有利): 癒し(heal: ゲージが ZONE_HEAL_DRAIN(/秒)で回復)/ 精密(precise: 当たり判定 ZONE_PRECISE_HIT 倍・移動 ZONE_PRECISE_SPEED 倍)/ 稼ぎ(bonus: グレイズの上乗せ ZONE_GRAZE_BONUS 倍)
-##   変質(弾に作用): 時の淀み(warp: エリアの中の弾が ZONE_WARP 倍の速さで進む。弾の位置だけで決まるので、協力でも全員が同じ弾を見る)
+##   変質(弾に作用): 時の淀み(warp: エリアの中の弾が ZONE_WARP 倍の速さで進む)/ 時の急流(haste: ZONE_HASTE 倍。試練)。弾の位置だけで決まるので、協力でも全員が同じ弾を見る。
+##     弾の速さの倍率は、目標へなめらかに近づく(入るときは速く、出たあとはゆっくり戻る。BulletField.WARP_ENTER / WARP_EXIT)ので、エリアが消えても弾が急に元の速さへ戻らない。
+##   流れ(flow: 試練): 自機が、エリアごとの向き(area.dir)へ、入力に関係なく ZONE_FLOW_SPEED で押される。
 ##
 ## ## 小型化・撃破(MOD)
 ## 小型化: 自機が動ける範囲(move_rect)が、盤面の中央の縦横 field_scale 倍になる。発射位置は変わらない。危険エリアの 3×3 のマスも、この範囲を分ける。
@@ -75,6 +77,8 @@ const ZONE_HEAL_DRAIN := 0.05      # 癒し: ゲージの増える速さ(ゲー�
 const ZONE_PRECISE_HIT := 0.6      # 精密: 自機の当たり判定の倍率
 const ZONE_PRECISE_SPEED := 0.75   # 精密: 移動の倍率
 const ZONE_WARP := 0.55            # 時の淀み: エリアの中の弾の速さの倍率
+const ZONE_HASTE := 1.5            # 時の急流: エリアの中の弾の速さの倍率
+const ZONE_FLOW_SPEED := 110.0     # 流れ: 自機を押す速さ(px/s。自機の移動 380 の約 3 割)
 const ZONE_GRAZE_TRIAL := 0.5      # 試練エリアの中のグレイズに、上乗せする割合(1 回のグレイズが 1.5 回ぶん)
 const ZONE_GRAZE_BONUS := 1.0      # 稼ぎ(恩恵)エリアの中のグレイズに、上乗せする割合(1 回が 2 回ぶん)
 
@@ -118,6 +122,8 @@ var warn_lead := 0.6
 var practice := false
 var zones: Array = []              # 危険エリアの予定(gen.zones。時刻順)
 var zone_debuff := ""              # いま自機が受けているエリアの種類("" = なし。名前はデバフのままだが、恩恵の種類も入る)
+var zone_area_type := ""           # いま自機がいるエリアの種類(時の淀み・急流のような、自機には効かないものも入る)。グレイズの上乗せの判定に使う
+var zone_push := Vector2.ZERO      # 流れのエリアの中で、自機が押されている速度(px/s)
 var hit_mult := 1.0                # 巨大・精密のエリア中の、当たり判定の倍率(描画の点の大きさにも使う)
 var contact_extra := 0.0           # 参加者: まだホストへ送っていない、デバフによる追加ダメージ(被弾時間に換算した秒)
 var contact_heal := 0.0            # 参加者: まだホストへ送っていない、癒しによる回復(被弾時間に換算した秒)
@@ -443,6 +449,8 @@ func step(now: float, dt: float, move: Vector2, slow_mode: bool) -> void:
 		var spd := PLAYER_SLOW if slow else PLAYER_SPEED
 		spd *= zone_speed_mul()
 		_move_player(player_pos + move.normalized() * spd * dt)
+	if zone_push != Vector2.ZERO:
+		_move_player(player_pos + zone_push * dt)
 	_update(now, dt)
 
 
@@ -454,7 +462,7 @@ func step_relative(now: float, dt: float, delta_px: Vector2, slow_mode: bool) ->
 	_prev_pos = player_pos
 	_update_zone_debuff(now)
 	delta_px *= zone_speed_mul()
-	_move_player(player_pos + delta_px)
+	_move_player(player_pos + delta_px + zone_push * dt)
 	_update(now, dt)
 
 
@@ -617,6 +625,8 @@ func _record_gauge(now: float) -> void:
 ## いまの時刻・自機の位置で受けるエリアの効果を決める(動く前に呼ぶ。休憩では効かない)。弾に作用する時の淀みも、ここで弾の側へ渡す。
 func _update_zone_debuff(now: float) -> void:
 	zone_debuff = ""
+	zone_area_type = ""
+	zone_push = Vector2.ZERO
 	hit_mult = 1.0
 	field.warp = []
 	if zones.is_empty() or in_break(now):
@@ -628,19 +638,28 @@ func _update_zone_debuff(now: float) -> void:
 	var z: Dictionary = zones[_zone_i]
 	if z.has("areas"):
 		_update_warp(z, now)
-	zone_debuff = _type_at(z, player_pos, now)
+	var a := _area_at(z, player_pos, now)
+	zone_area_type = str(a.get("type", ""))
+	if zone_area_type != "warp" and zone_area_type != "haste":   # 弾に作用するだけのエリアは、自機には何も効かない
+		zone_debuff = zone_area_type
+	if zone_debuff == "flow":
+		zone_push = (a.dir as Vector2).normalized() * ZONE_FLOW_SPEED
 	hit_mult = _hit_mult_of(zone_debuff)
 
 
-## 時刻 now に、点 p にいる人に効いているエリアの種類(z = 時刻が合っている zones の要素。形式は、v1 のマス・v2 の形の両方)。
-func _type_at(z: Dictionary, p: Vector2, now: float) -> String:
+## 時刻 now に、点 p にいる人がいるエリア(z = 時刻が合っている zones の要素。形式は、v1 のマス・v2 の形の両方)。なければ空の辞書。
+func _area_at(z: Dictionary, p: Vector2, now: float) -> Dictionary:
 	if z.has("areas"):
-		return ZoneArea.type_at(z, p, now, move_rect)
+		return ZoneArea.area_at(z, p, now, move_rect)
 	var cell := cell_of(p)
 	for c in z.cells:
 		if int(c.c) == cell:
-			return str(c.type)
-	return ""
+			return c
+	return {}
+
+
+func _type_at(z: Dictionary, p: Vector2, now: float) -> String:
+	return str(_area_at(z, p, now).get("type", ""))
 
 
 static func _hit_mult_of(type: String) -> float:
@@ -664,9 +683,9 @@ func zone_speed_mul() -> float:
 
 ## いま受けているエリアの、グレイズの上乗せの割合(試練 = ZONE_GRAZE_TRIAL / 稼ぎ = ZONE_GRAZE_BONUS / それ以外 0)。
 func zone_graze_mul() -> float:
-	if zone_debuff == "bonus":
+	if zone_area_type == "bonus":
 		return ZONE_GRAZE_BONUS
-	if ZoneArea.family_of(zone_debuff) == "trial":
+	if ZoneArea.family_of(zone_area_type) == "trial":   # 時の急流のように、自機には効かない試練も含む
 		return ZONE_GRAZE_TRIAL
 	return 0.0
 
@@ -675,10 +694,10 @@ func zone_graze_mul() -> float:
 func _update_warp(z: Dictionary, now: float) -> void:
 	var u := ZoneArea.progress(z, now)
 	for a in z.areas:
-		if str(a.type) != "warp":
+		if str(a.type) != "warp" and str(a.type) != "haste":
 			continue
 		var sh: Dictionary = a.shape
-		var w := {"f": ZONE_WARP}
+		var w := {"f": ZONE_WARP if str(a.type) == "warp" else ZONE_HASTE}
 		if str(sh.k) == ZoneArea.RECT:
 			w["rect"] = ZoneArea.bounds(sh, move_rect, u)
 		else:
@@ -721,12 +740,12 @@ static func zone_cell(p: Vector2) -> int:
 
 ## デバフの名前と色(表示用)。
 static func zone_name(type: String) -> String:
-	return {"slow": "鈍足", "fragile": "脆弱", "poison": "毒", "big": "巨大", "heal": "癒し", "precise": "精密", "bonus": "稼ぎ", "warp": "時の淀み"}.get(type, "")
+	return {"slow": "鈍足", "fragile": "脆弱", "poison": "毒", "big": "巨大", "heal": "癒し", "precise": "精密", "bonus": "稼ぎ", "warp": "時の淀み", "haste": "時の急流", "flow": "流れ"}.get(type, "")
 
 
 static func zone_color(type: String) -> Color:
 	return {"slow": Color(0.35, 0.68, 1.0), "fragile": Color(1.0, 0.62, 0.25), "poison": Color(0.62, 0.9, 0.35), "big": Color(0.92, 0.45, 0.92),
-		"heal": Color(1.0, 0.55, 0.75), "precise": Color(0.4, 0.95, 0.9), "bonus": Color(1.0, 0.85, 0.3), "warp": Color(0.6, 0.55, 1.0)}.get(type, Color.WHITE)
+		"heal": Color(1.0, 0.55, 0.75), "precise": Color(0.4, 0.95, 0.9), "bonus": Color(1.0, 0.85, 0.3), "warp": Color(0.6, 0.55, 1.0), "haste": Color(1.0, 0.4, 0.35), "flow": Color(0.88, 0.92, 1.0)}.get(type, Color.WHITE)
 
 
 ## 左のパネルに出す、エリアの系統の名前(試練 = デバフ / 恩恵)。

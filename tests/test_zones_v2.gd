@@ -64,7 +64,7 @@ func _test_shapes() -> void:
 	_check(ZoneArea.contains(half, Vector2(300, 300), small, 0.0) and not ZoneArea.contains(half, Vector2(500, 300), small, 0.0) and ZoneArea.bounds(half, small, 0.0).size.is_equal_approx(Vector2(240, 360)),
 		"小型化: 動ける範囲に対する割合で拡縮する")
 	_check(absf(ZoneArea.area_fraction(half) - 0.5) < 1e-6 and absf(ZoneArea.area_fraction(disc) - PI * 0.09 * 0.75) < 1e-6, "面積の割合")
-	_check(ZoneArea.family_of("slow") == "trial" and ZoneArea.family_of("heal") == "boon" and ZoneArea.family_of("warp") == "warp" and ZoneArea.family_of("x") == "", "系統(試練・恩恵・変質)")
+	_check(ZoneArea.family_of("slow") == "trial" and ZoneArea.family_of("heal") == "boon" and ZoneArea.family_of("warp") == "warp" and ZoneArea.family_of("haste") == "trial" and ZoneArea.family_of("flow") == "trial" and ZoneArea.family_of("x") == "", "系統(試練・恩恵・変質。時の急流・流れは試練)")
 
 
 # --- 生成 ---
@@ -159,6 +159,19 @@ func _test_generation() -> void:
 	var ti := _types(gi.zones)
 	_check(th.has("slow") and th.has("fragile") and th.has("warp") and th.has("bonus") and th.has("precise") and ti.has("poison"), "高難度には、試練・恩恵・変質が出る(Chimera %s・Renatus Insane の毒 %s)" % [str(th.keys()), str(ti.has("poison"))])
 	_check(th.size() >= 5, "高難度は、種類が 5 つ以上出る(%d 種類)" % th.size())
+	var flow_ok := true
+	var flow_n := 0
+	for g in [gh, gi]:
+		for z in g.zones:
+			for a in z.areas:
+				if a.type == "flow":
+					flow_n += 1
+					if not a.has("dir") or absf((a.dir as Vector2).length() - 1.0) > 1e-6:
+						flow_ok = false
+				elif a.has("dir"):
+					flow_ok = false
+	_check(th.has("flow") and th.has("haste") and flow_ok and flow_n >= 3, "流れ・時の急流が出る。流れだけが、押す向き(単位ベクトル)を持つ(流れ %d 個)" % flow_n)
+	_check(not te.has("haste") and not te.has("flow"), "入門(★が低い)には、時の急流・流れは出ない")
 	# 譜面の性格で形・種類が変わる(Chimera の中に複数の形)
 	var shape_kinds := {}
 	for z in gh.zones:
@@ -345,31 +358,82 @@ func _test_effects() -> void:
 	s8.player_pos = Vector2(800, 360)
 	_run(s8, 0.05, 0.05)
 	_check(l_type == "poison" and s8.zone_debuff == "heal", "対: 左は毒・右は癒し(位置で変わる)")
-	# 時の淀み: エリアの中の弾が 0.55 倍の速さ。外は変わらない。自機の位置には依存しない
+	# 時の淀み: エリアの中の弾が、なめらかに 0.55 倍の速さへ落ちる(急に遅くならない)。外は変わらない。自機の位置には依存しない
 	var warp := _zone([{"shape": ZoneArea.rect(0.5, 0.0, 1.0, 1.0), "type": "warp"}])
 	var sw = _make([warp])[0]
 	sw.player_pos = Vector2(100, 700)
 	sw.field.add(Vector2(600, 300), Vector2(100, 0), 5.0, 0, 0.0)    # 淀みの中
 	sw.field.add(Vector2(200, 300), Vector2(100, 0), 5.0, 0, 0.0)    # 淀みの外(左半分)
-	_run(sw, 0.0, 0.5)
-	var inside_dx: float = sw.field.pos[0].x - 600.0
-	var outside_dx: float = sw.field.pos[1].x - 200.0
-	_check(absf(inside_dx - 100.0 * 0.5 * GameSim.ZONE_WARP) < 1.0 and absf(outside_dx - 50.0) < 1.0, "時の淀み: 中の弾は %.2f 倍の速さ(0.5 秒で %.1f px)・外は変わらない(%.1f px)" % [GameSim.ZONE_WARP, inside_dx, outside_dx])
-	_check(sw.zone_debuff == "", "時の淀みは、自機には何も効かない")
+	_run(sw, 0.0, 0.05)
+	var ts_early: float = sw.field.tscale[0]
+	_check(ts_early > 0.9 and ts_early < 1.0 and sw.field.tscale[1] == 1.0, "時の淀み: 入った直後に、急には遅くならない(0.05 秒で %.2f 倍)・外は変わらない" % ts_early)
+	_run(sw, 0.05, 1.0)
+	var x1: float = sw.field.pos[0].x
+	var o1: float = sw.field.pos[1].x
+	_run(sw, 1.05, 0.4)
+	var inside_dx: float = sw.field.pos[0].x - x1
+	var outside_dx: float = sw.field.pos[1].x - o1
+	_check(absf(inside_dx - 100.0 * 0.4 * GameSim.ZONE_WARP) < 1.0 and absf(outside_dx - 40.0) < 1.0, "時の淀み: 落ち着いたあと、中の弾は %.2f 倍の速さ(0.4 秒で %.1f px)・外は変わらない(%.1f px)" % [GameSim.ZONE_WARP, inside_dx, outside_dx])
+	_check(sw.zone_debuff == "" and sw.zone_area_type == "", "時の淀み: 自機がエリアの外なら、何もない")
 	sw.player_pos = Vector2(700, 300)
-	var before: float = sw.field.pos[0].x
-	_run(sw, 0.5, 0.5)
-	_check(absf((sw.field.pos[0].x - before) - 100.0 * 0.5 * GameSim.ZONE_WARP) < 1.0, "時の淀みは、自機の位置に関わらず、弾の位置だけで決まる")
-	# 淀みは、予告の間・終わったあとは効かない。円の淀みも効く
-	var sw2 = _make([_zone([{"shape": ZoneArea.disc(0.5, 0.5, 0.3), "type": "warp"}], 2.0, 4.0)])[0]
+	_run(sw, 1.45, 0.05)
+	_check(sw.zone_debuff == "" and sw.zone_area_type == "warp" and sw.zone_speed_mul() == 1.0, "時の淀みは、自機の中にいても、自機には何も効かない(移動の倍率 1)")
+	# エリアが消えたあと、弾の速さがゆっくり戻る(急に速くならない)
+	var wr := _zone([{"shape": ZoneArea.rect(0.5, 0.0, 1.0, 1.0), "type": "warp"}], 0.0, 3.0)
+	var swr = _make([wr])[0]
+	swr.player_pos = Vector2(100, 700)
+	swr.field.add(Vector2(600, 100), Vector2(0, 40), 5.0, 0, 0.0)
+	_run(swr, 0.0, 3.0)
+	_check(absf(swr.field.tscale[0] - GameSim.ZONE_WARP) < 0.01, "時の淀み: 終わる直前は、%.2f 倍で落ち着いている" % swr.field.tscale[0])
+	_run(swr, 3.0, 0.1)
+	var ts_after: float = swr.field.tscale[0]
+	_check(ts_after > GameSim.ZONE_WARP and ts_after < 0.7, "終わった直後(0.1 秒後)は、まだ遅いまま(%.2f 倍)" % ts_after)
+	_run(swr, 3.1, 0.5)
+	var ts_mid: float = swr.field.tscale[0]
+	_check(ts_mid > 0.7 and ts_mid < 0.95, "終わって 0.6 秒後も、途中(%.2f 倍)" % ts_mid)
+	_run(swr, 3.6, 1.5)
+	_check(swr.field.tscale[0] == 1.0 and not swr.field._ts_active, "終わって約 2 秒後には、元の速さへ戻る")
+	# 時の急流: エリアの中の弾が 1.5 倍の速さ(試練。なめらかに速くなる)。自機には効かないが、中でのグレイズには上乗せがつく
+	var hz := _zone([{"shape": ZoneArea.rect(0.5, 0.0, 1.0, 1.0), "type": "haste"}], 0.0, 5.0)
+	var sh = _make([hz])[0]
+	sh.player_pos = Vector2(700, 650)
+	sh.field.add(Vector2(600, 100), Vector2(0, 40), 5.0, 0, 0.0)
+	_run(sh, 0.0, 0.05)
+	_check(sh.field.tscale[0] > 1.0 and sh.field.tscale[0] < 1.1, "時の急流: 入った直後は、急には速くならない(%.2f 倍)" % sh.field.tscale[0])
+	_run(sh, 0.05, 1.0)
+	_check(absf(sh.field.tscale[0] - GameSim.ZONE_HASTE) < 0.01, "時の急流: 落ち着くと %.2f 倍" % GameSim.ZONE_HASTE)
+	_check(sh.zone_debuff == "" and sh.zone_area_type == "haste" and absf(sh.zone_graze_mul() - GameSim.ZONE_GRAZE_TRIAL) < 1e-9, "時の急流: 自機には効かず、中でのグレイズには、試練の上乗せがつく")
+	_run(sh, 1.05, 4.0)   # 5 秒で終わる
+	_run(sh, 5.05, 0.1)
+	_check(sh.field.tscale[0] > 1.0 and sh.field.tscale[0] < GameSim.ZONE_HASTE, "時の急流が終わった直後も、急には遅くならない(%.2f 倍)" % sh.field.tscale[0])
+	# 流れ: 入力がなくても、向きへ押される(110px/s)。逆向きに動けば、押し返せる。マウス操作でも押される
+	var fz := _zone([{"shape": ZoneArea.rect(0.0, 0.0, 1.0, 1.0), "type": "flow", "dir": Vector2(1, 0)}])
+	var sf = _make([fz])[0]
+	sf.player_pos = Vector2(200, 360)
+	_run(sf, 0.0, 1.0)
+	_check(absf((sf.player_pos.x - 200.0) - GameSim.ZONE_FLOW_SPEED) < 2.0 and absf(sf.player_pos.y - 360.0) < 0.01 and sf.zone_debuff == "flow", "流れ: 入力がなくても、1 秒で %.0f px 押される(%.1f px)" % [GameSim.ZONE_FLOW_SPEED, sf.player_pos.x - 200.0])
+	var left := func(_n: float) -> Vector2: return Vector2(-1, 0)
+	var sf2 = _make([fz])[0]
+	sf2.player_pos = Vector2(500, 360)
+	_run(sf2, 0.0, 1.0, left)
+	_check(absf((sf2.player_pos.x - 500.0) - (GameSim.ZONE_FLOW_SPEED - GameSim.PLAYER_SPEED)) < 3.0, "流れ: 逆向きに進むと、押されたぶん遅くなる(1 秒で %.0f px)" % (sf2.player_pos.x - 500.0))
+	var sf3 = _make([fz])[0]
+	sf3.player_pos = Vector2(200, 360)
+	sf3.step_relative(0.0, 0.1, Vector2.ZERO, false)
+	_check(absf((sf3.player_pos.x - 200.0) - GameSim.ZONE_FLOW_SPEED * 0.1) < 0.01, "流れ: マウス操作(相対移動)でも、押される")
+	var sf4 = _make([_zone([{"shape": ZoneArea.rect(0.0, 0.0, 0.5, 1.0), "type": "flow", "dir": Vector2(0, 1)}])])[0]
+	sf4.player_pos = Vector2(700, 300)
+	_run(sf4, 0.0, 0.5)
+	_check(sf4.player_pos == Vector2(700, 300) and sf4.zone_push == Vector2.ZERO, "流れ: エリアの外では、押されない")
+	# 淀みは、予告の間は効かない。円の淀みも効く
+	var sw2 = _make([_zone([{"shape": ZoneArea.disc(0.5, 0.5, 0.3), "type": "warp"}], 2.0, 6.0)])[0]
 	sw2.player_pos = Vector2(100, 700)
-	sw2.field.add(Vector2(480, 300), Vector2(100, 0), 5.0, 0, 0.0)
+	sw2.field.add(Vector2(480, 200), Vector2(0, 40), 5.0, 0, 0.0)
 	_run(sw2, 0.0, 1.0)
-	var dx_pre: float = sw2.field.pos[0].x - 480.0
-	_check(absf(dx_pre - 100.0) < 1.0, "時の淀み: 予告の間は効かない")
+	_check(sw2.field.tscale[0] == 1.0 and absf(sw2.field.pos[0].y - 240.0) < 0.5, "時の淀み: 予告の間は効かない")
 	sw2.field.pos[0] = Vector2(480, 300)
-	_run(sw2, 2.0, 0.5)
-	_check(absf((sw2.field.pos[0].x - 480.0) - 50.0 * GameSim.ZONE_WARP) < 1.0, "時の淀み(円): 発動したら、円の中の弾が遅くなる")
+	_run(sw2, 2.0, 1.0)
+	_check(sw2.field.tscale[0] < 0.7, "時の淀み(円): 発動したら、円の中の弾が遅くなる(%.2f 倍)" % sw2.field.tscale[0])
 	# 動く帯: 自機がいるかどうかは、時刻で決まる
 	var sweep := ZoneArea.rect(0.0, 0.0, 0.3, 1.0, Vector2(0.7, 0.0))
 	var sz = _make([_zone([{"shape": sweep, "type": "slow"}], 0.0, 10.0)])[0]

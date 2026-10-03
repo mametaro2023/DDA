@@ -116,7 +116,7 @@ func _draw_zones() -> void:
 				var poly := _zone_poly(a.shape, u)
 				if poly.size() >= 3:
 					var col := GameSim.zone_color(str(a.type))
-					_draw_zone_piece(poly, _poly_center(poly), str(a.type), col, warn, fade_in, blink, fade_out, since)
+					_draw_zone_piece(poly, _poly_center(poly), str(a.type), col, warn, fade_in, blink, fade_out, since, a, u)
 			continue
 		for c in z.cells:
 			var idx: int = c.c
@@ -165,20 +165,25 @@ func _poly_center(poly: PackedVector2Array) -> Vector2:
 
 
 ## 特殊エリア 1 つぶん(予告 = 点線の枠と薄い面・点滅 / 発動 = 実線の太い枠と濃い面・合図の広がる枠)。v1 のマスと同じ見せ方。
-func _draw_zone_piece(poly: PackedVector2Array, center: Vector2, type: String, col: Color, warn: bool, fade_in: float, blink: float, fade_out: float, since: float) -> void:
+func _draw_zone_piece(poly: PackedVector2Array, center: Vector2, type: String, col: Color, warn: bool, fade_in: float, blink: float, fade_out: float, since: float, area: Dictionary, u: float) -> void:
 	var closed := poly.duplicate()
 	closed.append(poly[0])
+	var dir: Vector2 = area.get("dir", Vector2.RIGHT)
 	if warn:
 		var a := fade_in * (0.25 + 0.75 * blink) * fade_out
 		draw_colored_polygon(poly, Color(col.r, col.g, col.b, 0.08 * a))
 		for i in range(poly.size()):
 			draw_dashed_line(poly[i], poly[(i + 1) % poly.size()], Color(col.r, col.g, col.b, 0.8 * a), 2.0, 10.0)
-		_draw_zone_icon(type, center, Color(col.r, col.g, col.b, 0.7 * a))
+		_draw_zone_icon(type, center, Color(col.r, col.g, col.b, 0.7 * a), dir)
 		return
 	var a2 := fade_out
 	draw_colored_polygon(poly, Color(col.r, col.g, col.b, 0.26 * a2))
 	draw_polyline(closed, Color(col.r, col.g, col.b, 0.95 * a2), 4.0, true)
-	_draw_zone_icon(type, center, Color(col.r, col.g, col.b, 0.95 * a2))
+	if type == "flow":   # 流れ: 面全体に、押す向きへ進む矢印が流れる(中にいるときだけでなく、どこが流れか分かる)
+		_draw_flow_field(area, u, dir, Color(col.r, col.g, col.b, 0.38 * a2))
+	elif type == "warp" or type == "haste":   # 時の淀み・急流: 面の中に、ゆっくり回る輪(淀みは内向きに縮む・急流は外へ広がる)
+		_draw_time_rings(center, poly, type == "haste", Color(col.r, col.g, col.b, 0.5 * a2))
+	_draw_zone_icon(type, center, Color(col.r, col.g, col.b, 0.95 * a2), dir)
 	if since < 0.4:   # 発動の合図: 白い枠が、外へ広がりながら消える
 		var k := since / 0.4
 		var big := PackedVector2Array()
@@ -188,6 +193,44 @@ func _draw_zone_piece(poly: PackedVector2Array, center: Vector2, type: String, c
 		big.append(big[0])
 		draw_polyline(big, Color(1, 1, 1, 0.9 * (1.0 - k) * a2), 3.0, true)
 		draw_colored_polygon(poly, Color(1, 1, 1, 0.35 * (1.0 - k) * a2))
+
+
+## 流れのエリアの面に、押す向きへ進む矢印を敷き詰める(格子の点を、向きへ流して、形の中のものだけ描く)。
+func _draw_flow_field(area: Dictionary, u: float, dir: Vector2, col: Color) -> void:
+	var step := 96.0
+	var off := fposmod(now * 70.0, step)
+	var f: Rect2 = sim.move_rect
+	var perp := Vector2(-dir.y, dir.x)
+	var n := int(ceil(maxf(f.size.x, f.size.y) / step)) + 2
+	var c0 := f.get_center()
+	for ix in range(-n, n):
+		for iy in range(-n, n):
+			var pt := c0 + dir * (float(ix) * step + off) + perp * (float(iy) * step)
+			if f.has_point(pt) and ZoneArea.contains(area.shape, pt, f, u):
+				_chevron(pt, dir, 12.0, col, 3.0)
+
+
+## 進む向きを指す矢印(山形)。
+func _chevron(p: Vector2, dir: Vector2, size: float, col: Color, width: float) -> void:
+	var perp := Vector2(-dir.y, dir.x)
+	draw_polyline(PackedVector2Array([p - dir * size * 0.6 + perp * size * 0.7, p + dir * size * 0.5, p - dir * size * 0.6 - perp * size * 0.7]), col, width, true)
+
+
+## 時の淀み(内向きに縮む輪)・時の急流(外へ広がる輪)。形の中心から、3 つの輪が順に動く(形の外へははみ出さない大きさまで)。
+func _draw_time_rings(center: Vector2, poly: PackedVector2Array, fast: bool, col: Color) -> void:
+	var lo := poly[0]
+	var hi := poly[0]
+	for p in poly:
+		lo = lo.min(p)
+		hi = hi.max(p)
+	var rmax := minf(hi.x - lo.x, hi.y - lo.y) * 0.5 - 6.0
+	if rmax < 20.0:
+		return
+	var period := 1.4 if fast else 3.2   # 急流は速く、淀みはゆっくり
+	for k in range(3):
+		var ph := fposmod(now / period + float(k) / 3.0, 1.0)
+		var s := ph if fast else 1.0 - ph
+		draw_arc(center, 14.0 + (rmax - 14.0) * s, 0.0, TAU, 40, Color(col.r, col.g, col.b, col.a * (1.0 - ph)), 2.5, true)
 
 
 ## 点線の枠。
@@ -204,7 +247,7 @@ func _dashed_rect(r: Rect2, col: Color, width: float) -> void:
 
 ## エリアの種類を示すマーク(文字の代わり)。鈍足: 下向きの山形 / 脆弱: 割れた輪 / 毒: しずく / 巨大: 広がる輪 /
 ## 癒し: 十字 / 精密: 小さな輪と、内向きの 4 本の目盛り / 稼ぎ: 星 / 時の淀み: 砂時計。
-func _draw_zone_icon(type: String, c: Vector2, col: Color) -> void:
+func _draw_zone_icon(type: String, c: Vector2, col: Color, dir := Vector2.RIGHT) -> void:
 	match type:
 		"slow":
 			draw_polyline(PackedVector2Array([c + Vector2(-16, -16), c + Vector2(0, -2), c + Vector2(16, -16)]), col, 4.0, true)
@@ -232,6 +275,11 @@ func _draw_zone_icon(type: String, c: Vector2, col: Color) -> void:
 		"warp":
 			draw_polyline(PackedVector2Array([c + Vector2(-14, -18), c + Vector2(14, -18), c, c + Vector2(-14, -18)]), col, 3.5, true)
 			draw_polyline(PackedVector2Array([c + Vector2(-14, 18), c + Vector2(14, 18), c, c + Vector2(-14, 18)]), col, 3.5, true)
+		"haste":   # 稲妻
+			draw_polyline(PackedVector2Array([c + Vector2(6, -22), c + Vector2(-9, 2), c + Vector2(1, 2), c + Vector2(-6, 22), c + Vector2(10, -4), c + Vector2(0, -4)]), col, 3.5, true)
+		"flow":   # 押す向きの矢印(二重の山形)
+			_chevron(c - dir * 9.0, dir, 14.0, col, 4.0)
+			_chevron(c + dir * 9.0, dir, 14.0, col, 4.0)
 		"big":
 			draw_circle(c, 6.0, col)
 			draw_arc(c, 18.0, 0.0, TAU, 32, col, 3.5, true)
@@ -528,13 +576,79 @@ func _draw_player_marks_scaled() -> void:
 	if sim.gauge < 0.999:
 		var gc := UiStyle.hp_color(sim.gauge)
 		draw_arc(p, 27.0 * sc, -PI * 0.5, -PI * 0.5 + TAU * sim.gauge, 48, Color(gc.r, gc.g, gc.b, 0.85), 3.0, true)
-	# 危険エリアのデバフを受けている間は、その色の細い輪と名前を出す(点滅しない)
-	if sim.zone_debuff != "":
-		var zc := GameSim.zone_color(sim.zone_debuff)
-		draw_arc(p, 34.0 * sc, 0.0, TAU, 48, Color(zc.r, zc.g, zc.b, 0.85), 2.5, true)
+	_draw_zone_fx(p, sc)   # 受けているエリアの効果の演出(文字は出さない)
 	if hit_glow > 0.01:
 		draw_arc(p, 17.0 * sc, 0.0, TAU, 32, Color(1.0, 0.35, 0.35, 0.7 * hit_glow), 2.5, true)
 	_draw_hitbox(p, sim.player_r * sim.hit_mult)
+
+
+## 受けているエリアの効果を、自機の周りの演出で示す(文字は出さない。点滅しない。種類ごとに、形と動きが違う。色はエリアと同じ)。
+##   鈍足 = 内向きの目盛りがゆっくり回る輪(締め付け)/ 脆弱 = 3 つに割れて回る、ひび入りの輪 / 毒 = 緑の泡が昇る / 癒し = ピンクの十字が昇る /
+##   精密 = 内へ縮み続ける輪と、自機のそばの細い輪(照準)/ 稼ぎ = 金のきらめきが周りを回る / 流れ = 押される向きへ進む矢印 / 巨大(v1)= 外へ広がる目盛り。
+func _draw_zone_fx(p: Vector2, sc: float) -> void:
+	var type: String = sim.zone_debuff
+	if type == "":
+		return
+	var col := GameSim.zone_color(type)
+	var t := now
+	var r := 34.0 * sc
+	match type:
+		"slow":
+			draw_arc(p, r, 0.0, TAU, 48, Color(col, 0.65), 2.0, true)
+			for i in range(6):
+				var d := Vector2.from_angle(t * 0.6 + TAU * float(i) / 6.0)
+				draw_line(p + d * r, p + d * (r - 10.0 * sc), Color(col, 0.95), 3.0, true)
+		"fragile":
+			for i in range(3):
+				var a0 := t * 0.5 + TAU * float(i) / 3.0
+				draw_arc(p, r, a0 + 0.3, a0 + TAU / 3.0 - 0.3, 12, Color(col, 0.95), 3.0, true)
+				var d := Vector2.from_angle(a0)
+				draw_line(p + d * (r - 7.0 * sc), p + d * (r + 7.0 * sc), Color(col, 0.85), 2.0, true)
+		"poison":
+			draw_arc(p, r, 0.0, TAU, 48, Color(col, 0.45), 1.5, true)
+			for i in range(7):
+				var ph := fposmod(t * 0.7 + float(i) * 0.143, 1.0)
+				var bp := p + Vector2((_h(i, 1.0) - 0.5) * 36.0 * sc, -(8.0 + ph * 46.0) * sc)
+				var br := (4.6 - 3.0 * ph) * sc
+				draw_circle(bp, br, Color(col, 0.8 * (1.0 - ph)))
+				draw_arc(bp, br + 1.0, 0.0, TAU, 12, Color(1, 1, 1, 0.6 * (1.0 - ph)), 1.2, true)
+		"heal":
+			draw_circle(p, 26.0 * sc, Color(col, 0.12))
+			for i in range(4):
+				var ph := fposmod(t * 0.6 + float(i) * 0.25, 1.0)
+				var cp := p + Vector2((_h(i, 2.0) - 0.5) * 32.0 * sc, -(6.0 + ph * 44.0) * sc)
+				var s := 4.5 * sc
+				var ca := Color(col, 0.95 * (1.0 - ph))
+				draw_line(cp + Vector2(-s, 0), cp + Vector2(s, 0), ca, 2.5, true)
+				draw_line(cp + Vector2(0, -s), cp + Vector2(0, s), ca, 2.5, true)
+		"precise":
+			var k := fposmod(t * 1.1, 1.0)
+			draw_arc(p, lerpf(r, 12.0 * sc, k), 0.0, TAU, 40, Color(col, 0.8 * (1.0 - k)), 2.0, true)
+			draw_arc(p, 14.0 * sc, 0.0, TAU, 28, Color(col, 0.7), 1.5, true)
+			for i in range(4):
+				var d := Vector2.from_angle(PI * 0.25 + PI * 0.5 * float(i))
+				draw_line(p + d * 22.0 * sc, p + d * 16.0 * sc, Color(col, 0.9), 2.5, true)
+		"bonus":
+			draw_arc(p, r, 0.0, TAU, 48, Color(col, 0.4), 1.5, true)
+			for i in range(3):
+				var sp := p + Vector2.from_angle(t * 1.4 + TAU * float(i) / 3.0) * r
+				var s := (4.0 + 2.0 * sin(t * 3.0 + float(i) * 2.1)) * sc
+				var ca := Color(col, 0.95)
+				draw_line(sp + Vector2(-s, 0), sp + Vector2(s, 0), ca, 2.0, true)
+				draw_line(sp + Vector2(0, -s), sp + Vector2(0, s), ca, 2.0, true)
+				draw_line(sp + Vector2(-s, -s) * 0.6, sp + Vector2(s, s) * 0.6, ca, 1.5, true)
+				draw_line(sp + Vector2(-s, s) * 0.6, sp + Vector2(s, -s) * 0.6, ca, 1.5, true)
+		"flow":
+			var dir: Vector2 = sim.zone_push.normalized()
+			for i in range(3):
+				var ph := fposmod(t * 0.9 + float(i) / 3.0, 1.0)   # 押される向きへ進みながら、現れて消える
+				_chevron(p + dir * (14.0 + ph * 30.0) * sc, dir, 9.0 * sc, Color(col, 0.95 * sin(PI * ph)), 2.5)
+		"big":
+			draw_arc(p, r, 0.0, TAU, 48, Color(col, 0.7), 2.0, true)
+			var k := fposmod(t * 0.8, 1.0)
+			for i in range(4):
+				var d := Vector2.from_angle(PI * 0.25 + PI * 0.5 * float(i))
+				draw_line(p + d * (r + 4.0 + 8.0 * k) * 1.0, p + d * (r + 10.0 + 8.0 * k), Color(col, 0.9 * (1.0 - k)), 3.0, true)
 
 
 ## 当たり判定の点(自分も他の人も、まったく同じ見た目): 白い円の縁が、そのまま当たり判定の縁(大きさも同じ)。

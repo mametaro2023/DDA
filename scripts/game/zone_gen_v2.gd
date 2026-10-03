@@ -6,7 +6,8 @@ extends RefCounted
 ##              最初の弾の前には出さない。休憩地帯とも重ねない。予告は、発動の 2 小節前(★が高いと 1 小節前)から。次のフレーズの予告は、前のエリアが終わってから出る。
 ##   形     … 区間の型(弾幕 v2 のモチーフ)で選ぶ: 渦=中央の円 / ジャンプ=半面 / スライダー=流れる向きに動く帯 / 疎・フィニッシュ=角・円 / 往復=帯 / ふつう=角・半面・円。
 ##   系統   … 試練(自機が不利)/ 恩恵(自機が有利)/ 対(半面を 2 つに割って、片方が試練・片方が恩恵)。★が低いほど恩恵が多く、高いほど対・試練が多い。キアイは対が増え、疎な区間は恩恵(癒し)が増える。
-##   種類   … モチーフごとに、試練・恩恵の種類が決まる(PREF)。鈍足・脆弱・毒・癒し・精密・稼ぎ・時の淀み。毒は ★ 度合い 0.3 以上、精密は 0.2 以上。
+##   種類   … モチーフごとに、試練・恩恵の種類が決まる(PREF)。鈍足・脆弱・毒・流れ・時の急流(試練)/ 癒し・精密・稼ぎ・時の淀み(恩恵)。
+##              流れは ★ 度合い 0.15 以上、毒は 0.3 以上、時の急流は 0.4 以上、精密は 0.2 以上。流れの向きは、フレーズのノーツの流れる向き(45° 刻み)。
 ## 盤面の中央に居続けるのが有利にならないよう、形は中央の円・半面・帯・角(中央を通る帯もある)から選ぶ。安全な場所は常にある(試練のエリアは、動ける範囲の半分以下)。
 ##
 ## zones の要素: {t(発動), end(終わり), lead(予告の長さ), cells: [](v1 の形式との互換のために空), areas: [{shape, type}], fam: "trial"/"boon"/"pair", motif: 名前}
@@ -22,13 +23,15 @@ const LEAD_MIN := 1.4        # 予告の長さの下限(秒。小節が短いと
 const LEAD_CAP := 0.5        # 予告の長さの上限(フレーズの長さに対する割合)
 const POISON_K := 0.3        # 毒が出る★の度合い
 const PRECISE_K := 0.2       # 精密が出る★の度合い
+const FLOW_K := 0.15         # 流れが出る★の度合い
+const HASTE_K := 0.4         # 時の急流が出る★の度合い
 
 ## モチーフごとの好み: trial / boon = 試練・恩恵の種類、shapes = 形(disc 中央の円 / half 半面 / corner 角 / band 帯 / sweep 流れる帯)
 const PREF := {
 	"ring": {"trial": "slow", "boon": "bonus", "shapes": ["corner", "half", "disc"]},
 	"spiral": {"trial": "fragile", "boon": "warp", "shapes": ["disc", "half"]},
-	"crossfire": {"trial": "slow", "boon": "precise", "shapes": ["half", "half"]},
-	"curtain": {"trial": "slow", "boon": "bonus", "shapes": ["sweep"]},
+	"crossfire": {"trial": "haste", "boon": "precise", "shapes": ["half", "half"]},
+	"curtain": {"trial": "flow", "boon": "bonus", "shapes": ["sweep"]},
 	"bloom": {"trial": "poison", "boon": "heal", "shapes": ["corner", "disc"]},
 	"wall": {"trial": "fragile", "boon": "precise", "shapes": ["band", "half"]},
 }
@@ -149,10 +152,14 @@ static func _make_zone(pl: Dictionary, start: float, end: float, secs: Array, ob
 	var sparse_share := sparse / maxf(n_all, 1.0)
 	var kiai: bool = bool(secs[int(ph.j0)].kiai)
 	var flow := Vector2.ZERO
+	var flow_n := 0
 	for q in range(int(secs[int(ph.j0)].a), int(secs[int(ph.j1) - 1].b)):
 		var d: float = objs[q].dir
 		if not is_nan(d):
 			flow += Vector2.from_angle(d)
+			flow_n += 1
+	# 流れのエリアの押す向き: ノーツの流れる向き(45° 刻み)。向きがばらばらなら、譜面から作った疑似乱数で決める
+	var push := Vector2.from_angle(roundf((flow.angle() if flow.length() > 0.15 * float(flow_n) else TAU * _rng(seed, i, 8)) / (PI * 0.25)) * PI * 0.25)
 	var pref: Dictionary = PREF[motif]
 	# 系統: ★が低いほど恩恵、高いほど対・試練。疎な区間は恩恵、キアイは対が増える
 	var w_boon := lerpf(0.55, 0.15, kk) + (0.3 if sparse_share >= 0.5 else 0.0) - (0.15 if kiai else 0.0)
@@ -165,14 +172,18 @@ static func _make_zone(pl: Dictionary, start: float, end: float, secs: Array, ob
 		fam = "pair"
 	# 種類: モチーフの好みを基本にする。単調にならないよう、直前のエリアと同じ種類は避け、ときどき別の種類にする(★で解禁される種類だけ)
 	var trial_pool: Array = ["slow", "fragile"]
+	if kk >= FLOW_K:
+		trial_pool.append("flow")
 	if kk >= POISON_K:
 		trial_pool.append("poison")
+	if kk >= HASTE_K:
+		trial_pool.append("haste")
 	var boon_pool: Array = ["bonus", "heal", "warp"]
 	if kk >= PRECISE_K:
 		boon_pool.append("precise")
 	var trial: String = pref.trial
 	if not trial_pool.has(trial):
-		trial = "fragile"
+		trial = "fragile" if trial == "poison" else "slow"
 	if kiai and kk >= POISON_K and trial == "slow":
 		trial = "poison"
 	var boon: String = pref.boon
@@ -196,11 +207,11 @@ static func _make_zone(pl: Dictionary, start: float, end: float, secs: Array, ob
 		areas.clear()
 		if fam == "pair":
 			var halves := _halves(r_pos, flow)
-			areas.append({"shape": halves[0], "type": trial})
-			areas.append({"shape": halves[1], "type": boon})
+			areas.append(_area(halves[0], trial, push))
+			areas.append(_area(halves[1], boon, push))
 			sig = "pair/%d" % int(halves[2])
 		else:
-			areas.append({"shape": _shape(shape_name, kk, r_pos, flow), "type": trial if fam == "trial" else boon})
+			areas.append(_area(_shape(shape_name, kk, r_pos, flow), trial if fam == "trial" else boon, push))
 			sig = "%s/%s/%d" % [fam, shape_name, int(r_pos * 4.0)]
 		if sig != str(prev.sig):
 			break
@@ -219,6 +230,14 @@ static func _vary(base: String, pool: Array, prev_type: String, r1: float, r2: f
 	if alts.is_empty():
 		return base
 	return alts[int(r2 * alts.size()) % alts.size()]
+
+
+## エリア 1 つぶん。流れ(flow)は、押す向き dir を持つ。
+static func _area(shape: Dictionary, type: String, push: Vector2) -> Dictionary:
+	var a := {"shape": shape, "type": type}
+	if type == "flow":
+		a["dir"] = push
+	return a
 
 
 ## 形を作る。r = 位置の選び方(0..1)、flow = ノーツの流れる向き(帯が流れる向き)。

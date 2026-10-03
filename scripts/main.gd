@@ -763,6 +763,17 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				_current._set_paused(false)
 				_current._set_ship_in(1.0)
 				_current._tick_resume_wait(0.35)
+			for ex in extra:   # 自機の位置を決める(エリアの中の自機の演出を撮る): ... Insane 62 v2 practice pos:200,360
+				if str(ex).begins_with("pos:"):
+					var xy := str(ex).trim_prefix("pos:").split(",")
+					_current.sim.player_pos = Vector2(float(xy[0]), float(xy[1]))
+					_current.sim._update_zone_debuff(_current._now)
+					_current._refresh()
+			for ex in extra:   # エリアの効果の演出だけを撮る(自機にその効果がかかっている状態にする): ... Insane 30 v2 practice fx:heal
+				if str(ex).begins_with("fx:"):
+					_current.sim.zone_debuff = str(ex).trim_prefix("fx:")
+					_current.sim.zone_push = Vector2(110, 0) if _current.sim.zone_debuff == "flow" else Vector2.ZERO
+					_current._refresh()
 			if extra.has("nearhp") or extra.has("nearscore"):   # 自機を体力バー / スコアの近くに置いて、HUD の透過を撮る
 				_current.sim.player_pos = Vector2(200, 34) if extra.has("nearhp") else Vector2(800, 40)
 				_current._update_hud_fade(0.0, true)

@@ -53,6 +53,10 @@ var graze_count := 0
 
 var bounds := Rect2(-12, -12, 984, 744)
 
+## 時の淀み(特殊エリア。弾幕 v2): 弾の位置がこの中にあるとき、その弾の時間が f 倍で進む(動き・曲がり・挙動の時計も)。自機の位置には依存しない。
+## 各要素: {f: 倍率, rect: Rect2}(長方形)または {f, c: Vector2, r2: 半径の 2 乗}(円)。空なら何もしない。GameSim が毎ステップ決める。
+var warp: Array = []
+
 ## 見える範囲(暗闇 MOD。描画だけで、判定には関係しない)。vis_r1 > 0 のとき、vis_center から vis_r0 までは全部見え、
 ## vis_r1 に向けてなめらかに薄れ、それより遠い弾は見えない。
 var vis_center := Vector2.ZERO
@@ -290,7 +294,7 @@ func _bounce(i: int, p: Vector2, v: Vector2) -> bool:
 
 
 ## 弾を進め、被弾/かすりを判定する。check_hit=false(無敵中)でも弾は動く。
-func update(dt: float, ppos: Vector2, player_r: float, check_hit: bool, pprev := Vector2.INF) -> void:
+func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, pprev := Vector2.INF) -> void:
 	hit = false
 	hit_dist = 0.0
 	graze_count = 0
@@ -299,8 +303,12 @@ func update(dt: float, ppos: Vector2, player_r: float, check_hit: bool, pprev :=
 	var seg := Vector2.ZERO if pprev == Vector2.INF else ppos - pprev
 	var seg2 := seg.length_squared()
 	var swept := seg2 > 4.0
+	var warped := not warp.is_empty()
 	var i := count - 1
 	while i >= 0:
+		var dt := dt_all
+		if warped:
+			dt = dt_all * _warp_factor(pos[i])
 		var v := vel[i]
 		var tr := turn[i]
 		if tr != 0.0:
@@ -343,6 +351,18 @@ func update(dt: float, ppos: Vector2, player_r: float, check_hit: bool, pprev :=
 					grazed[i] = 1
 					graze_count += 1
 		i -= 1
+
+
+## 位置 p の弾の、時間の倍率(時の淀みの中なら f。重なるときは、いちばん遅いもの)。
+func _warp_factor(p: Vector2) -> float:
+	var f := 1.0
+	for w in warp:
+		if w.has("rect"):
+			if (w.rect as Rect2).has_point(p):
+				f = minf(f, float(w.f))
+		elif p.distance_squared_to(w.c) <= float(w.r2):
+			f = minf(f, float(w.f))
+	return f
 
 
 ## 自機の経路(pprev から seg だけ動いた線分)のうち、中心 p・半径 hr の円の中を通った長さ。ほとんど動いていないとき(swept でない)は、動いた長さ。

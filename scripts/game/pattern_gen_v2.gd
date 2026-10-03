@@ -16,6 +16,7 @@ const Beatmap = preload("res://scripts/osu/beatmap.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const ChartProfile = preload("res://scripts/game/chart_profile.gd")
+const ZoneGenV2 = preload("res://scripts/game/zone_gen_v2.gd")
 
 const M_RING := 0       # v1 に近いリング(向きだけ、ノーツの動きに合わせる)
 const M_SPIRAL := 1     # 連打: 区間の重心から回る渦
@@ -64,6 +65,12 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	for j in range(prof.sections.size()):
 		secs.append({"t0": prof.sections[j].t0, "t1": prof.sections[j].t1, "motif": asg.motifs[j]})
 	out["v2"] = {"signature": asg.signature, "sections": secs, "spins": out.get("spins", [])}
+	# 特殊エリア(v1 の 3×3 のマスの危険エリアに代わる。弾幕とは別で、難易度の測定には入れない)
+	var names: Array = []
+	for m in asg.motifs:
+		names.append(MOTIF_NAMES[m])
+	var kk := clampf((float(out.stars) - PatternGen.STAR_MIN) / (PatternGen.STAR_MAX - PatternGen.STAR_MIN), 0.0, 1.0)
+	out["zones"] = ZoneGenV2.make(bm, prof, names, kk, out.breaks)
 	return out
 
 

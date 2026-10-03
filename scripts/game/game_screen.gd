@@ -1361,7 +1361,7 @@ func _update_debuff_label() -> void:
 	_debuff_shown = sim.zone_debuff
 	_debuff_l.visible = _debuff_shown != ""
 	if _debuff_shown != "":
-		_debuff_l.text = "デバフ  " + GameSim.zone_name(_debuff_shown)
+		_debuff_l.text = "%s  %s" % [GameSim.zone_family_name(_debuff_shown), GameSim.zone_name(_debuff_shown)]
 		_debuff_l.add_theme_color_override("font_color", GameSim.zone_color(_debuff_shown))
 
 

@@ -5,6 +5,7 @@ const GameSim = preload("res://scripts/game/game_sim.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const Boss = preload("res://scripts/game/boss.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
+const ZoneArea = preload("res://scripts/game/zone_area.gd")
 
 var sim
 var layer := 0
@@ -109,6 +110,14 @@ func _draw_zones() -> void:
 			var phase := TAU * (1.5 * tau + (5.0 - 1.5) * tau * tau / (2.0 * lead))
 			blink = 0.5 + 0.5 * sin(phase)
 		var since := now - t0                      # 発動してからの秒
+		if z.has("areas"):   # 特殊エリア(弾幕 v2): 長方形・円
+			var u := ZoneArea.progress(z, now)
+			for a in z.areas:
+				var poly := _zone_poly(a.shape, u)
+				if poly.size() >= 3:
+					var col := GameSim.zone_color(str(a.type))
+					_draw_zone_piece(poly, _poly_center(poly), str(a.type), col, warn, fade_in, blink, fade_out, since)
+			continue
 		for c in z.cells:
 			var idx: int = c.c
 			var r: Rect2 = sim.cell_rect(idx).grow(-3.0)   # 動ける範囲(小型化なら中央の長方形)を 3×3 に分けたマス
@@ -130,6 +139,57 @@ func _draw_zones() -> void:
 					draw_rect(r, Color(1, 1, 1, 0.35 * (1.0 - k) * a), true)
 
 
+## 特殊エリアの形(いまの位置)を、描く多角形にする(自機が動ける範囲の外へはみ出す分は切る。枠が隣と重ならないよう、少し縮める)。
+func _zone_poly(shape: Dictionary, u: float) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	var b := ZoneArea.bounds(shape, sim.move_rect, u)
+	if str(shape.k) == ZoneArea.RECT:
+		var r := b.intersection(sim.move_rect).grow(-3.0)
+		if r.size.x > 4.0 and r.size.y > 4.0:
+			out.append_array([r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y)])
+		return out
+	var c := b.get_center()
+	var rr := b.size.x * 0.5 - 3.0
+	for i in range(40):
+		out.append(c + Vector2.from_angle(TAU * float(i) / 40.0) * rr)
+	return out
+
+
+func _poly_center(poly: PackedVector2Array) -> Vector2:
+	var lo := poly[0]
+	var hi := poly[0]
+	for p in poly:
+		lo = lo.min(p)
+		hi = hi.max(p)
+	return (lo + hi) * 0.5
+
+
+## 特殊エリア 1 つぶん(予告 = 点線の枠と薄い面・点滅 / 発動 = 実線の太い枠と濃い面・合図の広がる枠)。v1 のマスと同じ見せ方。
+func _draw_zone_piece(poly: PackedVector2Array, center: Vector2, type: String, col: Color, warn: bool, fade_in: float, blink: float, fade_out: float, since: float) -> void:
+	var closed := poly.duplicate()
+	closed.append(poly[0])
+	if warn:
+		var a := fade_in * (0.25 + 0.75 * blink) * fade_out
+		draw_colored_polygon(poly, Color(col.r, col.g, col.b, 0.08 * a))
+		for i in range(poly.size()):
+			draw_dashed_line(poly[i], poly[(i + 1) % poly.size()], Color(col.r, col.g, col.b, 0.8 * a), 2.0, 10.0)
+		_draw_zone_icon(type, center, Color(col.r, col.g, col.b, 0.7 * a))
+		return
+	var a2 := fade_out
+	draw_colored_polygon(poly, Color(col.r, col.g, col.b, 0.26 * a2))
+	draw_polyline(closed, Color(col.r, col.g, col.b, 0.95 * a2), 4.0, true)
+	_draw_zone_icon(type, center, Color(col.r, col.g, col.b, 0.95 * a2))
+	if since < 0.4:   # 発動の合図: 白い枠が、外へ広がりながら消える
+		var k := since / 0.4
+		var big := PackedVector2Array()
+		for p in poly:
+			var d := p - center
+			big.append(p + (d.normalized() * 18.0 * k if d.length() > 1.0 else Vector2.ZERO))
+		big.append(big[0])
+		draw_polyline(big, Color(1, 1, 1, 0.9 * (1.0 - k) * a2), 3.0, true)
+		draw_colored_polygon(poly, Color(1, 1, 1, 0.35 * (1.0 - k) * a2))
+
+
 ## 点線の枠。
 func _dashed_rect(r: Rect2, col: Color, width: float) -> void:
 	var p0 := r.position
@@ -142,7 +202,8 @@ func _dashed_rect(r: Rect2, col: Color, width: float) -> void:
 	draw_dashed_line(p3, p0, col, width, 10.0)
 
 
-## デバフの種類を示すマーク(文字の代わり)。鈍足: 下向きの山形 / 脆弱: 割れた輪 / 毒: しずく / 巨大: 広がる輪。
+## エリアの種類を示すマーク(文字の代わり)。鈍足: 下向きの山形 / 脆弱: 割れた輪 / 毒: しずく / 巨大: 広がる輪 /
+## 癒し: 十字 / 精密: 小さな輪と、内向きの 4 本の目盛り / 稼ぎ: 星 / 時の淀み: 砂時計。
 func _draw_zone_icon(type: String, c: Vector2, col: Color) -> void:
 	match type:
 		"slow":
@@ -155,6 +216,22 @@ func _draw_zone_icon(type: String, c: Vector2, col: Color) -> void:
 			draw_polyline(PackedVector2Array([c + Vector2(0, -22), c + Vector2(-13, -2)]), col, 4.0, true)
 			draw_polyline(PackedVector2Array([c + Vector2(0, -22), c + Vector2(13, -2)]), col, 4.0, true)
 			draw_arc(c + Vector2(0, 6), 13.0, -0.5, PI + 0.5, 24, col, 4.0, true)
+		"heal":
+			draw_line(c + Vector2(-17, 0), c + Vector2(17, 0), col, 6.0, true)
+			draw_line(c + Vector2(0, -17), c + Vector2(0, 17), col, 6.0, true)
+		"precise":
+			draw_arc(c, 8.0, 0.0, TAU, 24, col, 3.0, true)
+			for i in range(4):
+				var d := Vector2.from_angle(PI * 0.25 + PI * 0.5 * i)
+				draw_line(c + d * 24.0, c + d * 14.0, col, 3.5, true)
+		"bonus":
+			var star := PackedVector2Array()
+			for q in range(11):
+				star.append(c + Vector2.from_angle(-PI * 0.5 + PI * 0.2 * q) * (20.0 if q % 2 == 0 else 8.5))
+			draw_polyline(star, col, 3.5, true)
+		"warp":
+			draw_polyline(PackedVector2Array([c + Vector2(-14, -18), c + Vector2(14, -18), c, c + Vector2(-14, -18)]), col, 3.5, true)
+			draw_polyline(PackedVector2Array([c + Vector2(-14, 18), c + Vector2(14, 18), c, c + Vector2(-14, 18)]), col, 3.5, true)
 		"big":
 			draw_circle(c, 6.0, col)
 			draw_arc(c, 18.0, 0.0, TAU, 32, col, 3.5, true)

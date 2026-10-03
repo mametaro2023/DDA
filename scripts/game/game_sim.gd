@@ -13,6 +13,12 @@ extends RefCounted
 ##   鈍足(slow): 移動が ZONE_SLOW 倍 / 脆弱(fragile): 被ダメージが ZONE_FRAGILE 倍 / 毒(poison): ゲージが ZONE_POISON_DRAIN(/秒)で減る / 巨大(big): 自機の当たり判定が ZONE_BIG 倍
 ## 弾幕には手を入れない(自機が受けるものだけ)。休憩地帯では効かない。練習モードでは、毒のゲージ減少だけ効かない。
 ##
+## ## 特殊エリア(MOD「弾幕 v2」)
+## gen.zones の各要素が areas(形 + 種類のリスト。形は zone_area.gd)を持つとき(= 弾幕 v2)は、3×3 のマスではなく、その形が特殊エリアになる。種類は 3 系統:
+##   試練(自機が不利): 鈍足・脆弱・毒(+ v1 の巨大)。中でグレイズすると、ボーナス用のグレイズが ZONE_GRAZE_TRIAL 倍ぶん、上乗せされる(リスクの見返り)
+##   恩恵(自機が有利): 癒し(heal: ゲージが ZONE_HEAL_DRAIN(/秒)で回復)/ 精密(precise: 当たり判定 ZONE_PRECISE_HIT 倍・移動 ZONE_PRECISE_SPEED 倍)/ 稼ぎ(bonus: グレイズの上乗せ ZONE_GRAZE_BONUS 倍)
+##   変質(弾に作用): 時の淀み(warp: エリアの中の弾が ZONE_WARP 倍の速さで進む。弾の位置だけで決まるので、協力でも全員が同じ弾を見る)
+##
 ## ## 小型化・撃破(MOD)
 ## 小型化: 自機が動ける範囲(move_rect)が、盤面の中央の縦横 field_scale 倍になる。発射位置は変わらない。危険エリアの 3×3 のマスも、この範囲を分ける。
 ## 撃破: ボス(scripts/game/boss.gd)を倒すまで、譜面を loop_len 秒ごとに繰り返す(周回ごとに、時刻をずらした弾幕を足していく)。
@@ -29,6 +35,7 @@ extends RefCounted
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const Boss = preload("res://scripts/game/boss.gd")
+const ZoneArea = preload("res://scripts/game/zone_area.gd")
 
 const ARENA := PatternGen.ARENA
 const PLAYER_SPEED := 380.0      # キーボード
@@ -64,6 +71,12 @@ const ZONE_SLOW := 0.45            # 鈍足: 移動の倍率
 const ZONE_FRAGILE := 2.0          # 脆弱: 被ダメージの倍率
 const ZONE_BIG := 1.8              # 巨大: 自機の当たり判定の倍率(見た目の当たり判定の点も大きくなる)
 const ZONE_POISON_DRAIN := 0.10    # 毒: ゲージの減る速さ(ゲージ全体に対する割合 / 秒)
+const ZONE_HEAL_DRAIN := 0.05      # 癒し: ゲージの増える速さ(ゲージ全体に対する割合 / 秒。自然回復 GAUGE_REGEN の約 3 倍)
+const ZONE_PRECISE_HIT := 0.6      # 精密: 自機の当たり判定の倍率
+const ZONE_PRECISE_SPEED := 0.75   # 精密: 移動の倍率
+const ZONE_WARP := 0.55            # 時の淀み: エリアの中の弾の速さの倍率
+const ZONE_GRAZE_TRIAL := 0.5      # 試練エリアの中のグレイズに、上乗せする割合(1 回のグレイズが 1.5 回ぶん)
+const ZONE_GRAZE_BONUS := 1.0      # 稼ぎ(恩恵)エリアの中のグレイズに、上乗せする割合(1 回が 2 回ぶん)
 
 const SCORE_BASE := 1000000.0
 ## ランク(クリアしたときだけ)。被弾 0 回なら SS。それ以外は「達成率 = 最終点 ÷ ベーススコア(MOD の倍率を含む)」で決める。
@@ -104,9 +117,12 @@ var breaks: Array = []          # [[開始秒, 終了秒], ...] 休憩地帯
 var warn_lead := 0.6
 var practice := false
 var zones: Array = []              # 危険エリアの予定(gen.zones。時刻順)
-var zone_debuff := ""              # いま自機が受けているデバフ("" = なし)
-var hit_mult := 1.0                # 巨大のデバフ中の、当たり判定の倍率(描画の点の大きさにも使う)
+var zone_debuff := ""              # いま自機が受けているエリアの種類("" = なし。名前はデバフのままだが、恩恵の種類も入る)
+var hit_mult := 1.0                # 巨大・精密のエリア中の、当たり判定の倍率(描画の点の大きさにも使う)
 var contact_extra := 0.0           # 参加者: まだホストへ送っていない、デバフによる追加ダメージ(被弾時間に換算した秒)
+var contact_heal := 0.0            # 参加者: まだホストへ送っていない、癒しによる回復(被弾時間に換算した秒)
+var contact_gbonus := 0.0          # 参加者: まだホストへ送っていない、エリアでのグレイズの上乗せ
+var graze_bonus := 0.0             # エリアでのグレイズの上乗せ(ボーナス点にだけ入る。表示するグレイズ数には入れない)
 var _zone_i := 0
 var last_fire_time := -1.0        # 最後のノーツ(発射)の時刻。結果画面の体力グラフの右端
 ## 発射地点の印を記録するか(暗闇 MOD。弾が見えなくても、どこから撃ったかを表示するため)
@@ -321,13 +337,16 @@ func setup_coop(n: int, is_host: bool) -> void:
 
 
 ## ホスト: 参加者から届いた被弾の報告(被弾時間・グレイズ・被弾回数)を、共有のゲージとスコアに反映する。
-func ext_report(contact_s: float, graze_n: int, hit_n: int, extra_s := 0.0) -> void:
+func ext_report(contact_s: float, graze_n: int, hit_n: int, extra_s := 0.0, heal_s := 0.0, gbonus := 0.0) -> void:
 	if not authority or finished:
 		return
 	if extra_s > 0.0:   # 参加者のデバフ(脆弱・毒)による追加ダメージ
 		var sdmg := extra_s / drain_time
 		damage_total += sdmg
 		gauge -= sdmg
+	if heal_s > 0.0:   # 参加者の癒しによる回復(累計ダメージからは引かない)
+		gauge = minf(gauge + heal_s / drain_time, 1.0)
+	graze_bonus += maxf(gbonus, 0.0)
 	graze += maxi(graze_n, 0)
 	hits += maxi(hit_n, 0)
 	if contact_s > 0.0:
@@ -378,11 +397,13 @@ func apply_net_event(e: Dictionary, now: float) -> void:
 
 ## 参加者: まだ送っていない被弾の報告を取り出す(取り出すと 0 に戻る)。何もなければ空の辞書。
 func take_contact() -> Dictionary:
-	if contact_dt <= 0.0 and contact_graze == 0 and contact_hits == 0 and contact_extra <= 0.0:
+	if contact_dt <= 0.0 and contact_graze == 0 and contact_hits == 0 and contact_extra <= 0.0 and contact_heal <= 0.0 and contact_gbonus <= 0.0:
 		return {}
-	var out := {"c": contact_dt, "z": contact_graze, "h": contact_hits, "s": contact_extra}
+	var out := {"c": contact_dt, "z": contact_graze, "h": contact_hits, "s": contact_extra, "hl": contact_heal, "zb": contact_gbonus}
 	contact_dt = 0.0
 	contact_extra = 0.0
+	contact_heal = 0.0
+	contact_gbonus = 0.0
 	contact_graze = 0
 	contact_hits = 0
 	return out
@@ -420,8 +441,7 @@ func step(now: float, dt: float, move: Vector2, slow_mode: bool) -> void:
 	_update_zone_debuff(now)
 	if move != Vector2.ZERO:
 		var spd := PLAYER_SLOW if slow else PLAYER_SPEED
-		if zone_debuff == "slow":
-			spd *= ZONE_SLOW
+		spd *= zone_speed_mul()
 		_move_player(player_pos + move.normalized() * spd * dt)
 	_update(now, dt)
 
@@ -433,8 +453,7 @@ func step_relative(now: float, dt: float, delta_px: Vector2, slow_mode: bool) ->
 	slow = slow_mode
 	_prev_pos = player_pos
 	_update_zone_debuff(now)
-	if zone_debuff == "slow":
-		delta_px *= ZONE_SLOW
+	delta_px *= zone_speed_mul()
 	_move_player(player_pos + delta_px)
 	_update(now, dt)
 
@@ -490,6 +509,12 @@ func _update(now: float, dt: float) -> void:
 			graze += field.graze_count
 		else:
 			contact_graze += field.graze_count   # 協力の参加者: ホストへ報告する
+		var gmul := zone_graze_mul()
+		if gmul > 0.0 and field.graze_count > 0:
+			if authority:
+				graze_bonus += float(field.graze_count) * gmul
+			else:
+				contact_gbonus += float(field.graze_count) * gmul
 	hit_now = field.hit and not debug_invincible
 	_ext_hit_t = maxf(_ext_hit_t - dt, 0.0)
 	if hit_now:
@@ -525,6 +550,7 @@ func _update(now: float, dt: float) -> void:
 			gauge = minf(gauge + GAUGE_REGEN * dt, 1.0)
 
 	_update_poison(dt, resting)
+	_update_heal(dt, resting)
 	_record_gauge(now)
 	if boss != null:
 		boss.update(now, dt, player_pos, resting)
@@ -588,22 +614,77 @@ func _record_gauge(now: float) -> void:
 		_log_i += 1
 
 
-## いまの時刻・自機の位置で受けるデバフを決める(動く前に呼ぶ。休憩では効かない)。
+## いまの時刻・自機の位置で受けるエリアの効果を決める(動く前に呼ぶ。休憩では効かない)。弾に作用する時の淀みも、ここで弾の側へ渡す。
 func _update_zone_debuff(now: float) -> void:
 	zone_debuff = ""
 	hit_mult = 1.0
+	field.warp = []
 	if zones.is_empty() or in_break(now):
 		return
 	while _zone_i < zones.size() and float(zones[_zone_i].end) <= now:
 		_zone_i += 1
 	if _zone_i >= zones.size() or float(zones[_zone_i].t) > now:
 		return
-	var cell := cell_of(player_pos)
-	for c in zones[_zone_i].cells:
+	var z: Dictionary = zones[_zone_i]
+	if z.has("areas"):
+		_update_warp(z, now)
+	zone_debuff = _type_at(z, player_pos, now)
+	hit_mult = _hit_mult_of(zone_debuff)
+
+
+## 時刻 now に、点 p にいる人に効いているエリアの種類(z = 時刻が合っている zones の要素。形式は、v1 のマス・v2 の形の両方)。
+func _type_at(z: Dictionary, p: Vector2, now: float) -> String:
+	if z.has("areas"):
+		return ZoneArea.type_at(z, p, now, move_rect)
+	var cell := cell_of(p)
+	for c in z.cells:
 		if int(c.c) == cell:
-			zone_debuff = str(c.type)
-			hit_mult = ZONE_BIG if zone_debuff == "big" else 1.0
-			return
+			return str(c.type)
+	return ""
+
+
+static func _hit_mult_of(type: String) -> float:
+	match type:
+		"big":
+			return ZONE_BIG
+		"precise":
+			return ZONE_PRECISE_HIT
+	return 1.0
+
+
+## いま受けているエリアの、移動の倍率(鈍足・精密)。
+func zone_speed_mul() -> float:
+	match zone_debuff:
+		"slow":
+			return ZONE_SLOW
+		"precise":
+			return ZONE_PRECISE_SPEED
+	return 1.0
+
+
+## いま受けているエリアの、グレイズの上乗せの割合(試練 = ZONE_GRAZE_TRIAL / 稼ぎ = ZONE_GRAZE_BONUS / それ以外 0)。
+func zone_graze_mul() -> float:
+	if zone_debuff == "bonus":
+		return ZONE_GRAZE_BONUS
+	if ZoneArea.family_of(zone_debuff) == "trial":
+		return ZONE_GRAZE_TRIAL
+	return 0.0
+
+
+## 時の淀み: 効いている間、弾の側へ、淀みの形(世界の座標)を渡す。
+func _update_warp(z: Dictionary, now: float) -> void:
+	var u := ZoneArea.progress(z, now)
+	for a in z.areas:
+		if str(a.type) != "warp":
+			continue
+		var sh: Dictionary = a.shape
+		var w := {"f": ZONE_WARP}
+		if str(sh.k) == ZoneArea.RECT:
+			w["rect"] = ZoneArea.bounds(sh, move_rect, u)
+		else:
+			w["c"] = move_rect.position + (sh.c as Vector2) * move_rect.size
+			w["r2"] = pow(ZoneArea.world_radius(sh, move_rect), 2.0)
+		field.warp.append(w)
 
 
 ## 自機が動ける範囲(小型化 MOD なら中央の長方形)を 3×3 に分けたマス番号(0..8。左上から横に数える)。危険エリアはこのマス。
@@ -629,11 +710,7 @@ func hit_mult_at(p: Vector2, now: float) -> float:
 			break
 		if float(z.end) <= now:
 			continue
-		var cell := cell_of(p)   # 小型化では、動ける範囲のマス
-		for c in z.cells:
-			if int(c.c) == cell:
-				return ZONE_BIG if str(c.type) == "big" else 1.0
-		return 1.0
+		return _hit_mult_of(_type_at(z, p, now))   # 小型化では、動ける範囲に対するエリア
 	return 1.0
 
 
@@ -644,11 +721,17 @@ static func zone_cell(p: Vector2) -> int:
 
 ## デバフの名前と色(表示用)。
 static func zone_name(type: String) -> String:
-	return {"slow": "鈍足", "fragile": "脆弱", "poison": "毒", "big": "巨大"}.get(type, "")
+	return {"slow": "鈍足", "fragile": "脆弱", "poison": "毒", "big": "巨大", "heal": "癒し", "precise": "精密", "bonus": "稼ぎ", "warp": "時の淀み"}.get(type, "")
 
 
 static func zone_color(type: String) -> Color:
-	return {"slow": Color(0.35, 0.68, 1.0), "fragile": Color(1.0, 0.62, 0.25), "poison": Color(0.62, 0.9, 0.35), "big": Color(0.92, 0.45, 0.92)}.get(type, Color.WHITE)
+	return {"slow": Color(0.35, 0.68, 1.0), "fragile": Color(1.0, 0.62, 0.25), "poison": Color(0.62, 0.9, 0.35), "big": Color(0.92, 0.45, 0.92),
+		"heal": Color(1.0, 0.55, 0.75), "precise": Color(0.4, 0.95, 0.9), "bonus": Color(1.0, 0.85, 0.3), "warp": Color(0.6, 0.55, 1.0)}.get(type, Color.WHITE)
+
+
+## 左のパネルに出す、エリアの系統の名前(試練 = デバフ / 恩恵)。
+static func zone_family_name(type: String) -> String:
+	return {"trial": "デバフ", "boon": "恩恵", "warp": "変質"}.get(ZoneArea.family_of(type), "")
 
 
 ## 撃破: ボスに当てた数に応じて、ゲージを回復する(速さは毎秒 HIT_HEAL_MAX まで。ためすぎない)。
@@ -672,6 +755,17 @@ func _apply_boss_picks() -> void:
 		elif k == "bomb":
 			field.clear()
 			active_warns.clear()
+
+
+## 癒し: ゲージが増える(休憩では増えない)。協力の参加者は、被弾時間に換算してホストへ報告する(累計ダメージからは引かない)。
+func _update_heal(dt: float, resting: bool) -> void:
+	if zone_debuff != "heal" or resting:
+		return
+	var hs := ZONE_HEAL_DRAIN * GAUGE_DRAIN_TIME * dt
+	if authority:
+		gauge = minf(gauge + hs / drain_time, 1.0)
+	else:
+		contact_heal += hs
 
 
 ## 毒: ゲージが減る(休憩・練習では減らない)。協力の参加者は、被弾時間に換算してホストへ報告する。
@@ -736,7 +830,7 @@ func _update_score() -> void:
 		score_potential = 0.0
 		score = 0.0
 		return
-	score_graze = SCORE_GRAZE * (1.0 - exp(-float(graze) / graze_div / _graze_tau))   # 3 万点に漸近(届かない)
+	score_graze = SCORE_GRAZE * (1.0 - exp(-(float(graze) + graze_bonus) / graze_div / _graze_tau))   # 3 万点に漸近(届かない)
 	score_gross = score_base + score_graze + score_boss_time
 	score_potential = score_gross * damage_factor
 	score = score_potential * score_progress

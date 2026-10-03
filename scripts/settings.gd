@@ -49,6 +49,7 @@ static func save_all(d: Dictionary) -> void:
 	d = d.duplicate()
 	Volume.write_into(d)
 	var cfg := ConfigFile.new()
+	cfg.load(PATH)   # いまの内容を土台にする(この版が知らない項目を、別の版が書いていても消さない)
 	for k in DEFAULTS:
 		cfg.set_value("game", k, d.get(k, DEFAULTS[k]))
 	cfg.save(PATH)

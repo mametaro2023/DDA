@@ -407,6 +407,7 @@ func open_settings(section := 0) -> void:
 	p.changed.connect(func(kind: String):
 		if kind == "songs":
 			_songs_changed = true   # 一覧の作り直しは、パネルを閉じたとき(曲が多いと重いので、設定中は止めない)
+			Settings.save_all(_settings_dict)   # 選んだ時点で保存する(パネルを閉じずにゲームを終えても、次の起動で使えるように)
 		if _current != null and _current.has_method("on_settings_changed"):
 			_current.on_settings_changed(kind))
 	p.closed.connect(close_settings)

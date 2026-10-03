@@ -2,7 +2,7 @@ extends Node2D
 ## 弾の SoA 配列 + 手動更新/衝突判定 + MultiMesh 描画。
 ## 物理エンジンやノード per 弾は使わない(数千発を毎フレーム回すため)。
 
-const MAX_BULLETS := 2500
+const MAX_BULLETS := 4000   # 弾幕 v2 の AR 連動の弾速(遅い弾は長く残る)で、画面内の弾数が増えるため 2500 から引き上げ
 const HIT_SCALE := 0.7     # 見た目半径に対する当たり判定の倍率
 const GRAZE_MARGIN := 20.0 # 見た目の縁からのかすり距離
 

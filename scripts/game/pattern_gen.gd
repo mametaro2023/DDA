@@ -116,12 +116,16 @@ static func to_arena(p: Vector2) -> Vector2:
 ## opts: gen_fn(弾幕の作り方。Callable(bm, k, mul, speed, size) -> {events, gizmos, warn_lead}。省略は v1 の _generate。弾幕 v2 は pattern_gen_v2.gd のもの),
 ##       style(結果の "style" に入れる名前。省略は "v1"), size_weight(true で、弾ごとの大きさ(shot.size)を Lv に入れる。弾幕 v2),
 ##       density_mul(目標の弾数にかかる倍率), size_mul(弾サイズの倍率。実験用),
-##       speed_mul(弾速の倍率。弾速の実験用(scripts/speed_study.gd)。目標の Lv は変えないので、弾数が自動で増減して同じ Lv になる)
-## 戻り値: events, gizmos, warn_lead, rating{mean,p95,peak,score}, level(Lv), speed, size, stars, target_level
+##       speed_mul(弾速の倍率。弾速の実験用(scripts/speed_study.gd)。目標の Lv は変えないので、弾数が自動で増減して同じ Lv になる),
+##       speed_k(基準の弾速に掛ける倍率。省略は★に応じた SPEED_VAR の範囲。弾幕 v2 は譜面の AR から決めて渡す),
+##       speed_ref(Lv の弾速補正が 1 になる基準の弾速。省略は BASE_SPEED。弾幕 v2 は AR の弾速を渡す = AR の違いは Lv に入れない。speed_mul はその上で効く)
+## 戻り値: events, gizmos, warn_lead, rating{mean,p95,peak,score}, level(Lv), speed, speed_ref, size, stars, target_level
 static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	var stars := reference_stars(bm)
 	var k := clampf((stars - STAR_MIN) / (STAR_MAX - STAR_MIN), 0.0, 1.0)
-	var speed := BASE_SPEED * lerpf(1.0 - SPEED_VAR, 1.0 + SPEED_VAR, k) * float(opts.get("speed_mul", 1.0))
+	var speed_k := float(opts.get("speed_k", lerpf(1.0 - SPEED_VAR, 1.0 + SPEED_VAR, k)))
+	var speed := BASE_SPEED * speed_k * float(opts.get("speed_mul", 1.0))
+	var speed_ref := float(opts.get("speed_ref", BASE_SPEED))
 	var size := base_size(k) * float(opts.get("size_mul", 1.0))
 	# 目標の adj(弾速・弾サイズの補正後スコア)。density_mul が 1 なら目標 Lv = 推定★
 	var target_adj := target_score_for(stars + LEVEL_SHIFT) * float(opts.get("density_mul", 1.0))
@@ -138,12 +142,12 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	for i in range(6):
 		out = gfn.call(bm, k, mul, speed, size)
 		rating = measure(out.events, br, size if weighted else 0.0)
-		var adj := adjusted_score(rating.score, speed, size)
+		var adj := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref)
 		if rating.score < 0.5 or absf(adj - target_adj) <= target_adj * 0.05:
 			break
 		mul = clampf(mul * target_adj / adj, 0.1, 6.0)
 	# 2) 弾数の下限/上限で合わせきれなかった分は、弾サイズで吸収する(弾数 N(t) は変わらない)
-	var adj_now := adjusted_score(rating.score, speed, size)
+	var adj_now := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref)
 	if rating.score >= 0.5 and absf(adj_now - target_adj) > target_adj * 0.03:
 		var danger := danger_radius(size) * target_adj / adj_now
 		var absorbed := clampf((danger - PLAYER_HIT_R * PLAYER_SIZE_MUL) / (HIT_SCALE * BULLET_SIZE_MUL), size * SIZE_ABSORB_MIN, size * SIZE_ABSORB_MAX)
@@ -154,8 +158,9 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	out["size_weight"] = weighted   # Mods.apply が、測り直すときに同じ数え方をする
 	out["rating"] = rating
 	out["breaks"] = br
-	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration)
+	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration, speed_ref)
 	out["speed"] = speed
+	out["speed_ref"] = speed_ref   # Mods.apply が、測り直すときに同じ基準で補正する
 	out["size"] = size
 	out["stars"] = stars
 	out["target_level"] = target_level
@@ -191,8 +196,9 @@ static func danger_radius(size: float, player_r := PLAYER_HIT_R) -> float:
 
 
 ## 弾速・弾サイズの補正をかけた難易度スコア adj。
-static func adjusted_score(score: float, speed: float, size: float, player_r := PLAYER_HIT_R) -> float:
-	return score * pow(speed / BASE_SPEED, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, SIZE_EXP)
+## speed_ref = 弾速が補正 1 になる基準(省略は BASE_SPEED)。弾幕 v2 は譜面の AR で決まる弾速を基準にするので、AR の違いは補正に入らない(MOD の弾速の倍率だけが入る)。
+static func adjusted_score(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, speed_ref := BASE_SPEED) -> float:
+	return score * pow(speed / speed_ref, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, SIZE_EXP)
 
 
 ## 長さ(持久力)の補正の倍率。duration = 最初のノーツ〜最後の発射の秒数(休憩地帯を除く。0 以下なら補正なし)。
@@ -203,8 +209,8 @@ static func length_factor(duration: float) -> float:
 
 
 ## Lv(本家の星と同じ目盛り)= adj(× 長さの補正)を TARGET_TABLE で逆引きした★換算値から、LEVEL_SHIFT を引いたもの。
-static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF) -> float:
-	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r) * length_factor(duration)) - LEVEL_SHIFT, 0.0)
+static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF, speed_ref := BASE_SPEED) -> float:
+	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r, speed_ref) *length_factor(duration)) - LEVEL_SHIFT, 0.0)
 
 
 ## TARGET_TABLE(★→スコア)の逆引き。表の外は端の傾きで延長する(下側は原点へ向かう)。

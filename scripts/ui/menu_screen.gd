@@ -116,7 +116,7 @@ func _ready() -> void:
 	_intro_nodes.append(_place(back_btn, 32, 20, 116, 34))
 	_buttons.append(back_btn)
 	_intro_nodes.append(_place(UiStyle.label("DDA", 30, UiStyle.ACCENT, true), 164, 16, 120, 40))
-	_intro_nodes.append(_place(UiStyle.caption("OSU! DANMAKU DODGER"), 166, 58, 260, 16))
+	_intro_nodes.append(_place(UiStyle.caption("DANMAKU DODGER"), 166, 58, 260, 16))
 	# --- 左: 曲リスト ---
 	_intro_nodes.append(_place(UiStyle.caption("SONGS"), 38, 96, 200, 16))
 	_song_scroll = ScrollContainer.new()

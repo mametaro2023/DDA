@@ -99,7 +99,7 @@ func _ready() -> void:
 		_letters.append(letter)
 		UiStyle.spring(letter, "position:y", 92.0 - 70.0, 92.0, 0.7, 0.04 + 0.09 * i)
 		UiStyle.tween(letter, "modulate:a", 0.0, 1.0, 0.25, 0.04 + 0.09 * i)
-	var sub := UiStyle.label("OSU! DANMAKU DODGER", 20, UiStyle.TEXT_DIM)
+	var sub := UiStyle.label("DANMAKU DODGER", 20, UiStyle.TEXT_DIM)
 	sub.position = Vector2(112, 250)
 	add_child(sub)
 	var ver := UiStyle.chip("BETA   v%s" % _version(), UiStyle.GOLD)

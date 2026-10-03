@@ -994,6 +994,14 @@ func _refresh_mod_bar() -> void:
 	for c in _mod_bar.get_children():
 		c.queue_free()
 	var p := Mods.params(settings.mods)
+	if not p.gen_v2:   # 弾幕 v2 を付けていないときは、ワンクリックで付けられるボタンを出す(押すと曲を読み直す)
+		var v2 := Button.new()
+		v2.text = "v2 で遊ぼう +"
+		v2.focus_mode = Control.FOCUS_NONE
+		v2.tooltip_text = "弾幕 v2(譜面ごとの弾幕・特殊エリア)を付ける"
+		v2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		v2.pressed.connect(_enable_v2)
+		_mod_bar.add_child(v2)
 	if p.ids.is_empty():
 		var none := UiStyle.label("MOD なし", 13, UiStyle.TEXT_FAINT)
 		none.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -1030,6 +1038,19 @@ func open_mods() -> void:
 	p.closed.connect(_close_mods)
 	_mod_panel = p
 	add_child(p)
+
+
+## 下部バーのボタン「v2 で遊ぼう +」: MOD「弾幕 v2」を付ける。
+func _enable_v2() -> void:
+	if _launching or _mod_panel != null or _options != null:
+		return
+	var ids: Array = settings.mods.duplicate()
+	if not ids.has("v2"):
+		ids.append("v2")
+	settings.mods = ids
+	Settings.save_all(settings)
+	_refresh_mod_bar()
+	_on_mods_changed()
 
 
 ## MOD が変わった: 難易度を測り直す。

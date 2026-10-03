@@ -235,6 +235,7 @@ func _ready() -> void:
 				pick = i
 		_select_song(pick)
 		_auto_sel_idx = pick
+		_center_selected()
 
 
 func _process(delta: float) -> void:
@@ -455,10 +456,25 @@ func _pump_select() -> void:
 	if _want_key != "" and _song_keys.has(_want_key) and _auto_sel_idx >= 0 and _song_sel == _auto_sel_idx and _song_sel != int(_song_keys[_want_key]):
 		_auto_sel_idx = int(_song_keys[_want_key])
 		_select_song(_auto_sel_idx)   # ユーザーがまだ触っていないので、前回の曲へ
+		_center_selected()
 		return
 	if _song_sel < 0 and _loader == null and not _job_pending and _restore_key == "" and not _songs.is_empty():
 		_auto_sel_idx = int(_song_keys.get(_want_key, 0))
 		_select_song(_auto_sel_idx)
+		_center_selected()
+
+
+## 画面を開いたときに選んだ曲(前回の曲)を、曲の一覧の真ん中に出す(プレイから戻ったとき、一覧の先頭が出ないように)。
+## カードの位置は、レイアウトが終わるまで決まらないので、2 フレーム待ってから、動かさずに置く。待っている間に、ユーザーが別の曲を選んだら、何もしない。
+func _center_selected() -> void:
+	var want := _song_sel
+	if want < 0 or not is_inside_tree():
+		return
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not is_inside_tree() or _song_sel != want or want >= _song_cards.size():
+		return
+	_song_smooth.center_on_control(_song_cards[want], true)
 
 
 ## osu! の曲を調べている間の、進み具合(画面の下に、薄い文字で)。

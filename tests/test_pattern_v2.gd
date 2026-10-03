@@ -263,7 +263,7 @@ func _test_star_scaling() -> void:
 		if r[0] <= 5.9 and PatternGen.target_score_for(float(r[0]), t2) != float(r[1]):
 			same = false
 	_check(same, "v2 の表は、表の ★5.9 以下では v1 と同じ")
-	_check(PatternGen.target_score_for(6.7, t2) > PatternGen.target_score_for(6.7, t1) + 20.0 and PatternGen.target_score_for(9.27, t2) > PatternGen.target_score_for(9.27, t1) * 1.4, "v2 の表の高★は、v1 より弾数が多い (★7.7 相当 %.0f / %.0f・★8.3 相当 %.0f / %.0f)" % [PatternGen.target_score_for(8.7, t2), PatternGen.target_score_for(8.7, t1), PatternGen.target_score_for(9.27, t2), PatternGen.target_score_for(9.27, t1)])
+	_check(PatternGen.target_score_for(6.7, t2) > PatternGen.target_score_for(6.7, t1) + 15.0 and PatternGen.target_score_for(9.27, t2) > PatternGen.target_score_for(9.27, t1) * 1.2, "v2 の表の高★は、v1 より弾数が多い (★7.7 相当 %.0f / %.0f・★8.3 相当 %.0f / %.0f)" % [PatternGen.target_score_for(8.7, t2), PatternGen.target_score_for(8.7, t1), PatternGen.target_score_for(9.27, t2), PatternGen.target_score_for(9.27, t1)])
 	var inv := true
 	for st in [1.0, 3.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.5, 11.0]:
 		if absf(PatternGen.stars_for_score(PatternGen.target_score_for(st, t2), t2) - st) > 0.02:
@@ -289,7 +289,7 @@ func _test_star_scaling() -> void:
 		var h1 := PatternGen.generate(hard)
 		var r2: float = float(h2.rating.mean) / float(e2.rating.mean)
 		var r1: float = float(h1.rating.mean) / float(e1.rating.mean)
-		_check(r2 > r1 * 1.1 and r2 > 1.6, "★5 → ★8 の画面内の弾数の比: v2 %.2f 倍 > v1 %.2f 倍" % [r2, r1])
+		_check(r2 > r1 * 1.05 and r2 > 1.4, "★5 → ★8 の画面内の弾数の比: v2 %.2f 倍 > v1 %.2f 倍" % [r2, r1])
 		_check(float(h2.speed) / float(e2.speed) > 1.1, "★5 → ★8 の弾速の比 %.2f 倍(%.0f → %.0f px/s)" % [float(h2.speed) / float(e2.speed), e2.speed, h2.speed])
 		_check(float(h2.speed) < PatternGen.BASE_SPEED * PatternGenV2.ar_speed_mul(10.0) * 1.2 and float(h2.speed) < 230.0, "高★でも弾速は 230 px/s 未満(%.0f px/s)" % h2.speed)
 

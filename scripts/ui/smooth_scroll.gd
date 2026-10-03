@@ -157,6 +157,25 @@ func _sync() -> void:
 		_last = sc.scroll_vertical
 
 
+## control(スクロールの中のカード)が、スクロールの真ん中に来る位置へ動く(端まで届かないときは、端で止まる)。instant = true なら、動かさずにその位置へ置く。
+func center_on_control(control: Control, instant := false) -> void:
+	if control == null or not is_instance_valid(control) or sc.get_child_count() == 0:
+		return
+	_sync()
+	var content: Control = null
+	for c in sc.get_children():
+		if c is Control and c != sc.get_v_scroll_bar() and c != sc.get_h_scroll_bar():
+			content = c
+			break
+	if content == null:
+		return
+	var top := control.get_global_rect().position.y - content.get_global_rect().position.y
+	_target = clampf(top + control.size.y * 0.5 - sc.size.y * 0.5, 0.0, _max_scroll())
+	if instant or not UiStyle.animate:
+		_pos = _target
+		_apply()
+
+
 ## control(スクロールの中のカード)が見える位置へ、なめらかに動く。
 func scroll_to_control(control: Control, margin := 8.0) -> void:
 	if control == null or not is_instance_valid(control) or sc.get_child_count() == 0:

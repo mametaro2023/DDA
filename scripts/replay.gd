@@ -1,0 +1,293 @@
+extends RefCounted
+## リプレイ: プレイの入力(フレームごとの進め方)だけを記録して、あとで同じシミュレーションをやり直す。
+##
+## GameSim は決定的(弾幕は譜面から決まり、ボスの乱数もシード固定)なので、入力を同じ順で与えれば、弾・ゲージ・スコアが全部同じになる。
+## 記録するのは、GameScreen._step_sim の 1 フレームごとに { 始めの時刻 t0, 進めた幅 span, ステップ数 n, 入力(移動方向 or マウスの移動量), 低速, 操作方式 }。
+## 再生(Player)は、同じ値で sim.step / sim.step_relative を呼ぶだけ(ステップの幅 = span / n、時刻は t0 から足していくのも同じ)。
+##
+## 好きな秒へ飛ぶ(シーク)ために、記録中に KEY_INTERVAL 秒ごとの状態(キーフレーム)も残す。シムは巻き戻せないので、
+## 飛ぶときは「直前のキーフレームへ戻す → 目標の時刻まで再シミュレーション」。
+## 弾幕の指紋(fingerprint)が合わないとき(曲・版・MOD が違う)は再生しない。
+##
+## 保存先は user://replays/(1 プレイ 1 ファイル。新しい順に KEEP 件まで。記録(records.gd)に載っているものは消さない)。
+
+const GameSim = preload("res://scripts/game/game_sim.gd")
+const PatternGen = preload("res://scripts/game/pattern_gen.gd")
+const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
+const Mods = preload("res://scripts/mods.gd")
+const SpeedStudy = preload("res://scripts/speed_study.gd")
+const SongLibrary = preload("res://scripts/song_library.gd")
+const OszLoader = preload("res://scripts/osu/osz_loader.gd")
+const State = preload("res://scripts/replay_state.gd")
+
+const VERSION := 1
+const MAGIC := "DDAR"
+const KEEP := 30
+const KEY_INTERVAL := 5.0
+## frames の 1 フレームあたりの数: t0, span, n, 入力 x, 入力 y, フラグ(1 = 低速 / 2 = マウス操作)
+const STRIDE := 6
+
+## 保存先(確認用に差し替えられる)
+static var dir := "user://replays"
+## false のあいだは、保存しない(開発用の確認・スクリーンショットで、使う人のリプレイを汚さないため)
+static var enabled := true
+
+
+## ゲームの組み立て(弾幕・MOD・シム)。プレイ画面と、リプレイの再生が、同じ手順で同じ sim を作る。
+## settings は mods / density_mul を使う。study_cond: 弾速の実験の条件("" なら通常)。pre: 選曲で作っておいた {gen}(同じ作り方のときだけ使う)。
+## 戻り値: {sim, gen, mods, rate, end_time}
+static func build_game(field: Node2D, bm, settings: Dictionary, study_cond: String, pre: Dictionary, practice_extra := false) -> Dictionary:
+	var dm := float(settings.get("density_mul", 1.0))
+	var sc: Dictionary = SpeedStudy.CONDITIONS.get(study_cond, SpeedStudy.CONDITIONS.base)
+	var plain := is_equal_approx(dm, 1.0) and is_equal_approx(sc.speed_mul, 1.0) and is_equal_approx(sc.density_mul, 1.0)
+	var mods := Mods.params(settings.get("mods", []))
+	var v2: bool = mods.gen_v2   # MOD「弾幕 v2」: 弾幕の作り方そのものを切り替える(選曲で作ったものも、同じ作り方のときだけ使う)
+	var pre_gen: Dictionary = pre.get("gen", {})
+	var same_style := (str(pre_gen.get("style", "v1")) == "v2") == v2
+	var gen_opts := {"density_mul": dm * float(sc.density_mul), "speed_mul": float(sc.speed_mul)}
+	var gen: Dictionary = pre_gen if (not pre_gen.is_empty() and plain and same_style) else (PatternGenV2.generate(bm, gen_opts) if v2 else PatternGen.generate(bm, gen_opts))
+	gen = Mods.apply(gen, mods)   # MOD を掛け、その弾幕で難易度(Lv)を測り直す
+	var rate: float = mods.rate
+	var end_time: float = bm.last_time() / 1000.0 / rate + 2.0   # 再生速度が上がると、曲は短くなる
+	var sim := GameSim.new()
+	sim.setup(field, gen, end_time, mods.practice or practice_extra, mods)
+	return {"sim": sim, "gen": gen, "mods": mods, "rate": rate, "end_time": end_time}
+
+
+## 弾幕の指紋(マルチプレイの確認と同じ式)。曲・版・MOD が違えば変わる。sim.setup の直後の値。
+static func fingerprint_of(sim) -> int:
+	return sim.events.size() * 100003 + sim.bullets_total
+
+
+# --- 記録 ---
+
+## プレイ中の記録係。GameScreen._step_sim が、進めたフレームごとに add を呼ぶ。
+class Recorder extends RefCounted:
+	var frames := PackedFloat64Array()
+	var trail := PackedVector2Array()      # 各フレームの終わりの自機の位置(軌道の表示用)
+	var trail_t := PackedFloat64Array()    # その時刻
+	var keys: Array = []                   # [{t, i, s}]: t = 状態の時刻 / i = 次に進めるフレームの番号 / s = スナップショット
+	var _next_key := 0.0
+
+	## 始めの状態(最初のフレームの前)を、最初のキーフレームにする。sim.setup のあとに呼ぶ。
+	func begin(sim, field: Node2D, t_start: float) -> void:
+		keys.append({"t": t_start, "i": 0, "s": State.snapshot(sim, field)})
+		_next_key = t_start + KEY_INTERVAL
+
+	func add(t0: float, span: float, n: int, vec: Vector2, slow: bool, relative: bool, sim, field: Node2D) -> void:
+		frames.append(t0)
+		frames.append(span)
+		frames.append(float(n))
+		frames.append(vec.x)
+		frames.append(vec.y)
+		frames.append(float((1 if slow else 0) | (2 if relative else 0)))
+		var te := t0 + span
+		trail.append(sim.player_pos)
+		trail_t.append(te)
+		if te >= _next_key and not sim.finished:
+			keys.append({"t": te, "i": frames.size() / STRIDE, "s": State.snapshot(sim, field)})
+			_next_key = te + KEY_INTERVAL
+
+
+# --- 再生 ---
+
+## 記録の再生係。sim / field は、記録したときと同じ手順(build_game)で作ったもの。
+class Player extends RefCounted:
+	var sim
+	var field: Node2D
+	var frames: PackedFloat64Array
+	var keys: Array
+	var idx := 0          # 次に進めるフレーム
+	var t := 0.0          # 最後に進めたフレームの終わりの時刻(まだなら、記録の始め)
+	## 直前の advance で起きたこと(描画・音の側が読む。advance のたびに作り直す)
+	var hit_any := false
+	var hit_started := false
+	var sfx: Array = []
+	var sfx_pan: Array = []
+
+	func _init(p_sim, p_field: Node2D, p_frames: PackedFloat64Array, p_keys: Array) -> void:
+		sim = p_sim
+		field = p_field
+		frames = p_frames
+		keys = p_keys
+		t = start_time()
+
+	func frame_count() -> int:
+		return frames.size() / STRIDE
+
+	func start_time() -> float:
+		return frames[0] if frames.size() >= STRIDE else 0.0
+
+	## 最後のフレームの終わりの時刻(再生の長さの端)。
+	func end_time() -> float:
+		var n := frame_count()
+		return frames[(n - 1) * STRIDE] + frames[(n - 1) * STRIDE + 1] if n > 0 else 0.0
+
+	func at_end() -> bool:
+		return idx >= frame_count() or sim.finished
+
+	## 時刻 target までに終わるフレームを、順に進める。collect: 音・被弾のようすを残すか(シークの再計算では false)。
+	func advance_to(target: float, collect := true) -> void:
+		if collect:
+			hit_any = false
+			hit_started = false
+			sfx = []
+			sfx_pan = []
+		var n := frame_count()
+		while idx < n:
+			var b := idx * STRIDE
+			if frames[b] + frames[b + 1] > target:
+				break
+			_apply(b, collect)
+			idx += 1
+
+	## 1 フレームだけ進める(コマ送り)。進められたら true。
+	func step_frame() -> bool:
+		hit_any = false
+		hit_started = false
+		sfx = []
+		sfx_pan = []
+		if idx >= frame_count():
+			return false
+		_apply(idx * STRIDE, true)
+		idx += 1
+		return true
+
+	func _apply(b: int, collect: bool) -> void:
+		var t0 := frames[b]
+		var span := frames[b + 1]
+		var n := int(frames[b + 2])
+		var vec := Vector2(frames[b + 3], frames[b + 4])
+		var fl := int(frames[b + 5])
+		var slow := (fl & 1) != 0
+		var rel := (fl & 2) != 0
+		var dt := span / float(n)   # プレイ画面の _step_sim と同じ計算(同じ値が出る)
+		var st := t0
+		for _k in range(n):
+			st += dt
+			if rel:
+				sim.step_relative(st, dt, vec, slow)
+			else:
+				sim.step(st, dt, vec, slow)
+			if collect:
+				hit_any = hit_any or sim.hit_now
+				hit_started = hit_started or sim.just_hit
+				sfx.append_array(sim.sfx_queue)
+				sfx_pan.append_array(sim.sfx_pan)
+			if sim.finished:
+				break
+		t = t0 + span
+
+	## 時刻 target の状態にする(前へも後ろへも)。直前のキーフレームから、再計算で追いつく。
+	func seek(target: float) -> void:
+		target = clampf(target, start_time(), end_time())
+		var best: Dictionary = keys[0]
+		for k in keys:
+			if float(k.t) <= target:
+				best = k
+			else:
+				break
+		var from_here := idx > 0 and t <= target and t >= float(best.t)   # いまの状態のほうが、キーフレームより目標に近い(前から来ている)
+		if not from_here:
+			restore_key(best)
+		advance_to(target, false)
+
+	func restore_key(k: Dictionary) -> void:
+		State.restore(sim, field, k.s)
+		idx = int(k.i)
+		t = float(k.t)
+
+
+# --- ファイル ---
+
+## 保存する中身を作る。meta: {md5, title, artist, version(難易度名), settings, cond, fp}。stats: GameScreen._stats()(bg は除く)。
+static func make_data(rec: Recorder, meta: Dictionary, stats: Dictionary) -> Dictionary:
+	var st := stats.duplicate()
+	st.erase("bg")
+	st.erase("mp")
+	return {
+		"v": VERSION,
+		"app": str(ProjectSettings.get_setting("application/config/version", "")),
+		"time": int(Time.get_unix_time_from_system()),
+		"md5": str(meta.md5), "title": str(meta.title), "artist": str(meta.artist), "diff": str(meta.version),
+		"settings": meta.settings, "cond": str(meta.get("cond", "")), "fp": int(meta.fp),
+		"frames": rec.frames, "trail": rec.trail, "trail_t": rec.trail_t, "keys": rec.keys, "stats": st,
+	}
+
+
+## ファイルへ書く。戻り値: 書いたファイルの名前(user://replays/ の中。書けなければ "")。
+static func save(data: Dictionary) -> String:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	var name := "%d_%s.rpl" % [int(data.time), str(data.md5).substr(0, 8)]
+	var path := dir.path_join(name)
+	var n := 1
+	while FileAccess.file_exists(path):   # 同じ秒に 2 つ(確認用の連続プレイ)でも、上書きしない
+		path = dir.path_join("%d_%s_%d.rpl" % [int(data.time), str(data.md5).substr(0, 8), n])
+		n += 1
+	var raw := var_to_bytes(data)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return ""
+	f.store_buffer(MAGIC.to_utf8_buffer())
+	f.store_32(VERSION)
+	f.store_64(raw.size())
+	f.store_buffer(raw.compress(FileAccess.COMPRESSION_ZSTD))
+	f.close()
+	return path.get_file()
+
+
+## ファイル名(save の戻り値)または path から読む。読めない・版が違うときは空の辞書。
+static func load_file(name_or_path: String) -> Dictionary:
+	var path := name_or_path if name_or_path.contains("/") else dir.path_join(name_or_path)
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return {}
+	if f.get_buffer(4).get_string_from_utf8() != MAGIC:
+		return {}
+	var ver := f.get_32()
+	var raw_n := f.get_64()
+	if ver != VERSION or raw_n <= 0 or raw_n > 1 << 30:
+		return {}
+	var body := f.get_buffer(f.get_length() - f.get_position())
+	f.close()
+	var raw := body.decompress(raw_n, FileAccess.COMPRESSION_ZSTD)
+	if raw.size() != raw_n:
+		return {}
+	var d = bytes_to_var(raw)
+	return d if d is Dictionary and int(d.get("v", 0)) == VERSION else {}
+
+
+## 古い順に消して、KEEP 件にする。keep_names: 消さないファイル名(記録に載っているもの)。
+static func prune(keep_names: Array = []) -> void:
+	var names: Array = []
+	for n in DirAccess.get_files_at(dir):
+		if str(n).ends_with(".rpl"):
+			names.append(str(n))
+	names.sort()   # 名前の先頭が時刻なので、古い順
+	var over := names.size() - KEEP
+	for n in names:
+		if over <= 0:
+			break
+		if keep_names.has(n):
+			continue
+		DirAccess.remove_absolute(dir.path_join(n))
+		over -= 1
+
+
+## 消す(記録から外れたとき)。
+static func remove(name: String) -> void:
+	if name != "" and FileAccess.file_exists(dir.path_join(name)):
+		DirAccess.remove_absolute(dir.path_join(name))
+
+
+## 曲を探して読む(リプレイの再生用)。戻り値: {loader, bm}。見つからなければ空の辞書。
+static func find_chart(md5: String) -> Dictionary:
+	var found := SongLibrary.find_by_md5(md5)
+	if found.is_empty():
+		return {}
+	var loader := OszLoader.new()
+	loader.open(found.path)
+	for d in loader.difficulties:
+		if d.md5 == md5:
+			return {"loader": loader, "bm": d}
+	return {}

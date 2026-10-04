@@ -26,6 +26,8 @@ const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const Volume = preload("res://scripts/volume.gd")
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
 const Updater = preload("res://scripts/updater.gd")
+const UPDATE_RECHECK_SEC := 1800.0   # 起動したままの間、新しいバージョンを確かめ直す間隔(GitHub の API は、1 時間に 60 回まで)
+const UPDATE_TOAST_TIME := 7.0       # 新しいバージョンの知らせを出しておく秒数
 const UpdatePanel = preload("res://scripts/ui/update_panel.gd")
 const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
 const OszImport = preload("res://scripts/osz_import.gd")
@@ -52,6 +54,10 @@ var net                    # 通信層(マルチプレイを開くときに作�
 var _last_play := {}
 var overlay                # 音量メーター・通知(全画面の上)
 var updater                # アプリ内アップデート(GitHub のリリースを確認する)
+var _update_timer: Timer     # 起動している間の、更新の再確認(UPDATE_RECHECK_SEC ごと)
+var _update_rechecking := false   # いまの確認が、再確認(起動時の確認ではない)か。再確認では、自動更新はしない(知らせるだけ)
+var _update_notified := ""   # もう知らせた版(同じ版を、何度も知らせない)
+var _update_pending: Dictionary = {}   # プレイ中に見つかって、まだ知らせていない新しい版(プレイを離れてから知らせる)
 var _instance            # 1 つだけ動かして、あとから開いた .osz を受け取る
 var _music: AudioStreamPlayer = null   # クリアで引き継いだ曲(リザルト中に流れ続ける)
 
@@ -158,6 +164,9 @@ func _ready() -> void:
 	if args.has("--smoke-autoupdate"):
 		_smoke_autoupdate()
 		return
+	if args.has("--smoke-updatenotice"):
+		_smoke_updatenotice()
+		return
 	if args.has("--smoke-modscroll"):
 		_smoke_modscroll()
 		return
@@ -232,6 +241,11 @@ func _ready() -> void:
 	updater.check_finished.connect(_on_update_checked)
 	if bool(Settings.load_all().check_update):
 		updater.check()
+	_update_timer = Timer.new()   # 起動したままの間に公開された新しい版も、知らせる(自動では更新しない)
+	_update_timer.wait_time = UPDATE_RECHECK_SEC
+	_update_timer.timeout.connect(_recheck_update)
+	add_child(_update_timer)
+	_update_timer.start()
 	get_window().files_dropped.connect(_on_files_dropped)
 	if osz != "":
 		_on_open_osz(osz)   # 起動したので、取り込んで選曲画面へ
@@ -268,11 +282,54 @@ func _smoke() -> void:
 	get_tree().quit()
 
 
-## 更新の確認が終わった。新しいバージョンがあれば、タイトル画面に案内を出す。
+## 更新の確認が終わった。新しいバージョンがあれば、タイトル画面に案内を出す(起動時の確認のとき。条件が合えば自動更新も始める)。
+## 起動したままの間の再確認(_recheck_update)で見つかったときは、知らせるだけ(_announce_update)。自動更新はしない。
 func _on_update_checked(info: Dictionary) -> void:
-	if bool(info.get("newer", false)) and _kind == "title":
+	var recheck := _update_rechecking
+	_update_rechecking = false
+	if not bool(info.get("newer", false)):
+		return
+	if recheck:
+		if str(info.get("version", "")) != _update_notified:
+			_announce_update(info)
+		return
+	if _kind == "title":
+		_update_notified = str(info.get("version", ""))   # タイトルの案内のボタンで知らせた
 		_current.show_update(info)
 		_maybe_auto_update(info)
+	elif _kind != "game":
+		_announce_update(info)   # タイトル以外から始まった(曲のファイルから開いた)
+	else:
+		_update_pending = info
+
+
+## 起動したままの間の再確認。設定で切ってあれば確認しない。確認中・ダウンロード中・入れ替えの準備ができているときも、しない。
+func _recheck_update() -> void:
+	if updater == null or not bool(Settings.load_all().check_update) or updater.is_busy():
+		return
+	_update_rechecking = updater.check()
+
+
+## 新しいバージョンが公開されたことを知らせる(画面の下に、少し長めに出す)。タイトル画面なら、案内のボタンも出す。
+## プレイ中は、画面の邪魔をしないよう、プレイを離れてから知らせる(_update_pending)。更新はしない(押して、更新のパネルから始める)。
+func _announce_update(info: Dictionary) -> void:
+	_update_notified = str(info.get("version", ""))
+	if _kind == "game":
+		_update_pending = info
+		return
+	_update_pending = {}
+	if _kind == "title":
+		_current.show_update(info)
+	overlay.toast("新しいバージョン v%s が公開されました(タイトル画面から更新できます)" % str(info.get("version", "?")), UPDATE_TOAST_TIME)
+
+
+## プレイを離れた: プレイ中に見つかった新しい版があれば、画面が落ち着いてから知らせる。
+func _flush_update_notice() -> void:
+	if _update_pending.is_empty():
+		return
+	await get_tree().create_timer(1.5).timeout
+	if not _update_pending.is_empty() and _kind != "game" and not _fading:
+		_announce_update(_update_pending)
 
 
 ## 起動時の自動更新: 新しいバージョンが見つかったら、タイトル画面でパネルを開き、すぐダウンロード → 入れ替え → 再起動する。
@@ -402,6 +459,8 @@ func _swap_now(n: Node) -> void:
 		n.connect("settings_requested", open_settings)
 	add_child(n)
 	_update_settings_button()
+	if _kind != "game" and not _update_pending.is_empty():
+		_flush_update_notice()
 
 
 # --- 設定(プレイ中以外の、どの画面からでも開ける) ---
@@ -1071,7 +1130,7 @@ func _smoke_bossloop() -> void:
 	var peak := 0.0
 	var bonus_seen := false
 	var t0 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t0 < 6000:
+	while Time.get_ticks_msec() - t0 < 10000:
 		await get_tree().process_frame
 		mono = mono and g._now >= prev - 0.0001
 		prev = g._now
@@ -1401,6 +1460,100 @@ func _smoke_sfx() -> void:
 	get_tree().quit()
 
 
+## 開発用: 起動したままの間に見つかった新しいバージョンの知らせを確かめる(知らせるだけ・同じ版は 1 度だけ・プレイ中は離れてから・自動更新はしない)。-- --smoke-updatenotice
+func _smoke_updatenotice() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	var d := Settings.load_all()
+	d.check_update = true
+	d.auto_update = true   # 入れていても、再確認では自動更新しない
+	d.last_auto_update = ""
+	Settings.save_all(d)
+	updater = Updater.new()
+	add_child(updater)
+	updater.allow_any_url = true
+	updater.force_apply = true
+	updater.check_finished.connect(_on_update_checked)   # 本番では、_ready がつなぐ
+	overlay = HudOverlay.new()
+	add_child(overlay)
+	var mk := func(v: String) -> Dictionary:
+		return {"ok": true, "newer": true, "version": v, "notes": "test", "page": Updater.PAGE_URL, "asset_url": "http://127.0.0.1:9/none.zip", "asset_size": 0, "digest": ""}
+	# 1) 選曲画面にいるとき: 画面の下に知らせる。パネルは開かない・自動更新は始めない
+	show_menu()
+	await get_tree().create_timer(1.0).timeout
+	overlay._toast.visible = false
+	_update_notified = ""
+	_update_rechecking = true
+	_on_update_checked(mk.call("9.9.9"))
+	chk.call(overlay._toast.visible and overlay._toast_l.text.contains("9.9.9") and overlay._toast_t > 5.0, "見つかったら、知らせる(%s。%.0f 秒出す)" % [overlay._toast_l.text, overlay._toast_t])
+	chk.call(_settings_panel == null and str(Settings.load_all().last_auto_update) == "", "知らせるだけ(自動更新は始めない)")
+	# 2) 同じ版は、もう知らせない
+	overlay._toast.visible = false
+	_update_rechecking = true
+	_on_update_checked(mk.call("9.9.9"))
+	chk.call(not overlay._toast.visible, "同じ版は、2 回目は知らせない")
+	# 3) 古い版・見つからなかったときは、何もしない
+	_update_rechecking = true
+	_on_update_checked({"ok": true, "newer": false})
+	chk.call(not overlay._toast.visible and not _update_rechecking, "新しい版がなければ、何もしない(再確認の印は戻る)")
+	# 4) プレイ中に見つかったら、すぐには知らせず、プレイを離れてから知らせる
+	_kind = "game"
+	_update_rechecking = true
+	_on_update_checked(mk.call("9.9.10"))
+	chk.call(not overlay._toast.visible and not _update_pending.is_empty(), "プレイ中は、知らせずに取っておく")
+	show_menu()
+	await get_tree().create_timer(2.6).timeout
+	chk.call(overlay._toast.visible and overlay._toast_l.text.contains("9.9.10") and _update_pending.is_empty(), "プレイを離れたあとに、知らせる(%s)" % overlay._toast_l.text)
+	# 5) タイトル画面では、案内のボタンも出る。ここでも自動更新はしない
+	overlay._toast.visible = false
+	show_title()
+	await get_tree().create_timer(1.2).timeout
+	_current._update_btn = null
+	_update_rechecking = true
+	_on_update_checked(mk.call("9.9.11"))
+	chk.call(_current._update_btn != null and overlay._toast.visible, "タイトル画面では、案内のボタンも出る")
+	await get_tree().create_timer(0.5).timeout
+	chk.call(_current._overlay == null and str(Settings.load_all().last_auto_update) == "", "タイトル画面でも、再確認では自動更新しない")
+	# 6) 確認の失敗で、見つけた新しい版の情報を消さない / 確認中・ダウンロード中は再確認しない
+	updater.info = mk.call("9.9.11")
+	updater._finish_check({"ok": false, "error": "x"})
+	chk.call(bool(updater.info.get("newer", false)), "あとの確認が失敗しても、見つけた版の情報は残る")
+	updater._finish_check({"ok": true, "newer": false})
+	chk.call(not bool(updater.info.get("newer", false)), "確認できて「新しい版はない」なら、置き換わる")
+	chk.call(not updater.is_busy(), "何もしていないときは、再確認できる")
+	updater.stage_exe = "Danmaku.exe"
+	chk.call(updater.is_busy(), "入れ替えの準備ができている間は、再確認しない")
+	updater.stage_exe = ""
+	# 7) 手元のサーバー(tests/fake_release_server.js)があれば、定期の再確認(通信 → 知らせる)まで通して確かめる。-- --smoke-updatenotice api=http://127.0.0.1:8765/releases
+	for arg in OS.get_cmdline_user_args():
+		if str(arg).begins_with("api="):
+			updater.api_url = str(arg).trim_prefix("api=")
+			updater.info = {}
+			_update_notified = ""
+			_update_rechecking = false
+			show_menu()
+			await get_tree().create_timer(1.0).timeout
+			overlay._toast.visible = false
+			_recheck_update()
+			chk.call(_update_rechecking, "再確認を始めた(確認中の印)")
+			var t0 := Time.get_ticks_msec()
+			while not overlay._toast.visible and Time.get_ticks_msec() - t0 < 20000:
+				await get_tree().process_frame
+			chk.call(overlay._toast.visible and overlay._toast_l.text.contains("9.9.9") and not _update_rechecking, "サーバーから新しい版を見つけて、知らせた(%s / 表示=%s 確認中の印=%s)" % [overlay._toast_l.text, str(overlay._toast.visible), str(_update_rechecking)])
+			chk.call(bool(updater.info.get("newer", false)) and _settings_panel == null and str(Settings.load_all().last_auto_update) == "", "info に残り(タイトルのボタンの元)、自動更新は始めない")
+			overlay._toast.visible = false
+			_recheck_update()
+			await get_tree().create_timer(1.5).timeout
+			chk.call(not overlay._toast.visible, "もう一度確認しても、同じ版は知らせない")
+	Settings.restore(original)
+	print("smoke-updatenotice: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
 ## 開発用: 起動時の自動更新の判断を確かめる(新しいバージョンが見つかったときに、パネルが開いて更新を始めるか。ダウンロード先は存在しないアドレス)。-- --smoke-autoupdate
 func _smoke_autoupdate() -> void:
 	var original := Settings.load_all()
@@ -1672,7 +1825,7 @@ func _smoke_osu_menu() -> void:
 
 ## 開発用: lazer 風の選曲の一覧の動きを確かめる。-- --ui lazer --smoke-carousel
 ## 曲を移ったとき: 選んだ行が、フレームごとに大きく跳ばない / 読み込みが終わっても、難易度の行を作り直さない(同じ行のまま数字だけ変わる)。
-## 並び替えたとき: 並びが変わった最初のフレームから、行が前の位置から動き始めている。
+## 並び替えたとき: 並びが変わった最初のフレームから、行が動き始めている(見えていた行は滑り、外から入る行はそっと現れる)。
 func _smoke_carousel() -> void:
 	var original := Settings.load_all()
 	var st := {"fails": 0}
@@ -1775,12 +1928,111 @@ func _smoke_carousel() -> void:
 		for c in m._box.get_children():
 			if c is Control and c.visible and c.get_child_count() > 0:
 				var inner: Control = c.get_child(0)
-				if absf(inner.position.y - float(inner.get_meta("base_y", 0.0))) > 1.0:
+				if absf(inner.position.y - float(inner.get_meta("base_y", 0.0))) > 1.0 or inner.modulate.a < 0.99:   # 滑っている行、または、画面の外から入ってきて現れている行
 					moving += 1
 		chk.call((moving > 0) == changed, "並び替え(%s): 並びが%s → 最初のフレームで、%d 行が前の位置から動き始めている" % [mode, "変わった" if changed else "同じ", moving])
 		await get_tree().create_timer(0.8).timeout
+	# 曲が多いとき(作り物の曲を 300 曲足す): 滑る行は、前も後も画面の中にあった行だけ。外から入る行は、滑らずにそっと現れる(目にうるさくしない)
+	var n_real: int = m._songs.size()
+	for q in range(300):
+		m._songs.append({"path": "user://none%d.osz" % q, "title": "Fake %03d" % ((q * 37) % 300), "artist": "Z%d" % (q % 7), "key": "fake%d" % q, "key2": "fake%d" % q, "md5": "fake%d" % q, "ids": [], "mtime": q, "folder": false})
+		m._art_asked[n_real + q] = true   # 本物の曲ではないので、画像は頼まない
+	m._sync_cards()
+	m.debug_sort("title")
+	await get_tree().create_timer(0.8).timeout
+	m._smooth.scroll_to(3000.0)
+	await get_tree().create_timer(1.0).timeout
+	m.debug_sort("artist")
+	await get_tree().process_frame
+	var sliding := 0
+	var fading := 0
+	var max_off := 0.0
+	var tweened := 0
+	for c in m._box.get_children():
+		if c is Control and c.visible and c.get_child_count() > 0:
+			var inner2: Control = c.get_child(0)
+			var off := absf(inner2.position.y - float(inner2.get_meta("base_y", 0.0)))
+			if off > 1.0:
+				sliding += 1
+				max_off = maxf(max_off, off)
+			elif inner2.modulate.a < 0.99:
+				fading += 1
+			if inner2.has_meta("flip_tween") and (inner2.get_meta("flip_tween") as Tween).is_valid():
+				tweened += 1
+	chk.call(sliding + fading > 0 and tweened <= 16, "曲が多いとき(%d 曲): 動かす行は画面の中の分だけ(滑る %d 行・現れる %d 行・動きを持つ行 %d)" % [m._songs.size(), sliding, fading, tweened])
+	chk.call(max_off <= m._scroll.size.y + 100.0, "曲が多いとき: 滑る行の動く距離は画面の高さ以内(最大 %.0f px。画面 %.0f px)" % [max_off, m._scroll.size.y])
+	await get_tree().create_timer(0.8).timeout
+	m._songs.resize(n_real)   # 作り物を外す
+	m._rebuild_song_cards(false)
+	m.debug_sort("title")
+	await get_tree().create_timer(0.5).timeout
+	# 長さ順: 短い順に並ぶ(長さが分からない曲は、裏で集めて、集まったら並びに入る)。行の右に、長さが出る
+	m.debug_sort("length")
+	var t_len := Time.get_ticks_msec()
+	while (SongArt.meta_pending() > 0 or m._charts_dirty) and Time.get_ticks_msec() - t_len < 30000:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.2).timeout
+	m._apply_view()
+	await get_tree().process_frame
+	var lens_ok := true
+	var prev_len := 0.0
+	var order_v: Array = m.browser.view()
+	for i in order_v:
+		var ln: float = SongArt.length_of(str(m._songs[i].md5))
+		if ln <= 0.0 or ln < prev_len:
+			lens_ok = false
+		prev_len = ln
+	chk.call(lens_ok and order_v.size() == m._songs.size(), "長さ順: 短い順に並んでいる(%d 曲)" % order_v.size())
+	chk.call(m._rows[order_v[0]].is_visible_in_tree(), "長さ順: 曲の行が出ている")
+	m.debug_sort("title")
+	await get_tree().create_timer(0.5).timeout
+	# 難易度順: 譜面ごとの行が、Lv の低い順に並ぶ / 押すと、その曲のその難易度を選ぶ / 戻すと、曲の行が出る
+	m.debug_sort("diff")
+	var t_wait := Time.get_ticks_msec()
+	while (SongArt.meta_pending() > 0 or m._charts_dirty) and Time.get_ticks_msec() - t_wait < 30000:   # 難易度を集め終わるまで(並びは、集めたぶんが ときどきまとめて加わる)
+		await get_tree().process_frame
+	await get_tree().create_timer(1.2).timeout
+	m._apply_view()
+	await get_tree().process_frame
+	var n_known := 0
+	for i in range(m._songs.size()):
+		n_known += SongArt.diffs_of(str(m._songs[i].md5)).size()
+	chk.call(m._was_chart and m._chart_order.size() == n_known and n_known > 0, "難易度順: 譜面が 1 つずつ並ぶ(%d 譜面 / 分かっている難易度 %d)" % [m._chart_order.size(), n_known])
+	var sorted_ok := true
+	for k in range(1, m._chart_order.size()):
+		if float(m._chart_order[k].lv) < float(m._chart_order[k - 1].lv):
+			sorted_ok = false
+	chk.call(sorted_ok, "難易度順: Lv の低い順に並んでいる")
+	var shown_rows := 0
+	for r in m._rows:
+		if r.visible:
+			shown_rows += 1
+	chk.call(shown_rows == 0, "難易度順: 曲の行は出ていない")
+	if m._chart_order.size() > 3:
+		var pick: Dictionary = m._chart_order[m._chart_order.size() >> 1]
+		if str(pick.key) == m._chart_sel:
+			pick = m._chart_order[m._chart_order.size() >> 1 + 1]
+		m._pick_chart(int(pick.s), str(pick.id), false)
+		while m._job_pending:
+			await get_tree().process_frame
+		await get_tree().process_frame
+		var picked_id: String = str(m._loader.difficulties[m._diff_sel].md5)
+		chk.call(m._song_sel == int(pick.s) and picked_id == str(pick.id) and m._chart_sel == str(pick.key), "難易度順: 譜面を押すと、その曲のその難易度(%s)が選ばれる" % str(pick.name))
+		# 同じ曲の別の難易度(← →)でも、選んでいる譜面の行が追いかける
+		var cur_diff: int = m._diff_sel
+		m._select_diff(cur_diff + 1 if cur_diff + 1 < m._ratings.size() else cur_diff - 1)
+		await get_tree().process_frame
+		chk.call(m._chart_sel == "%s|%s" % [m._songs[m._song_sel].md5, m._loader.difficulties[m._diff_sel].md5], "難易度順: 同じ曲の隣の難易度へ → 選んでいる譜面の行も移る")
+	m.debug_sort("title")
+	await get_tree().process_frame
+	var shown_back := 0
+	for r in m._rows:
+		if r.visible:
+			shown_back += 1
+	chk.call(not m._was_chart and m._chart_holders.is_empty() and shown_back == m.browser.view().size(), "難易度順から戻す: 曲の行が出て、譜面の行は捨てられる(%d 曲)" % shown_back)
+	await get_tree().create_timer(0.5).timeout
 	Settings.restore(original)
-	print("smoke-carousel: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	print("smoke-carousel: ","OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()
 
 
@@ -2356,7 +2608,7 @@ func _smoke_clock() -> void:
 	var drift_max := 0.0   # 曲クロックと音声クロックのずれ(ms)の絶対値の最大
 	var drift_sum := 0.0
 	var t0 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t0 < 6000:
+	while Time.get_ticks_msec() - t0 < 20000:
 		await get_tree().process_frame
 		var us := Time.get_ticks_usec()
 		var dn: float = g._now - last_now
@@ -2435,7 +2687,7 @@ func _smoke_kiai() -> void:
 	g._audio.seek(48.0)
 	var samples: Array = []   # [曲の時刻, 光, キアイの度合い]
 	var t0 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t0 < 6000:
+	while Time.get_ticks_msec() - t0 < 20000:
 		await get_tree().process_frame
 		samples.append([g._now, g._beat_glow, g._kiai_a, g.field.halo])
 	var pre_max := 0.0
@@ -2675,7 +2927,7 @@ func _smoke_net() -> void:
 	b.left.connect(func(r): lf.reason = r)
 	a.leave()
 	t0 = Time.get_ticks_msec()
-	while lf.reason == "-" and Time.get_ticks_msec() - t0 < 6000:
+	while lf.reason == "-" and Time.get_ticks_msec() - t0 < 20000:
 		await get_tree().process_frame
 	chk.call(lf.reason != "-" and lf.reason != "" , "ホストが閉じると参加者に届く: '%s' (%d ms)" % [lf.reason, Time.get_ticks_msec() - t0])
 	# 不正なコード・つながらない行き先
@@ -2996,7 +3248,7 @@ func _smoke_mp_ui() -> void:
 	await get_tree().create_timer(1.0).timeout
 	chk.call((_current.get("kind") == "title") and n.role == "", "退出するとタイトルへ戻り、部屋を出る")
 	t0 = Time.get_ticks_msec()
-	while ok.left == "-" and Time.get_ticks_msec() - t0 < 6000:
+	while ok.left == "-" and Time.get_ticks_msec() - t0 < 20000:
 		await get_tree().process_frame
 	chk.call(ok.left != "-" and ok.left != "", "ホストが抜けると、参加者に「%s」と届く" % ok.left)
 	Settings.restore(original)

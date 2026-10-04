@@ -188,7 +188,7 @@ func tick(delta: float, p_now: float) -> void:
 			_t_contact = CONTACT_INTERVAL
 			var c: Dictionary = sim.take_contact()
 			if not c.is_empty():
-				net.to_host({"t": "g_ct", "c": c.c, "z": c.z, "h": c.h, "s": c.s, "hl": c.hl, "zb": c.zb})
+				net.to_host({"t": "g_ct", "c": c.c, "z": c.z, "h": c.h, "s": c.s, "hl": c.hl, "zb": c.zb, "zr": c.zr})
 
 
 ## スロット順の全員の位置(去った人を除く。自分は今の自機の位置)。
@@ -257,7 +257,7 @@ func handle(from: int, msg: Dictionary) -> void:
 							_apply_remote(int(id), a[0], bool(a[1]), NetCore._num(a[2], 0.0, 0.0, 1e9))
 		"g_ct":   # ホスト(協力): 参加者の被弾の報告
 			if mode == "coop" and is_host and remotes.has(from) and not sim.finished:
-				sim.ext_report(NetCore._num(msg.get("c", 0.0), 0.0, 0.0, 0.5), int(NetCore._num(msg.get("z", 0), 0.0, 0.0, 1000.0)), int(NetCore._num(msg.get("h", 0), 0.0, 0.0, 100.0)), NetCore._num(msg.get("s", 0.0), 0.0, 0.0, 0.5), NetCore._num(msg.get("hl", 0.0), 0.0, 0.0, 0.5), NetCore._num(msg.get("zb", 0.0), 0.0, 0.0, 1000.0))
+				sim.ext_report(NetCore._num(msg.get("c", 0.0), 0.0, 0.0, 0.5), int(NetCore._num(msg.get("z", 0), 0.0, 0.0, 1000.0)), int(NetCore._num(msg.get("h", 0), 0.0, 0.0, 100.0)), NetCore._num(msg.get("s", 0.0), 0.0, 0.0, 0.5), NetCore._num(msg.get("hl", 0.0), 0.0, 0.0, 0.5), NetCore._num(msg.get("zb", 0.0), 0.0, 0.0, 1000.0), int(NetCore._num(msg.get("zr", 0), 0.0, 0.0, 1000.0)))
 		"g_cs":   # 参加者(協力): 共有の状態
 			var st = msg.get("st")
 			if mode == "coop" and not is_host and st is Dictionary and not sim.finished:
@@ -288,7 +288,7 @@ func handle(from: int, msg: Dictionary) -> void:
 
 ## ホストから届いた共有の状態を、範囲のある数値に整える。
 func _clean_state(d: Dictionary) -> Dictionary:
-	return {"g": NetCore._num(d.get("g", 1.0), 1.0, 0.0, 1.0), "d": NetCore._num(d.get("d", 0.0), 0.0, 0.0, 1e6), "z": int(NetCore._num(d.get("z", 0), 0.0, 0.0, 1e7)),
+	return {"g": NetCore._num(d.get("g", 1.0), 1.0, 0.0, 1.0), "d": NetCore._num(d.get("d", 0.0), 0.0, 0.0, 1e6), "r": NetCore._num(d.get("r", 0.0), 0.0, 0.0, 1e6), "z": int(NetCore._num(d.get("z", 0), 0.0, 0.0, 1e7)),
 		"h": int(NetCore._num(d.get("h", 0), 0.0, 0.0, 1e6)), "ht": NetCore._num(d.get("ht", 0.0), 0.0, 0.0, 1e6)}
 
 

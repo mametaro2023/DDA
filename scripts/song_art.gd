@@ -2,7 +2,7 @@ extends Node
 ## 曲の一覧の見た目に使う、曲ごとの小さな情報(UI を持たない): 背景画像の縮小版(サムネイル)と、難易度の一覧(名前と、色に使う推定の★)。
 ## 曲を全部は開かずに一覧を出すため、初めての曲だけ別スレッドで .osz を開いて作り、user:// に保存する(次からは、保存したものを読むだけ)。
 ##   サムネイル … user://thumbs/<曲の識別子>.jpg(幅 THUMB_W まで縮めたもの)
-##   難易度 … user://song_art.json({識別子: {"diffs": [[譜面の識別子, 難易度名, 推定★], ...], "img": 画像があるか}})
+##   難易度 … user://song_art.json({識別子: {"diffs": [[譜面の識別子, 難易度名, 推定★], ...], "img": 画像があるか, "len": 曲の長さ(秒。-1 = 読めなかった。ない = 前の版で保存した)}})
 ## 使い方: SongArt.request(曲の識別子, .osz のパス, 受け取り(cb(info)))。info = {diffs, tex(なければ null)}。
 ## 作業は 1 曲ずつ(曲の読み込みと CPU を取り合わない)。テクスチャへの変換は、1 フレームに 1 枚まで(止まりを作らない)。
 ## 読み込んだテクスチャは、最近使った MEM_MAX 曲ぶんだけ覚えておく。
@@ -24,6 +24,7 @@ static var _tex := {}           # 識別子 → Texture2D(null = 画像なし)
 static var _order: Array = []   # 覚えている順(古い順)
 static var _queue: Array = []   # [{key, path}](先頭から処理)
 static var _waiting := {}       # 識別子 → [cb, ...]
+static var _meta_waiting := {}  # 識別子 → [cb, ...](難易度だけを待っているもの。request_meta)
 static var _busy := false
 static var _ready_q: Array = [] # 別スレッドから戻った結果(メインスレッドで、1 フレームに 1 つずつテクスチャにする)
 static var _save_t := 0.0
@@ -58,6 +59,20 @@ static func diffs_of(key: String) -> Array:
 	return m.diffs if m is Dictionary else []
 
 
+## 曲の長さ(秒。いちばん長い譜面の、最初のノーツから最後までの長さ)。まだ分からない・読めなかった曲は -1。
+static func length_of(key: String) -> float:
+	_load_meta()
+	var m = _meta.get(key)
+	return float((m as Dictionary).get("len", -1.0)) if m is Dictionary else -1.0
+
+
+## 曲の長さが保存してあるか(読めなかった曲の -1 も、保存してあれば true)。
+static func has_length(key: String) -> bool:
+	_load_meta()
+	var m = _meta.get(key)
+	return m is Dictionary and (m as Dictionary).has("len")
+
+
 ## 覚えているテクスチャ(なければ null。まだ読んでいないのか、画像がないのかは区別しない)。
 static func texture_of(key: String) -> Texture2D:
 	return _tex.get(key)
@@ -76,18 +91,39 @@ static func request(tree: SceneTree, key: String, path: String, cb: Callable, fr
 		(_waiting[key] as Array).append(cb)
 		if front:   # すでに並んでいる: 先頭へ
 			for i in range(_queue.size()):
-				if _queue[i].key == key:
+				if _queue[i].key == key and not _queue[i].get("meta_only", false):
 					var job: Dictionary = _queue[i]
 					_queue.remove_at(i)
 					_queue.push_front(job)
 					break
 		return
 	_waiting[key] = [cb]
-	var job := {"key": key, "path": path, "have_meta": _meta.has(key)}
+	var job := {"key": key, "path": path, "have_meta": _meta.has(key) and not bool((_meta[key] as Dictionary).get("partial", false))}
 	if front:
 		_queue.push_front(job)
 	else:
 		_queue.append(job)
+
+
+## 難易度の一覧だけを求める(画像は作らない)。難易度順の並び替えで、まだ分かっていない曲の分を、裏で 1 曲ずつ集めるのに使う。
+## 分かっていれば、次のフレームで cb(info) を呼ぶ(info.tex は null)。画像は、あとで request が作る(ここで残すのは「一部だけ」の印 partial)。
+## need_len = true なら、曲の長さ(len)が分かっていない曲(前の版で保存した分)も、集め直す。
+static func request_meta(tree: SceneTree, key: String, path: String, cb: Callable, need_len := false) -> void:
+	_ensure(tree)
+	_load_meta()
+	if _meta.has(key) and not (need_len and not (_meta[key] as Dictionary).has("len")):
+		_call_back.bind(cb, {"diffs": _meta[key].diffs, "tex": null}).call_deferred()
+		return
+	if _meta_waiting.has(key):
+		(_meta_waiting[key] as Array).append(cb)
+		return
+	_meta_waiting[key] = [cb]
+	_queue.append({"key": key, "path": path, "have_meta": false, "meta_only": true})
+
+
+## いま難易度を集めている(待っている)曲の数。
+static func meta_pending() -> int:
+	return _meta_waiting.size()
 
 
 ## まだ作業が残っているか(撮影で、画像がそろうのを待つのに使う)。
@@ -99,6 +135,7 @@ static func busy() -> bool:
 static func cancel_all() -> void:
 	_queue.clear()
 	_waiting.clear()
+	_meta_waiting.clear()
 
 
 static func _call_back(cb: Callable, info: Dictionary) -> void:
@@ -125,16 +162,30 @@ func _process(delta: float) -> void:
 	if not _ready_q.is_empty():   # テクスチャへの変換(転送)は 1 フレームに 1 枚
 		var r: Dictionary = _ready_q.pop_front()
 		var key: String = r.key
-		if r.has("diffs"):
-			_meta[key] = {"diffs": r.diffs, "img": r.img != null}
-			_meta_dirty = true
-		var tex: Texture2D = ImageTexture.create_from_image(r.img) if r.img != null else null
-		_tex[key] = tex
-		_touch(key)
-		var info := {"diffs": (_meta.get(key, {}) as Dictionary).get("diffs", []), "tex": tex}
-		for cb in _waiting.get(key, []):
-			_call_back(cb, info)
-		_waiting.erase(key)
+		if r.get("meta_only", false):
+			# 難易度だけ。すでに全部そろっている曲の記録は、一部だけのもので上書きしない。画像のテクスチャは作らない(あとで request が作る)
+			var have: Dictionary = _meta.get(key, {})
+			if have.is_empty() or bool(have.get("partial", false)):
+				_meta[key] = {"diffs": r.diffs, "img": false, "partial": true, "len": r.len}
+				_meta_dirty = true
+			elif not have.has("len"):   # 前の版で保存した分: 長さだけ足す
+				have["len"] = r.len
+				_meta_dirty = true
+			var minfo := {"diffs": (_meta.get(key, {}) as Dictionary).get("diffs", []), "tex": null}
+			for cb in _meta_waiting.get(key, []):
+				_call_back(cb, minfo)
+			_meta_waiting.erase(key)
+		else:
+			if r.has("diffs"):
+				_meta[key] = {"diffs": r.diffs, "img": r.img != null, "len": r.get("len", -1.0)}
+				_meta_dirty = true
+			var tex: Texture2D = ImageTexture.create_from_image(r.img) if r.img != null else null
+			_tex[key] = tex
+			_touch(key)
+			var info := {"diffs": (_meta.get(key, {}) as Dictionary).get("diffs", []), "tex": tex}
+			for cb in _waiting.get(key, []):
+				_call_back(cb, info)
+			_waiting.erase(key)
 	if _meta_dirty:
 		_save_t += delta
 		if _save_t > 1.0:   # まとめて保存する
@@ -154,6 +205,17 @@ func _finish(r: Dictionary) -> void:
 
 ## 別スレッド: 保存したサムネイルがあれば読むだけ。なければ .osz を開いて、難易度の一覧とサムネイルを作る。
 static func _work(job: Dictionary, thumb: String, meta_has_img: bool) -> Dictionary:
+	if job.get("meta_only", false):   # 難易度の一覧だけ(画像は作らない)
+		var lm = OszLoader.new()
+		if not lm.open(str(job.path)):
+			return {"key": job.key, "meta_only": true, "diffs": [], "len": -1.0}
+		var ds: Array = []
+		var longest := 0.0
+		for bm in lm.difficulties:
+			ds.append([str(bm.md5), str(bm.version), snappedf(float(bm.stars), 0.01)])
+			longest = maxf(longest, (bm.last_time() - bm.first_time()) / 1000.0)
+		lm.close()
+		return {"key": job.key, "meta_only": true, "diffs": ds, "len": roundf(longest)}
 	if job.have_meta:
 		var img: Image = null
 		if meta_has_img and FileAccess.file_exists(thumb):
@@ -162,11 +224,13 @@ static func _work(job: Dictionary, thumb: String, meta_has_img: bool) -> Diction
 			return {"key": job.key, "img": img}
 	var l = OszLoader.new()
 	if not l.open(str(job.path)):
-		return {"key": job.key, "img": null, "diffs": []}
+		return {"key": job.key, "img": null, "diffs": [], "len": -1.0}
 	var diffs: Array = []
 	var bg := ""
+	var longest := 0.0
 	for bm in l.difficulties:   # OszLoader の並び(物量の少ない順)= 選曲で選んだときの並び
 		diffs.append([str(bm.md5), str(bm.version), snappedf(float(bm.stars), 0.01)])
+		longest = maxf(longest, (bm.last_time() - bm.first_time()) / 1000.0)
 		if bg == "" and bm.background != "":
 			bg = bm.background
 	var img: Image = l.load_image_data(bg) if bg != "" else null
@@ -176,4 +240,4 @@ static func _work(job: Dictionary, thumb: String, meta_has_img: bool) -> Diction
 			img.resize(THUMB_W, maxi(1, int(round(img.get_height() * float(THUMB_W) / img.get_width()))), Image.INTERPOLATE_BILINEAR)
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(THUMB_DIR))
 		img.save_jpg(thumb, 0.85)
-	return {"key": job.key, "img": img, "diffs": diffs}
+	return {"key": job.key, "img": img, "diffs": diffs, "len": roundf(longest)}

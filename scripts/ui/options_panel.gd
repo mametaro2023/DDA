@@ -514,7 +514,7 @@ func _build_songs() -> Control:
 func _build_other() -> Control:
 	var v := _page("その他", "")
 	# 更新の確認
-	v.add_child(_toggle_card("起動時に更新を確認する", "新しいバージョンがあれば、タイトル画面でお知らせします(GitHub に問い合わせます)", UiStyle.ACCENT,
+	v.add_child(_toggle_card("更新を確認する", "起動時と、起動している間(30 分ごと)に、新しいバージョンがないか確かめ、あればお知らせします。自動では更新しません(GitHub に問い合わせます)", UiStyle.ACCENT,
 		bool(settings.check_update), "", func(on: bool): settings.check_update = on))
 	v.add_child(_toggle_card("見つけたら自動で更新する", "新しいバージョンが見つかったら、起動したタイトル画面で、ダウンロードして入れ替え、再起動します(書き出した版のみ。曲や設定はそのまま)", UiStyle.ACCENT,
 		bool(settings.auto_update), "", func(on: bool): settings.auto_update = on))

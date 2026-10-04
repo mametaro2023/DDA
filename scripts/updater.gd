@@ -110,9 +110,10 @@ static func _dir_writable(dir: String) -> bool:
 
 # --- 1. 確認 ---
 
-func check() -> void:
+## 確認を始める。始めたら true(確認中・ダウンロード中で、始めなかったときは false)。
+func check() -> bool:
 	if _http != null:
-		return
+		return false
 	_http = HTTPRequest.new()
 	_http.timeout = 10.0
 	add_child(_http)
@@ -120,6 +121,12 @@ func check() -> void:
 	var err := _http.request(api_url, PackedStringArray(["User-Agent: Danmaku-updater", "Accept: application/vnd.github+json"]))
 	if err != OK:
 		_finish_check({"ok": false, "error": "接続できません"})
+	return true
+
+
+## 確認中・ダウンロード中・入れ替えの準備ができている間は true(定期の確認は、この間は始めない。info を差し替えると、ダウンロードの確認が合わなくなる)。
+func is_busy() -> bool:
+	return _http != null or _downloading or stage_exe != ""
 
 
 func _on_check_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -161,7 +168,8 @@ func _finish_check(r: Dictionary) -> void:
 	if _http != null:
 		_http.queue_free()
 		_http = null
-	info = r
+	if bool(r.get("ok", false)) or not bool(info.get("newer", false)):   # 見つけたあとの確認が失敗(通信の不調など)しても、見つけた新しい版の情報は残す
+		info = r
 	check_finished.emit(r)
 
 

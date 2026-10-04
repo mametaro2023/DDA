@@ -16,7 +16,7 @@ extends RefCounted
 ## ## 特殊エリア(MOD「弾幕 v2」)
 ## gen.zones の各要素が areas(形 + 種類のリスト。形は zone_area.gd)を持つとき(= 弾幕 v2)は、3×3 のマスではなく、その形が特殊エリアになる。種類は 3 系統:
 ##   試練(自機が不利): 鈍足・脆弱・毒(+ v1 の巨大)。中でグレイズすると、ボーナス用のグレイズが ZONE_GRAZE_TRIAL 倍ぶん、上乗せされる(リスクの見返り)
-##   恩恵(自機が有利): 癒し(heal: ゲージが ZONE_HEAL_DRAIN(/秒)で回復)/ 精密(precise: 当たり判定 ZONE_PRECISE_HIT 倍・移動 ZONE_PRECISE_SPEED 倍)/ 稼ぎ(bonus: グレイズの上乗せ ZONE_GRAZE_BONUS 倍)
+##   恩恵(自機が有利): 癒し(heal: ゲージが ZONE_HEAL_DRAIN(/秒)で回復)/ 精密(precise: 当たり判定 ZONE_PRECISE_HIT 倍・移動 ZONE_PRECISE_SPEED 倍)/ 稼ぎ(bonus: グレイズの上乗せ ZONE_GRAZE_BONUS 倍 + グレイズごとに、失った被ダメージ係数を ZONE_GRAZE_REFUND の割合ずつ取り戻す)
 ##   変質(弾に作用): 時の淀み(warp: エリアの中の弾が ZONE_WARP 倍の速さで進む)/ 時の急流(haste: ZONE_HASTE 倍。試練)。弾の位置だけで決まるので、協力でも全員が同じ弾を見る。
 ##     弾の速さの倍率は、目標へなめらかに近づく(入るときは速く、出たあとはゆっくり戻る。BulletField.WARP_ENTER / WARP_EXIT)ので、エリアが消えても弾が急に元の速さへ戻らない。
 ##   流れ(flow: 試練): 自機が、エリアごとの向き(area.dir)へ、入力に関係なく ZONE_FLOW_SPEED で押される。
@@ -81,6 +81,7 @@ const ZONE_HASTE := 1.5            # 時の急流: エリアの中の弾の速�
 const ZONE_FLOW_SPEED := 110.0     # 流れ: 自機を押す速さ(px/s。自機の移動 380 の約 3 割)
 const ZONE_GRAZE_TRIAL := 0.5      # 試練エリアの中のグレイズに、上乗せする割合(1 回のグレイズが 1.5 回ぶん)
 const ZONE_GRAZE_BONUS := 1.0      # 稼ぎ(恩恵)エリアの中のグレイズに、上乗せする割合(1 回が 2 回ぶん)
+const ZONE_GRAZE_REFUND := 0.001   # 稼ぎエリアの中のグレイズ 1 回ごとに、失っている被ダメージ係数(1 − damage_factor)を、この割合だけ取り戻す(失うほど、戻る量も大きい)
 
 const SCORE_BASE := 1000000.0
 ## ランク(クリアしたときだけ)。被弾 0 回なら SS。それ以外は「達成率 = 最終点 ÷ ベーススコア(MOD の倍率を含む)」で決める。
@@ -128,7 +129,9 @@ var hit_mult := 1.0                # 巨大・精密のエリア中の、当た�
 var contact_extra := 0.0           # 参加者: まだホストへ送っていない、デバフによる追加ダメージ(被弾時間に換算した秒)
 var contact_heal := 0.0            # 参加者: まだホストへ送っていない、癒しによる回復(被弾時間に換算した秒)
 var contact_gbonus := 0.0          # 参加者: まだホストへ送っていない、エリアでのグレイズの上乗せ
+var contact_grefund := 0           # 参加者: まだホストへ送っていない、稼ぎエリアの中のグレイズの数(被ダメージ係数の回復に使う)
 var graze_bonus := 0.0             # エリアでのグレイズの上乗せ(ボーナス点にだけ入る。表示するグレイズ数には入れない)
+var damage_refund := 0.0           # 稼ぎエリアのグレイズで取り戻した分(damage_total と同じ単位。被ダメージ係数にだけ効き、damage_total・DAMAGE 表示は変えない)
 var _zone_i := 0
 var _warp_t := -1.0                # 時の淀み・急流の形を最後に作った時刻と、そのときのエリアの番号(作り直しは WARP_REFRESH ごと)
 var _warp_zi := -1
@@ -346,7 +349,7 @@ func setup_coop(n: int, is_host: bool) -> void:
 
 
 ## ホスト: 参加者から届いた被弾の報告(被弾時間・グレイズ・被弾回数)を、共有のゲージとスコアに反映する。
-func ext_report(contact_s: float, graze_n: int, hit_n: int, extra_s := 0.0, heal_s := 0.0, gbonus := 0.0) -> void:
+func ext_report(contact_s: float, graze_n: int, hit_n: int, extra_s := 0.0, heal_s := 0.0, gbonus := 0.0, refund_n := 0) -> void:
 	if not authority or finished:
 		return
 	if extra_s > 0.0:   # 参加者のデバフ(脆弱・毒)による追加ダメージ
@@ -365,13 +368,27 @@ func ext_report(contact_s: float, graze_n: int, hit_n: int, extra_s := 0.0, heal
 		damage_total += dmg
 		gauge -= dmg
 		_ext_hit_t = 0.3
+	_apply_graze_refund(refund_n)
 	_update_score()
+
+
+## 稼ぎエリアの中のグレイズ n 回ぶん、失っている被ダメージ係数(1 − damage_factor)を ZONE_GRAZE_REFUND の割合ずつ取り戻す。
+## 失った分が大きいほど、1 回で戻る量も大きく、失った分が 0 なら何も戻らない(係数は 1 を超えない)。damage_total は変えず、damage_refund に積む。
+func _apply_graze_refund(n: int) -> void:
+	if n <= 0 or damage_refund >= damage_total:
+		return
+	var lost := 1.0 - exp(-(damage_total - damage_refund) / damage_tau)
+	if lost <= 0.0:
+		return
+	lost *= pow(1.0 - ZONE_GRAZE_REFUND, float(n))
+	damage_refund = damage_total + damage_tau * log(1.0 - lost)
 
 
 ## 参加者: ホストから届いた共有の状態(ゲージ・累計ダメージ・グレイズ・被弾回数・被弾時間)を反映する。
 func apply_net_state(d: Dictionary) -> void:
 	gauge = clampf(float(d.get("g", gauge)), 0.0, 1.0)
 	damage_total = float(d.get("d", damage_total))
+	damage_refund = float(d.get("r", damage_refund))
 	graze = int(d.get("z", graze))
 	hits = int(d.get("h", hits))
 	hit_time = float(d.get("ht", hit_time))
@@ -406,13 +423,14 @@ func apply_net_event(e: Dictionary, now: float) -> void:
 
 ## 参加者: まだ送っていない被弾の報告を取り出す(取り出すと 0 に戻る)。何もなければ空の辞書。
 func take_contact() -> Dictionary:
-	if contact_dt <= 0.0 and contact_graze == 0 and contact_hits == 0 and contact_extra <= 0.0 and contact_heal <= 0.0 and contact_gbonus <= 0.0:
+	if contact_dt <= 0.0 and contact_graze == 0 and contact_hits == 0 and contact_extra <= 0.0 and contact_heal <= 0.0 and contact_gbonus <= 0.0 and contact_grefund == 0:
 		return {}
-	var out := {"c": contact_dt, "z": contact_graze, "h": contact_hits, "s": contact_extra, "hl": contact_heal, "zb": contact_gbonus}
+	var out := {"c": contact_dt, "z": contact_graze, "h": contact_hits, "s": contact_extra, "hl": contact_heal, "zb": contact_gbonus, "zr": contact_grefund}
 	contact_dt = 0.0
 	contact_extra = 0.0
 	contact_heal = 0.0
 	contact_gbonus = 0.0
+	contact_grefund = 0
 	contact_graze = 0
 	contact_hits = 0
 	return out
@@ -420,7 +438,7 @@ func take_contact() -> Dictionary:
 
 ## ホスト: 今の共有の状態(参加者へ配る)。
 func net_state() -> Dictionary:
-	return {"g": gauge, "d": damage_total, "z": graze, "h": hits, "ht": hit_time}
+	return {"g": gauge, "d": damage_total, "r": damage_refund, "z": graze, "h": hits, "ht": hit_time}
 
 
 ## 自機狙いの目標位置の一覧。協力では、全員を 1 発ずつ(全員が同じ頻度で狙われる)。ホストが決めて配った位置があればそれ、
@@ -526,6 +544,11 @@ func _update(now: float, dt: float) -> void:
 				graze_bonus += float(field.graze_count) * gmul
 			else:
 				contact_gbonus += float(field.graze_count) * gmul
+		if zone_area_type == "bonus" and field.graze_count > 0:
+			if authority:
+				_apply_graze_refund(field.graze_count)
+			else:
+				contact_grefund += field.graze_count
 	hit_now = field.hit and not debug_invincible
 	_ext_hit_t = maxf(_ext_hit_t - dt, 0.0)
 	if hit_now:
@@ -855,7 +878,7 @@ func _all_safe() -> bool:
 
 ## 今の点数を計算し直す。ゲームオーバーなら 0。
 func _update_score() -> void:
-	damage_factor = exp(-damage_total / damage_tau)
+	damage_factor = exp(-maxf(damage_total - damage_refund, 0.0) / damage_tau)
 	if failed:
 		score_gross = 0.0
 		score_graze = 0.0

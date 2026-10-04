@@ -332,8 +332,27 @@ func _test_effects() -> void:
 	_check(int(gz["bonus"][0]) == 1 and absf(float(gz["bonus"][1]) - GameSim.ZONE_GRAZE_BONUS) < 1e-9, "稼ぎ: グレイズ 1 回に、上乗せ %.1f(グレイズ数は 1 のまま)" % float(gz["bonus"][1]))
 	_check(absf(float(gz["slow"][1]) - GameSim.ZONE_GRAZE_TRIAL) < 1e-9, "試練のエリア: グレイズの上乗せ %.1f(リスクの見返り)" % float(gz["slow"][1]))
 	_check(float(gz["heal"][1]) == 0.0 and float(gz[""][1]) == 0.0 and float(gz["bonus"][2]) > float(gz["slow"][2]) and float(gz["slow"][2]) > float(gz[""][2]), "恩恵(稼ぎ以外)・エリアなしは上乗せなし。ボーナス点は 稼ぎ > 試練 > なし")
+	# 稼ぎのグレイズは、失っている被ダメージ係数を取り戻す(失うほど、戻る量が大きい。damage_total・DAMAGE 表示は変えない)
+	var rf := {}
+	for t in ["bonus", "slow", ""]:
+		for dmg in [0.0, 0.3, 0.9]:
+			var zr := [_zone([_all(t)])] if t != "" else []
+			var sr = _make(zr)[0]
+			sr.damage_total = dmg
+			sr.player_pos = MID
+			sr.field.add(MID + Vector2(24, 0), Vector2.ZERO, 6.0, 0, 0.0)
+			_run(sr, 0.0, 0.05)
+			rf["%s%.1f" % [t, dmg]] = sr
+	var lost03: float = 1.0 - exp(-0.3 / rf["bonus0.3"].damage_tau)
+	var lost09: float = 1.0 - exp(-0.9 / rf["bonus0.9"].damage_tau)
+	var gain03: float = rf["bonus0.3"].damage_factor - (1.0 - lost03)
+	var gain09: float = rf["bonus0.9"].damage_factor - (1.0 - lost09)
+	_check(absf(gain03 - lost03 * GameSim.ZONE_GRAZE_REFUND) < 1e-9, "稼ぎ: グレイズ 1 回で、失った係数の %.1f%% を取り戻す(+%.5f)" % [GameSim.ZONE_GRAZE_REFUND * 100.0, gain03])
+	_check(gain09 > gain03 * 2.0 and rf["bonus0.9"].damage_total == 0.9, "失った係数が大きいほど、戻る量も大きい(+%.5f > +%.5f)。damage_total は変わらない" % [gain09, gain03])
+	_check(rf["bonus0.0"].damage_factor == 1.0 and rf["bonus0.0"].damage_refund == 0.0, "失っていなければ、何も戻らない(係数は 1 を超えない)")
+	_check(rf["slow0.9"].damage_refund == 0.0 and rf["0.9"].damage_refund == 0.0, "稼ぎ以外(試練・エリアなし)では、係数は戻らない")
 	# 試練の効果は、v1 と同じ(鈍足・脆弱・毒)
-	var s4 = _make([_zone([{"shape": ZoneArea.rect(0.0, 0.0, 0.5, 1.0), "type": "slow"}])])[0]
+	var s4 =_make([_zone([{"shape": ZoneArea.rect(0.0, 0.0, 0.5, 1.0), "type": "slow"}])])[0]
 	s4.player_pos = Vector2(100, 360)
 	var x0: float = s4.player_pos.x
 	_run(s4, 0.0, 0.5, right)
@@ -473,6 +492,14 @@ func _test_coop() -> void:
 	_check(absf(rep2.get("zb", 0.0) - GameSim.ZONE_GRAZE_BONUS) < 1e-9 and rep2.z == 1, "参加者: グレイズの上乗せも報告する(グレイズ %d・上乗せ %.1f)" % [rep2.z, rep2.get("zb", 0.0)])
 	host[0].ext_report(0.0, rep2.z, 0, 0.0, 0.0, rep2.zb)
 	_check(absf(host[0].graze_bonus - GameSim.ZONE_GRAZE_BONUS) < 1e-9, "ホスト: 上乗せを、ボーナス点のグレイズに足す")
+	_check(rep2.get("zr", 0) == 1 and sg.damage_refund == 0.0, "参加者: 稼ぎのグレイズの数も報告する(係数の回復はホストが決める)")
+	var hr = _make([], 2, true)[0]
+	hr.damage_total = 0.6
+	hr.ext_report(0.0, rep2.z, 0, 0.0, 0.0, rep2.zb, rep2.zr)
+	_check(hr.damage_refund > 0.0 and hr.damage_total == 0.6 and hr.damage_factor > exp(-0.6 / hr.damage_tau), "ホスト: 係数を取り戻す(共有の係数が +%.5f)" % (hr.damage_factor - exp(-0.6 / hr.damage_tau)))
+	var cr = _make([], 2, false)[0]
+	cr.apply_net_state(hr.net_state())
+	_check(absf(cr.damage_factor - hr.damage_factor) < 1e-9, "参加者: 共有の状態で、同じ係数になる")
 	# 報告するものがなければ、空
 	var idle = _make([], 2, false)
 	_check(idle[0].take_contact().is_empty(), "何もなければ、報告は空")

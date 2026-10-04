@@ -5,7 +5,7 @@ extends "res://scripts/ui/lazer/lazer_screen.gd"
 ## 契約は classic の選曲画面(menu_screen.gd)と同じ: signal play_requested / back_requested / song_picked / settings_requested、
 ## pick_mode / refresh_songs() / select_path() / on_overlay()。
 ## 操作: ↑↓ 曲、← → 難易度、Enter 開始、Esc 戻る、M で MOD、O で設定(キーの案内は画面に出さない。「遊び方」にある)。
-## 曲の検索(右上の入力欄)と並び替え(曲名 / アーティスト / 追加順 / ランク。行が滑って入れ替わる)ができ、左下に、選んだ難易度のローカル記録(上位 5 件)を出す(records.gd)。
+## 曲の検索(右上の入力欄)と並び替え(曲名 / アーティスト / 追加順 / ランク / 難易度 / 長さ。行が滑って入れ替わる。難易度は、曲ではなく譜面ごとに 1 行ずつ並べる)ができ、左下に、選んだ難易度のローカル記録(上位 5 件)を出す(records.gd)。
 ## 曲の行の右には、その曲の最高ランクが出る。
 
 ## pre: 選曲のときに作っておいたもの {gen: 選んだ難易度の弾幕(MOD 適用前), audio: 曲全体の音声(あれば)}。プレイ画面が、作り直さず(読み込み直さず)に使う
@@ -31,7 +31,8 @@ const SongArt = preload("res://scripts/song_art.gd")
 const BAR_MAX := 500.0        # 弾数バーの満点
 const SPEED_MAX := 500.0      # 弾速バーの満点(px/s)
 const LAUNCH_TIME := 0.4      # プレイを押してから、次の画面へ切り替えるまでの演出の長さ(秒)
-const ROW_H := 84.0           # 曲の行の高さ
+const ROW_H := 70.0           # 曲の行の高さ(1 画面に 7 行ほど入る。行の間は ROW_GAP)
+const ROW_GAP := 6            # 行と行の間
 const DIFF_H := 46.0          # 難易度の一覧の 1 行の高さ
 const DIFF_GAP := 6
 const DIFF_INDENT := 36.0     # 難易度の一覧の左の余白(曲の行より内側)
@@ -39,6 +40,9 @@ const INDENT := 44.0          # 行の左の余白(閉じているとき)
 const INDENT_HOVER := 30.0
 const INDENT_SEL := 6.0       # 選んでいる行は、左へせり出す
 const MARGIN_R := 26.0        # 行の右の余白
+const CHART_FILL_MAX := 160   # 難易度順で、中身を持っておく行の数(超えたら、古いものから手放す)
+const CHART_FILL_PER_FRAME := 6   # 難易度順で、1 フレームに中身を作る行の数
+const CHART_REBUILD_MS := 800     # 難易度を集めている間、並びを作り直す間隔(ミリ秒)
 
 var kind := "menu"
 var pick_mode := false
@@ -77,6 +81,21 @@ var _diff_rows: Array = []       # 一覧の行(読み込み中の仮の行も�
 var _anchor_y := -1.0            # 選んでいる曲の行の、一覧の中での位置(並びが変わったら、その分スクロールをずらして、画面の同じ場所に保つ)
 var _flip_before := {}           # 並び替えの直前の、行の位置
 var _flip_pending := false
+var _flip_s0 := 0.0              # 並び替えの直前の、スクロールの位置(どの行が見えていたかを決める)
+var _was_chart := false          # いまの一覧が、難易度順(譜面ごと)か
+var _chart_holders := {}         # 譜面の key(曲の識別子|譜面の識別子)→ 行の入れもの(難易度順のときだけ。中身は、近づいたときに作る)
+var _chart_order: Array = []     # いま並んでいる譜面 [{s, id, name, lv, key}]
+var _chart_list: Array = []      # 同じ並びの、行の入れもの(位置から、見えている範囲を探す)
+var _chart_keys := PackedStringArray()   # 同じ並びの key(並びが変わったかの確認用)
+var _chart_filled: Array = []    # 中身を作った行の key(古い順。CHART_FILL_MAX を超えたら古いものから手放す)
+var _chart_by_song := {}         # 曲の識別子 → その曲の譜面の行
+var _chart_sel := ""             # 選んでいる譜面の key
+var _chart_want := ""            # 押した譜面の識別子(別の曲だったとき、読み込み終わりにこの難易度を選ぶ)
+var _chart_center_pending := false   # 選んでいる曲を読み込み終わったら、その譜面を一覧の真ん中へ
+var _meta_asked := {}            # 難易度を集めるよう頼んだ曲(曲の識別子)
+var _len_asked := {}             # 長さを集めるよう頼んだ曲
+var _charts_dirty := false       # 集めた難易度が増えた(並びを作り直す)
+var _charts_at := 0              # 難易度順の並びを最後に作った時刻
 ## 一覧の上端・下端の余白(伸び縮みする)。スクロールでは打ち消せない高さの変化(上端・下端にいるとき)を、いったんここで受け止めて、
 ## あとから、止まった状態から加速するばねで、なめらかに戻す(閉じる一覧が大きくても、行がガクッと動かない)
 var _head: Control
@@ -139,6 +158,8 @@ func _ready() -> void:
 	browser.song_load_failed.connect(_on_song_load_failed)
 	browser.song_reloading.connect(func(): _set_loading(true))   # 弾幕 v2 の入り切りで、同じ曲を読み直している
 	browser.sort_mode = str(settings.get("song_sort", "title"))
+	browser.charts_of = _charts_of
+	browser.length_of = func(i: int) -> float: return SongArt.length_of(str(_songs[i].md5))
 	_build_base()
 	_build_toolbar(["ロビー", "曲を選ぶ"] if pick_mode else ["ソロ"])
 	_build_info()
@@ -306,7 +327,7 @@ func _build_search() -> void:
 	var widths: Array = []
 	var total := 0.0
 	for m in SongBrowser.SORT_MODES:   # 並び替えのボタンは右に寄せ、残りの幅を入力欄にする
-		var bw := LazerStyle.font().get_string_size(str(m[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 28.0
+		var bw := LazerStyle.font().get_string_size(str(m[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 22.0
 		widths.append(bw)
 		total += bw + 6.0
 	var x := 1280.0 - 20.0 - total + 6.0
@@ -335,14 +356,28 @@ func _build_search() -> void:
 
 ## 検索・並び替えを、行に反映する(行は曲ごとに作ってあり、見せるものと順番だけを変える)。難易度の一覧は、選んだ曲のすぐ下へ。
 ## sorted = true(並び替えを変えた): 行が、前の位置から新しい位置へ、少しずつ遅れて滑って入れ替わる。
-func _apply_view(sorted := false) -> void:
+func _apply_view(sorted := false, keep_scroll := false) -> void:
 	if _rows.is_empty():
 		return
+	if browser.chart_mode():   # 難易度順: 曲ではなく、譜面を 1 つずつ並べる(滑る動きはなし)
+		_apply_chart_view()
+		return
+	var leaving := _was_chart
+	if leaving:   # 難易度順から戻った: 譜面の行は捨てて、曲の行を出す
+		_was_chart = false
+		_clear_charts()
+		_anchor_y = -1.0
+		_no_match.text = "一致する曲がありません"
 	var before := {}
-	if sorted and UiStyle.animate:
+	if sorted and UiStyle.animate and not leaving:
+		_flip_s0 = float(_scroll.scroll_vertical)
 		for c in _box.get_children():
-			if c is Control and c.visible:
-				before[c] = (c as Control).position.y
+			if c is Control and c.visible:   # 動かすのは、いま見えている行だけ(画面の外の行は、そのまま入れ替える)
+				var y: float = (c as Control).position.y
+				if y + (c as Control).size.y > _flip_s0 and y < _flip_s0 + _scroll.size.y:
+					before[c] = y
+	if browser.sort_mode == "length":   # 長さが分かっていない曲を、裏で集める
+		_crawl_meta()
 	var v := browser.view()
 	var shown := {}
 	var at := 1   # 0 番目は、一番上の余白
@@ -361,12 +396,430 @@ func _apply_view(sorted := false) -> void:
 		_diff_box.visible = shown.has(_song_sel)
 	_no_match.visible = v.is_empty() and not _songs.is_empty()
 	_art_t = 1.0   # 見えるようになった行の画像を頼む
+	if leaving:
+		_fade_list()
 	if not before.is_empty():   # 動きは、並びが決まった直後(_on_box_sorted)に始める
 		_flip_before = before
 		_flip_pending = true
 		_box.queue_sort()
-	elif _song_sel >= 0 and _song_sel < _rows.size() and _rows[_song_sel].visible:
+	elif not keep_scroll and _song_sel >= 0 and _song_sel < _rows.size() and _rows[_song_sel].visible:
 		_smooth.scroll_to_control(_rows[_song_sel], 80.0)
+
+
+# --- 難易度順(譜面ごとの一覧) ---
+## 並び替えが「難易度」のときは、曲の行も難易度の一覧も出さず、譜面(曲 × 難易度)を 1 行ずつ、Lv の低い順に並べる。
+## 行の中身(画像・文字・Lv の札)は、画面に近づいたときだけ作る(何千譜面あっても重くしない)。並びは、行を足し直すだけで、滑る動きはない。
+## 並べる Lv は MOD なしの値(推定の★、曲を読み込んだあとは測った Lv)。MOD を変えても並びは変わらない。
+## まだ難易度が分かっていない曲は、裏で 1 曲ずつ集めて(SongArt.request_meta)、分かった曲から並びに加わる。
+## 押すと、その曲を読み込んでその難易度を選び、選んでいる譜面をもう一度押すと開始。↑↓ は 1 譜面ずつ、← → は同じ曲の隣の難易度。
+
+## 難易度順の並びに使う、曲 i の譜面 [[譜面の識別子, 難易度名, Lv], ...](browser.charts_of)。
+func _charts_of(i: int) -> Array:
+	var out: Array = []
+	for d in SongArt.diffs_of(str(_songs[i].md5)):
+		out.append([str(d[0]), str(d[1]), float(_lv_seen.get(str(d[0]), d[2]))])
+	return out
+
+
+## 難易度順の一覧を、行に反映する(並びが変わったときだけ、行を足し直す)。
+func _apply_chart_view() -> void:
+	var entering := not _was_chart
+	_was_chart = true
+	_charts_at = Time.get_ticks_msec()
+	_charts_dirty = false
+	for r in _rows:   # 曲の行と、その難易度の一覧は隠す
+		if r.visible:
+			r.visible = false
+	if _diff_box != null:
+		_diff_box.visible = false
+	_crawl_meta()
+	var order: Array = browser.chart_view()
+	var keys := PackedStringArray()
+	var keep := {}
+	for c in order:
+		var key := "%s|%s" % [_songs[c.s].md5, c.id]
+		c["key"] = key
+		keys.append(key)
+		keep[key] = true
+		if _chart_holders.has(key):
+			_set_chart_lv(_chart_holders[key], c)   # 測った Lv に変わっていたら、数字・色だけ差し替える(並びは、ここで決め直す)
+		else:
+			_chart_holders[key] = _make_chart_holder(c)
+	_chart_order = order
+	var pending := SongArt.meta_pending() > 0
+	_no_match.text = "難易度を調べています…" if pending else "一致する曲がありません"
+	_no_match.visible = order.is_empty() and not _songs.is_empty()
+	if keys != _chart_keys or entering:   # 並びが同じなら、行には触らない
+		_chart_keys = keys
+		for key in _chart_holders.keys():
+			if not keep.has(key):
+				var gone: Control = _chart_holders[key]
+				_chart_holders.erase(key)
+				_chart_filled.erase(key)
+				gone.visible = false
+				gone.queue_free()
+		var kids := _box.get_children()   # いったん外して、順に足し直す(move_child を何千回も呼ばない)
+		for k in range(kids.size() - 1, -1, -1):
+			if kids[k].has_meta("chart"):
+				_box.remove_child(kids[k])
+		_chart_list = []
+		for c in order:
+			var h: Control = _chart_holders[c.key]
+			h.visible = true
+			_box.add_child(h)
+			_chart_list.append(h)
+		if _tail != null and is_instance_valid(_tail):
+			_box.move_child(_tail, -1)
+	_sync_chart_sel(false)
+	if entering:
+		_anchor_y = -1.0   # 行の位置がまだ決まっていない
+		_fade_list()
+		if _chart_sel != "":
+			_center_chart_later()
+		else:
+			_chart_center_pending = true   # 選んでいる曲を読み込み終わったら、その譜面を真ん中へ
+
+
+## 難易度順をやめた(・一覧を作り直す): 譜面の行を捨てる。
+func _clear_charts() -> void:
+	for h in _chart_holders.values():
+		if is_instance_valid(h):
+			(h as Control).visible = false
+			(h as Control).queue_free()
+	_chart_holders.clear()
+	_chart_order = []
+	_chart_list = []
+	_chart_filled = []
+	_chart_by_song.clear()
+	_chart_keys = PackedStringArray()
+	_chart_sel = ""
+	_chart_want = ""
+
+
+## 一覧を、ふわっと現れさせる(並び方の種類が変わったとき)。行を滑らせないので、数が多くても目に優しい。
+func _fade_list() -> void:
+	if not UiStyle.animate or not is_inside_tree():
+		return
+	UiStyle.tween(_box, "modulate:a", 0.25, 1.0, 0.3)
+
+
+## 譜面 c の行の入れもの(中身は、近づいたときに _fill_chart が作る)。
+func _make_chart_holder(c: Dictionary) -> Control:
+	var key: String = c.key
+	var s: int = c.s
+	var id: String = c.id
+	var card := UiStyle.card(ROW_H, func(): _pick_chart(s, id), func(): _start())
+	card.clip_children = CanvasItem.CLIP_CHILDREN_AND_DRAW
+	card.mouse_entered.connect(func():
+		card.set_meta("hover", true)
+		if key != _chart_sel:
+			UiSfx.play("hover", 1.0)
+		_style_chart(key, true))
+	card.mouse_exited.connect(func():
+		card.set_meta("hover", false)
+		_style_chart(key, true))
+	var holder := UiStyle.wrap_card(card, ROW_H)
+	card.offset_right = -MARGIN_R
+	holder.set_meta("chart", key)
+	holder.set_meta("card", card)
+	holder.set_meta("info", c)
+	var base := LazerStyle.title_color(str(_songs[s].title))
+	card.add_theme_stylebox_override("panel", LazerStyle.box(Color(base.r * 0.22, base.g * 0.22, base.b * 0.26), Color(0, 0, 0, 0), 0, 12, 0, 0))
+	_shift_card(card, INDENT, false)
+	var md5 := str(_songs[s].md5)
+	if not _chart_by_song.has(md5):
+		_chart_by_song[md5] = []
+	(_chart_by_song[md5] as Array).append(holder)
+	return holder
+
+
+## 行の中身を作る: 背景の画像・暗くする帯・曲名・アーティスト・Lv の札と難易度名・その譜面の最高ランク・縁。
+func _fill_chart(h: Control) -> void:
+	if bool(h.get_meta("filled", false)):
+		return
+	h.set_meta("filled", true)
+	var card: PanelContainer = h.get_meta("card")
+	var c: Dictionary = h.get_meta("info")
+	var md5 := str(_songs[c.s].md5)
+	var bg := TextureRect.new()
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg.texture = SongArt.texture_of(md5)
+	card.add_child(bg)
+	var shade := TextureRect.new()
+	shade.texture = _shade_tex()
+	shade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	shade.stretch_mode = TextureRect.STRETCH_SCALE
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(shade)
+	var m := MarginContainer.new()
+	m.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for side in [["left", 20], ["right", 16], ["top", 4], ["bottom", 4]]:
+		m.add_theme_constant_override("margin_" + side[0], side[1])
+	card.add_child(m)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 12)
+	hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	m.add_child(hb)
+	var v := VBoxContainer.new()
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v.alignment = BoxContainer.ALIGNMENT_CENTER
+	v.add_theme_constant_override("separation", 1)
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(v)
+	var t := LazerStyle.label(_songs[c.s].title, 17, LazerStyle.TEXT, true)
+	t.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	t.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.55))
+	t.add_theme_constant_override("shadow_offset_y", 1)
+	v.add_child(t)
+	var a := LazerStyle.label(_songs[c.s].artist, 13, LazerStyle.TEXT_DIM)
+	a.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	v.add_child(a)
+	var line := HBoxContainer.new()   # Lv の札と難易度名
+	line.add_theme_constant_override("separation", 8)
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var pill := PanelContainer.new()
+	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pill.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var pb := HBoxContainer.new()
+	pb.add_theme_constant_override("separation", 3)
+	pb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pill.add_child(pb)
+	var star := LazerIcons.new("star", Color.WHITE, 10.0)
+	star.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	pb.add_child(star)
+	var lv_l := LazerStyle.label("", 11, Color.WHITE, true)
+	pb.add_child(lv_l)
+	line.add_child(pill)
+	var name_l := LazerStyle.label(str(c.name), 13, LazerStyle.TEXT)
+	name_l.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line.add_child(name_l)
+	v.add_child(line)
+	var rank := str(Records.best(str(c.id)).get("rank", ""))   # その譜面の最高ランク
+	if rank != "":
+		var badge := CenterContainer.new()
+		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		badge.add_child(LazerStyle.pill(rank, UiStyle.rank_color(rank), 15))
+		hb.add_child(badge)
+	var frame := Panel.new()
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(frame)
+	card.set_meta("bg", bg)
+	card.set_meta("shade", shade)
+	card.set_meta("frame", frame)
+	card.set_meta("pill", pill)
+	card.set_meta("star", star)
+	card.set_meta("lv_l", lv_l)
+	_set_chart_lv(h, c)
+	_style_chart(str(c.key), false)
+	_chart_filled.append(str(c.key))
+	while _chart_filled.size() > CHART_FILL_MAX:   # 遠くへ行った行の中身は、手放す(また近づいたら作る)
+		_evict_chart(str(_chart_filled.pop_front()))
+	if bg.texture == null:   # 画像は、見えている行のぶんだけ、先に頼む
+		SongArt.request(get_tree(), md5, str(_songs[c.s].path), _on_art.bind(md5), true)
+
+
+## 行の中身を手放す(入れものは残す)。
+func _evict_chart(key: String) -> void:
+	var h = _chart_holders.get(key)
+	if h == null or not is_instance_valid(h):
+		return
+	var card: PanelContainer = (h as Control).get_meta("card")
+	for ch in card.get_children():
+		card.remove_child(ch)
+		ch.queue_free()
+	for mk in ["bg", "shade", "frame", "pill", "star", "lv_l"]:
+		card.remove_meta(mk)
+	(h as Control).set_meta("filled", false)
+
+
+## 行の Lv の札(色と数字)を入れる・差し替える。中身がまだなら、値だけ覚えておく。
+func _set_chart_lv(h: Control, c: Dictionary) -> void:
+	h.set_meta("info", c)
+	if not bool(h.get_meta("filled", false)):
+		return
+	var card: PanelContainer = h.get_meta("card")
+	var lv := float(c.lv)
+	var col := LazerStyle.level_color(lv)
+	var ink := LazerStyle.ink_on(col)
+	(card.get_meta("pill") as PanelContainer).add_theme_stylebox_override("panel", LazerStyle.box(col, Color(0, 0, 0, 0), 0, 10, 7, 1))
+	var star: Control = card.get_meta("star")
+	star.set("col", ink)
+	star.queue_redraw()
+	var lv_l: Label = card.get_meta("lv_l")
+	lv_l.text = "%.2f" % lv
+	lv_l.add_theme_color_override("font_color", ink)
+
+
+## 曲を読み込んで測った Lv が分かった: その曲の譜面の行の数字・色を差し替える(並びは、次に一覧を作り直すときに決め直す)。
+func _refresh_chart_lv(md5: String) -> void:
+	for h in _chart_by_song.get(md5, []):
+		if not is_instance_valid(h):
+			continue
+		var c: Dictionary = h.get_meta("info")
+		c["lv"] = snappedf(float(_lv_seen.get(str(c.id), c.lv)), 0.01)
+		_set_chart_lv(h, c)
+
+
+## 譜面の行の見た目(選んでいる行は縁がピンクで明るく、左へせり出す)。
+func _style_chart(key: String, animated := true) -> void:
+	var h = _chart_holders.get(key)
+	if h == null or not is_instance_valid(h):
+		return
+	_style_row_card((h as Control).get_meta("card"), key == _chart_sel, animated)
+
+
+## 難易度順で、いま選んでいる譜面の key(曲 + 難易度。読み込み中は、押した譜面。なければ空)。
+func _current_chart_key() -> String:
+	if _song_sel < 0 or _song_sel >= _songs.size():
+		return ""
+	var id := ""
+	if _diffs_ready() and _diff_sel >= 0 and _diff_sel < _loader.difficulties.size():
+		id = str(_loader.difficulties[_diff_sel].md5)
+	elif _chart_want != "":
+		id = _chart_want
+	else:
+		return ""
+	return "%s|%s" % [_songs[_song_sel].md5, id]
+
+
+## 選んでいる譜面の行を、選んだ見た目にする(前の行は戻す)。選んだ行の位置を保つ基準も、ここで取り直す。
+func _sync_chart_sel(animated := true) -> void:
+	if not _was_chart:
+		return
+	var key := _current_chart_key()
+	if key != _chart_sel:
+		var old := _chart_sel
+		_chart_sel = key
+		_style_chart(old, animated)
+		_style_chart(key, animated)
+	var h = _chart_holders.get(_chart_sel) if _chart_sel != "" else null
+	_anchor_y = (h as Control).position.y if h != null and is_instance_valid(h) else -1.0
+
+
+## 譜面の行を押した: その曲を読み込んで、その難易度を選ぶ。同じ曲を読み込み済みなら、難易度だけ切り替える。
+## 選んでいる譜面をもう一度押したら開始(repeat_starts = false なら開始しない)。
+func _pick_chart(s: int, id: String, repeat_starts := true) -> void:
+	if s == _song_sel and _diffs_ready():
+		var k := _diff_index_of(id)
+		if k < 0:
+			return
+		if k == _diff_sel:
+			if repeat_starts and browser.can_start():
+				_start()
+			return
+		_chart_want = ""
+		_select_diff(k)
+		return
+	_select_song(s)   # 曲が変わるときは、押した難易度を覚えておき、読み込み終わりに選ぶ(_on_song_loaded)
+	_chart_want = id
+	_sync_chart_sel()
+
+
+## 読み込んでいる曲の難易度のうち、識別子が id の番号(なければ -1)。
+func _diff_index_of(id: String) -> int:
+	if _loader == null:
+		return -1
+	for k in range(_loader.difficulties.size()):
+		if str(_loader.difficulties[k].md5) == id:
+			return k
+	return -1
+
+
+func _chart_index(key: String) -> int:
+	for k in range(_chart_order.size()):
+		if str(_chart_order[k].key) == key:
+			return k
+	return -1
+
+
+## ↑↓: 並んでいる譜面を、dir(-1 / 1)だけ進む。選んでいる譜面が一覧にないときは、先頭(末尾)へ。
+func _step_chart(dir: int) -> void:
+	if _chart_order.is_empty():
+		return
+	var cur := _chart_index(_chart_sel)
+	var to := (0 if dir >= 0 else _chart_order.size() - 1) if cur < 0 else clampi(cur + dir, 0, _chart_order.size() - 1)
+	if to == cur:
+		return
+	var c: Dictionary = _chart_order[to]
+	_pick_chart(int(c.s), str(c.id), false)
+	_scroll_to_chart(str(c.key))
+
+
+func _scroll_to_chart(key: String) -> void:
+	var h = _chart_holders.get(key)
+	if h != null and is_instance_valid(h):
+		_smooth.scroll_to_control(h, 80.0)
+
+
+## 選んでいる譜面の行を、一覧の真ん中に出す(行の位置は、レイアウトが終わるまで決まらないので、2 フレーム待つ)。
+func _center_chart_later() -> void:
+	var want := _chart_sel
+	if want == "" or not is_inside_tree():
+		return
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not is_inside_tree() or want != _chart_sel:
+		return
+	var h = _chart_holders.get(want)
+	if h != null and is_instance_valid(h):
+		_smooth.center_on_control(h, true)
+
+
+## 難易度がまだ分かっていない曲を、裏で 1 曲ずつ集める(分かった曲から、並びに加わる)。1 度頼んだ曲は、頼み直さない。
+func _crawl_meta() -> void:
+	if not is_inside_tree():
+		return
+	var need_len := browser.sort_mode == "length"   # 長さ順: 長さが分かっていない曲(前の版で保存した分も)を集める
+	for i in range(_songs.size()):
+		var key := str(_songs[i].md5)
+		if need_len:
+			if _len_asked.has(key) or SongArt.has_length(key):
+				continue
+			_len_asked[key] = true
+		else:
+			if _meta_asked.has(key) or not SongArt.diffs_of(key).is_empty():
+				continue
+			_meta_asked[key] = true
+		SongArt.request_meta(get_tree(), key, str(_songs[i].path), func(_info: Dictionary):
+			_charts_dirty = true
+			_redraw_dots_of(key), need_len)
+
+
+## 曲 key の行の、難易度の札と長さの表示を描き直す(長さが分かったとき)。
+func _redraw_dots_of(key: String) -> void:
+	var i := int(_key_to_row.get(key, -1))
+	if i >= 0 and i < _song_cards.size() and _song_cards[i].has_meta("dots"):
+		(_song_cards[i].get_meta("dots") as Control).queue_redraw()
+
+
+## 近くの譜面の行の中身を作る(1 フレームに CHART_FILL_PER_FRAME 行まで)。行の高さは同じなので、位置から見えている範囲を二分探索で探す。
+func _fill_visible_charts() -> void:
+	if _chart_list.is_empty():
+		return
+	var top := float(_scroll.scroll_vertical) - ROW_H * 2.0
+	var bot := float(_scroll.scroll_vertical) + _scroll.size.y + ROW_H * 2.0
+	var lo := 0
+	var hi := _chart_list.size()
+	while lo < hi:   # 下端が top より下にある最初の行
+		var mid := (lo + hi) >> 1
+		var hm: Control = _chart_list[mid]
+		if hm.position.y + hm.size.y < top:
+			lo = mid + 1
+		else:
+			hi = mid
+	var made := 0
+	var k := lo
+	while k < _chart_list.size() and made < CHART_FILL_PER_FRAME:
+		var h: Control = _chart_list[k]
+		if h.position.y > bot:
+			break
+		if not bool(h.get_meta("filled", false)):
+			_fill_chart(h)
+			made += 1
+		k += 1
 
 
 ## 右の曲カルーセル。
@@ -382,7 +835,7 @@ func _build_carousel() -> void:
 	_place(_no_match, 640, 140, 600, 30)
 	_box = VBoxContainer.new()
 	_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_box.add_theme_constant_override("separation", 8)
+	_box.add_theme_constant_override("separation", ROW_GAP)
 	_box.sort_children.connect(_on_box_sorted)   # 並びが変わった直後(描く前)に、選んだ行の位置を保つ・並び替えの動きを始める
 	_scroll.add_child(_box)
 
@@ -533,6 +986,8 @@ func select_path(path: String) -> void:
 ## 画像と難易度の色は SongArt(song_art.gd)が、見えている行の分から別スレッドで用意する(初めての曲だけ .osz を開く)。
 
 func _rebuild_song_cards(animate := true) -> void:
+	_clear_charts()   # 難易度順の行も、いったん捨てる(続く _apply_view が、また作る)
+	_was_chart = false
 	for c in _box.get_children():
 		c.queue_free()
 	_diff_box = null
@@ -579,6 +1034,7 @@ func _make_row(i: int, animate: bool) -> void:
 	card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_song(i))
 	var holder := UiStyle.wrap_card(card, ROW_H)
 	card.offset_right = -MARGIN_R
+	holder.visible = not _was_chart   # 難易度順のあいだは、曲の行は出さない
 	_box.add_child(holder)
 	if _tail != null and is_instance_valid(_tail):
 		_box.move_child(_tail, -1)
@@ -613,6 +1069,12 @@ func _center_selected() -> void:
 	var want := _song_sel
 	if want < 0 or not is_inside_tree():
 		return
+	if _was_chart:   # 難易度順: 選んでいる譜面を真ん中へ(まだ読み込み終わっていなければ、終わってから)
+		if _chart_sel != "":
+			_center_chart_later()
+		else:
+			_chart_center_pending = true
+		return
 	await get_tree().process_frame
 	await get_tree().process_frame
 	if not is_inside_tree() or _song_sel != want or want >= _rows.size():
@@ -631,6 +1093,7 @@ func _pump_osu() -> void:
 		_restyle_all()
 		_anchor_y = (_rows[_song_sel] as Control).position.y if _song_sel >= 0 and _song_sel < _rows.size() else -1.0
 		_open_diffs(false)
+		_sync_chart_sel(false)
 	elif int(r.select) >= 0:
 		_select_song(int(r.select))
 		_center_selected()
@@ -680,7 +1143,7 @@ func _fill_row(i: int) -> void:
 	card.add_child(shade)
 	var m := MarginContainer.new()
 	m.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for side in [["left", 20], ["right", 16], ["top", 9], ["bottom", 10]]:
+	for side in [["left", 20], ["right", 16], ["top", 5], ["bottom", 5]]:
 		m.add_theme_constant_override("margin_" + side[0], side[1])
 	card.add_child(m)
 	var h := HBoxContainer.new()
@@ -693,12 +1156,12 @@ func _fill_row(i: int) -> void:
 	v.add_theme_constant_override("separation", 1)
 	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	h.add_child(v)
-	var t := LazerStyle.label(_songs[i].title, 19, LazerStyle.TEXT, true)
+	var t := LazerStyle.label(_songs[i].title, 17, LazerStyle.TEXT, true)
 	t.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	t.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.55))
 	t.add_theme_constant_override("shadow_offset_y", 1)
 	v.add_child(t)
-	var a := LazerStyle.label(_songs[i].artist, 14, LazerStyle.TEXT_DIM)
+	var a := LazerStyle.label(_songs[i].artist, 13, LazerStyle.TEXT_DIM)
 	a.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	v.add_child(a)
 	var dots := Control.new()   # 難易度の色だけの札(易しい順)
@@ -723,13 +1186,16 @@ func _fill_row(i: int) -> void:
 
 ## 難易度の色の札: 白い丸(譜面の印)と、難易度ごとの小さな角丸の札。多いときは、入るだけ並べて「+n」。
 func _draw_dots(dots: Control, i: int) -> void:
+	var secs := int(SongArt.length_of(str(_songs[i].md5)))   # 右端に、曲の長さ(分かっていれば)
+	if secs > 0:
+		dots.draw_string(LazerStyle.font(), Vector2(0, 11), "%d:%02d" % [secs / 60, secs % 60], HORIZONTAL_ALIGNMENT_RIGHT, dots.size.x, 12, LazerStyle.TEXT_DIM)
 	var cols := _dot_colors(i)
 	if cols.is_empty():
 		return
 	var y := 3.0
 	dots.draw_arc(Vector2(6, y + 4), 5.0, 0.0, TAU, 20, Color(1, 1, 1, 0.9), 2.0, true)
 	var x := 17.0
-	var room := int((dots.size.x - x - 30.0) / 13.0)
+	var room := int((dots.size.x - x - 30.0 - (44.0 if secs > 0 else 0.0)) / 13.0)
 	for k in range(mini(cols.size(), room)):
 		dots.draw_style_box(LazerStyle.box(cols[k], Color(0, 0, 0, 0), 0, 4), Rect2(x, y, 10, 8))
 		x += 13.0
@@ -765,6 +1231,13 @@ static func _shade_tex() -> Texture2D:
 
 ## SongArt から、行の画像と難易度が届いた。
 func _on_art(info: Dictionary, key: String) -> void:
+	if info.tex != null:   # 難易度順の、その曲の譜面の行にも画像を入れる
+		for h in _chart_by_song.get(key, []):
+			if is_instance_valid(h) and (h as Control).has_meta("card") and ((h as Control).get_meta("card") as Control).has_meta("bg"):
+				var cbg: TextureRect = ((h as Control).get_meta("card") as Control).get_meta("bg")
+				if cbg.texture != info.tex:
+					cbg.texture = info.tex
+					UiStyle.tween(cbg, "modulate:a", 0.0, 1.0, 0.35)
 	var i := int(_key_to_row.get(key, -1))
 	if i < 0 or i >= _song_cards.size():
 		return
@@ -802,6 +1275,12 @@ func _process(delta: float) -> void:
 	if _art_t > 0.2:
 		_art_t = 0.0
 		_request_visible_art()
+	if _was_chart:
+		_fill_visible_charts()
+	if _charts_dirty and (_was_chart or browser.sort_mode == "length") and Time.get_ticks_msec() - _charts_at > CHART_REBUILD_MS:   # 集めた難易度・長さが増えた: 並びに加える(ときどき、まとめて。スクロールは動かさない)
+		_charts_dirty = false
+		_charts_at = Time.get_ticks_msec()
+		_apply_view(false, true)
 
 
 func _set_head(v: float) -> void:
@@ -856,10 +1335,13 @@ func _release_spacers(delta: float) -> void:
 func _restyle_song(i: int, animated := true) -> void:
 	if i < 0 or i >= _song_cards.size():
 		return
-	var card: PanelContainer = _song_cards[i]
+	_style_row_card(_song_cards[i], i == _song_sel, animated)
+
+
+## 行(曲の行も、難易度順の譜面の行も)のカードの見た目。縁(選んでいる = ピンク・ホバー = 白)・暗幕の濃さ・横のずれ。
+func _style_row_card(card: PanelContainer, sel: bool, animated := true) -> void:
 	if not card.has_meta("frame"):
 		return
-	var sel := i == _song_sel
 	var hover := bool(card.get_meta("hover", false))
 	var frame: Panel = card.get_meta("frame")
 	var fs := StyleBoxFlat.new()
@@ -1146,7 +1628,7 @@ func _scroll_to_selection() -> void:
 	var row: Control = _rows[_song_sel]
 	var n := _diff_rows.size() if _diff_box != null else SongArt.diffs_of(str(_songs[_song_sel].md5)).size()
 	var top := row.position.y
-	var bottom := top + ROW_H + (8.0 + _diff_list_h(n) if n > 0 else 0.0)
+	var bottom := top + ROW_H + (float(ROW_GAP) + _diff_list_h(n) if n > 0 else 0.0)
 	var page := _scroll.size.y
 	var cur: float = _smooth.target()
 	var t := cur
@@ -1163,6 +1645,9 @@ func _scroll_to_selection() -> void:
 func _on_box_sorted() -> void:
 	var applied := 0
 	var anchor: Control = _rows[_song_sel] if _song_sel >= 0 and _song_sel < _rows.size() else null
+	if _was_chart:   # 難易度順: 選んでいる譜面の行を、基準にする
+		var ch = _chart_holders.get(_chart_sel) if _chart_sel != "" else null
+		anchor = ch if ch != null and is_instance_valid(ch) and (ch as Control).is_inside_tree() else null
 	if anchor != null and anchor.visible:
 		var y := anchor.position.y
 		if _anchor_y >= 0.0 and absf(y - _anchor_y) > 0.01:
@@ -1186,25 +1671,40 @@ func _on_box_sorted() -> void:
 		_run_flip(applied)
 
 
-## 並び替えの動き: 各行を、前に見えていた位置へ戻して置き、新しい位置へ滑らせる(上から順に少しずつ遅れて。遠くへ動く行ほど少し長く)。
+## 並び替えの動き: 前も後も画面に見えている行だけを、前の位置から新しい位置へ滑らせる(上から順に少しずつ遅れて。遠くへ動く行ほど少し長く)。
+## 画面の外から入ってきた行は、滑らせず、そっと現れさせる(曲が多いと、遠くから速く飛んでくる動きが、目にうるさいため)。画面の外に出ていく行・外のままの行は、動かさない。
 func _run_flip(scrolled: int) -> void:
+	var page := _scroll.size.y
+	var s1 := _flip_s0 + float(scrolled)   # 並び替えのあとの、スクロールの位置
 	var k := 0
 	for c in _box.get_children():
-		if not (c is Control) or not _flip_before.has(c) or not c.visible or c.get_child_count() == 0:
+		if not (c is Control) or not c.visible or c.get_child_count() == 0:
 			continue
 		var inner: Control = c.get_child(0)   # 行はカード、難易度の一覧は中の VBox を動かす
 		var base_y := float(inner.get_meta("base_y", 0.0))
 		var old = inner.get_meta("flip_tween") if inner.has_meta("flip_tween") else null
 		if old is Tween and old.is_valid():
 			old.kill()
-		var dy: float = float(_flip_before[c]) - (c as Control).position.y + float(scrolled)   # 見た目の位置の差(スクロールのずれも含める)
+		var y1: float = (c as Control).position.y
+		if not (y1 + (c as Control).size.y > s1 and y1 < s1 + page):   # 並び替えのあとも画面の外: 動かさない
+			inner.position.y = base_y
+			inner.modulate.a = 1.0
+			continue
+		if not _flip_before.has(c):   # 画面の外から入ってきた行
+			inner.position.y = base_y
+			inner.modulate.a = 0.5
+			var tf := inner.create_tween()
+			tf.tween_property(inner, "modulate:a", 1.0, 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			inner.set_meta("flip_tween", tf)
+			continue
+		var dy: float = float(_flip_before[c]) - y1 + float(scrolled)   # 見た目の位置の差(スクロールのずれも含める)
 		if absf(dy) < 0.5:
 			inner.position.y = base_y
 			continue
 		inner.position.y = base_y + dy
 		var dur := clampf(0.34 + absf(dy) / 4000.0, 0.34, 0.6)
 		var tw := inner.create_tween()
-		tw.tween_property(inner, "position:y", base_y, dur).set_delay(minf(0.016 * k, 0.22)).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_property(inner, "position:y", base_y, dur).set_delay(minf(0.016 * k, 0.1)).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 		inner.set_meta("flip_tween", tw)
 		k += 1
 	_flip_before = {}
@@ -1260,10 +1760,12 @@ func _on_song_changing(old: int, i: int) -> void:
 		UiStyle.pop_in(lab, k * 0.06, Vector2(24, 0), 0.4)
 		k += 1
 	_set_loading(true)   # BPM・Lv・内訳・記録は、消さずに少し薄くして、読み込み後に差し替える
+	_sync_chart_sel()
 
 
 ## 曲を読み込めなかった(browser から)。選択は前の曲に戻してある。
 func _on_song_load_failed(error: String, bad: int) -> void:
+	_chart_want = ""
 	_set_status(error)
 	_restyle_song(bad)
 	_restyle_song(_song_sel)
@@ -1275,6 +1777,7 @@ func _on_song_load_failed(error: String, bad: int) -> void:
 		_anchor_y = (_rows[_song_sel] as Control).position.y
 		_open_diffs()
 		_scroll_to_selection()
+	_sync_chart_sel()
 	_update_detail()
 
 
@@ -1290,6 +1793,17 @@ func _on_song_loaded(res: Dictionary) -> void:
 		set_background(tex)
 	for d in range(_ratings.size()):   # 測った Lv を覚えておく(ほかの曲へ移ったあとも、行の色の札に使う)
 		_lv_seen[str(_loader.difficulties[d].md5)] = float(_ratings[d].base_level)
+	if _chart_want != "":   # 難易度順で押した譜面: 読み込めたので、その難易度を選ぶ
+		var wk := _diff_index_of(_chart_want)
+		if wk >= 0:
+			browser.select_diff(wk)
+		_chart_want = ""
+	if _was_chart:
+		_refresh_chart_lv(str(_songs[_song_sel].md5))
+		_sync_chart_sel(false)
+		if _chart_center_pending and _chart_sel != "":
+			_chart_center_pending = false
+			_center_chart_later()
 	var card: PanelContainer = _song_cards[_song_sel]
 	if card.has_meta("bg"):
 		if (card.get_meta("bg") as TextureRect).texture == null and tex != null:   # 行の画像がまだなら、読み込んだ画像を使う
@@ -1324,6 +1838,7 @@ func _select_diff(i: int) -> void:
 	if old != i:
 		UiSfx.play("select", 1.35 * UiSfx.scale_pitch(float(i % 6) / 5.0, 1.0))
 	_style_diffs()
+	_sync_chart_sel()
 	_update_detail()
 	if _mod_panel != null and old != i:
 		_mod_panel.refresh_info()
@@ -1425,6 +1940,17 @@ func _refresh_mod_bar() -> void:
 # --- ランダム・開始 ---
 
 func _random_song() -> void:
+	if _was_chart:   # 難易度順: 表示している譜面から(いまの譜面以外)
+		if _chart_order.size() < 2 or _launching:
+			return
+		var cur := _chart_index(_chart_sel)
+		var to := randi() % _chart_order.size()
+		if to == cur:
+			to = (to + 1) % _chart_order.size()
+		var c: Dictionary = _chart_order[to]
+		_pick_chart(int(c.s), str(c.id), false)
+		_scroll_to_chart(str(c.key))
+		return
 	var v := browser.view()
 	v.erase(_song_sel)   # いまの曲以外の、表示している曲から選ぶ
 	if v.is_empty() or _launching:
@@ -1464,7 +1990,15 @@ func _launch_anim() -> void:
 			continue
 		var t2: Tween = _rows[i].create_tween()
 		t2.tween_property(_rows[i], "modulate:a", 0.0, 0.25)
-	if _song_sel >= 0 and _song_sel < _song_cards.size():
+	for hk in _chart_holders.keys():   # 難易度順: 選んでいる譜面の行以外を退かせる
+		if hk != _chart_sel and is_instance_valid(_chart_holders[hk]) and (_chart_holders[hk] as Control).visible:
+			var t3: Tween = (_chart_holders[hk] as Control).create_tween()
+			t3.tween_property(_chart_holders[hk], "modulate:a", 0.0, 0.25)
+	if _was_chart and _chart_holders.has(_chart_sel):
+		var chold: Control = (_chart_holders[_chart_sel] as Control).get_meta("card")
+		chold.pivot_offset = chold.size * 0.5
+		UiStyle.spring(chold, "scale", Vector2.ONE, Vector2(1.03, 1.03), 0.3)
+	elif _song_sel >= 0 and _song_sel < _song_cards.size():
 		var holder: Control = _song_cards[_song_sel]
 		holder.pivot_offset = holder.size * 0.5
 		UiStyle.spring(holder, "scale", Vector2.ONE, Vector2(1.03, 1.03), 0.3)
@@ -1569,17 +2103,26 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 			KEY_ENTER, KEY_KP_ENTER, KEY_DOWN:
 				_search.release_focus()
-				var first := browser.step_in_view(_song_sel, 0)
-				if first >= 0 and first != _song_sel:
-					_select_song(first)
+				if _was_chart:   # 難易度順: 選んでいる譜面が一覧になければ、表示している先頭の譜面へ
+					if not _chart_order.is_empty() and _chart_index(_chart_sel) < 0:
+						var c0: Dictionary = _chart_order[0]
+						_pick_chart(int(c0.s), str(c0.id), false)
+						_scroll_to_chart(str(c0.key))
+				else:
+					var first := browser.step_in_view(_song_sel, 0)
+					if first >= 0 and first != _song_sel:
+						_select_song(first)
 				get_viewport().set_input_as_handled()
 		return
 	match event.keycode:
 		KEY_UP, KEY_DOWN:   # 曲(表示している曲の中で)
 			if not event.echo:   # 曲の切替は重い(難易度の再計算)ので、押しっぱなしでは進めない
-				var to := browser.step_in_view(_song_sel, -1 if event.keycode == KEY_UP else 1)
-				if to >= 0:
-					_select_song(to)
+				if _was_chart:   # 難易度順: 1 譜面ずつ
+					_step_chart(-1 if event.keycode == KEY_UP else 1)
+				else:
+					var to := browser.step_in_view(_song_sel, -1 if event.keycode == KEY_UP else 1)
+					if to >= 0:
+						_select_song(to)
 			get_viewport().set_input_as_handled()
 		KEY_LEFT, KEY_RIGHT:   # 難易度(左が易しい・右が難しい。端で止まる)
 			_select_diff(_diff_sel + (-1 if event.keycode == KEY_LEFT else 1))

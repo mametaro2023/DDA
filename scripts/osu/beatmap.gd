@@ -40,7 +40,21 @@ var timing_points: Array = []
 ## 時刻順。各要素は Dictionary:
 ##   kind, pos(Vector2), time, end_time, new_combo, hitsound, combo_index
 ##   スライダーのみ: curve(SliderPath), repeats, span_duration, edge_sounds
-var hit_objects: Array = []
+## 保存した情報から作った「軽い版」(from_meta)では、ノーツは重い(スライダーの曲線まで作る)ので、使うとき(弾幕を作り直すときなど)まで読み込まない。
+## 最初・最後の時刻と密度は、保存した値を返すので、ノーツを読み込まない(first_time / last_time / density)。
+var hit_objects: Array:
+	get:
+		if _lite:
+			_load_lite()
+		return _objs
+	set(v):
+		_objs = v
+var _objs: Array = []
+var _lite := false
+var _lite_loader := Callable()   # ノーツを読み込んで返す関数(譜面のファイルを開き直す)
+var _lite_first := 0.0
+var _lite_last := 0.0
+var _lite_density := 0.0
 ## [[start_ms, end_ms], ...]
 var breaks: Array = []
 
@@ -123,12 +137,16 @@ func preempt_ms() -> float:
 
 
 func last_time() -> float:
+	if _lite:
+		return _lite_last
 	if hit_objects.is_empty():
 		return 0.0
 	return hit_objects[hit_objects.size() - 1].end_time
 
 
 func first_time() -> float:
+	if _lite:
+		return _lite_first
 	if hit_objects.is_empty():
 		return 0.0
 	return hit_objects[0].time
@@ -136,12 +154,65 @@ func first_time() -> float:
 
 ## 難易度の目安: 1秒あたりのオブジェクト数(最初〜最後の間)。
 func density() -> float:
+	if _lite:
+		return _lite_density
 	if hit_objects.size() < 2:
 		return 0.0
 	var span := (last_time() - first_time()) / 1000.0
 	if span <= 0.0:
 		return 0.0
 	return hit_objects.size() / span
+
+
+## 保存用の情報(ノーツは含めない)。from_meta で、同じ譜面の軽い版に戻せる。
+func to_meta() -> Dictionary:
+	return {"source_file": source_file, "md5": md5, "beatmap_id": beatmap_id, "beatmapset_id": beatmapset_id, "title": title, "artist": artist,
+		"version": version, "creator": creator, "audio_filename": audio_filename, "audio_lead_in": audio_lead_in, "preview_time": preview_time,
+		"mode": mode, "background": background, "hp": hp, "cs": cs, "od": od, "ar": ar, "ar_set": ar_set, "stars": stars,
+		"slider_multiplier": slider_multiplier, "slider_tick_rate": slider_tick_rate, "timing_points": timing_points, "breaks": breaks,
+		"first": first_time(), "last": last_time(), "density": density()}
+
+
+## to_meta の情報から、軽い版を作る。load_objects は、使うときに呼ぶ(ノーツの Array を返す関数)。
+static func from_meta(d: Dictionary, load_objects: Callable):
+	var bm = new()
+	bm.source_file = str(d.source_file)
+	bm.md5 = str(d.md5)
+	bm.beatmap_id = int(d.beatmap_id)
+	bm.beatmapset_id = int(d.beatmapset_id)
+	bm.title = str(d.title)
+	bm.artist = str(d.artist)
+	bm.version = str(d.version)
+	bm.creator = str(d.creator)
+	bm.audio_filename = str(d.audio_filename)
+	bm.audio_lead_in = int(d.audio_lead_in)
+	bm.preview_time = int(d.preview_time)
+	bm.mode = int(d.mode)
+	bm.background = str(d.background)
+	bm.hp = float(d.hp)
+	bm.cs = float(d.cs)
+	bm.od = float(d.od)
+	bm.ar = float(d.ar)
+	bm.ar_set = bool(d.ar_set)
+	bm.stars = float(d.stars)
+	bm.slider_multiplier = float(d.slider_multiplier)
+	bm.slider_tick_rate = float(d.slider_tick_rate)
+	bm.timing_points = d.timing_points
+	bm.breaks = d.breaks
+	bm._lite_first = float(d.first)
+	bm._lite_last = float(d.last)
+	bm._lite_density = float(d.density)
+	bm._lite_loader = load_objects
+	bm._lite = true
+	return bm
+
+
+func _load_lite() -> void:
+	_lite = false   # 先に外す(読み込みの中で hit_objects を触っても、入れ子にならない)
+	if _lite_loader.is_valid():
+		var objs = _lite_loader.call()
+		if objs is Array:
+			_objs = objs
 
 
 func display_name() -> String:

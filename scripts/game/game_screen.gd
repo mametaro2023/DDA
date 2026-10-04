@@ -249,6 +249,7 @@ func setup_multi(p_net, info: Dictionary, p_loader, p_bm, p_settings: Dictionary
 
 func _ready() -> void:
 	_alive += 1
+	get_window().focus_entered.connect(_on_window_focus_in)   # 別のウィンドウから戻ったとき、マウスの捕まえを掛け直す
 	_mouse_mode = settings.get("control", "mouse") == "mouse"
 	# 背景(譜面の画像を暗く)
 	var bg := ColorRect.new()
@@ -658,6 +659,8 @@ func _process(delta: float) -> void:
 			_tick_resume_wait(delta)
 		return
 	delta = minf(delta, 0.05)
+	if _should_capture() and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED and get_window().has_focus():
+		_capture_mouse()   # 捕まえているはずなのに外れている(何かの拍子に戻ってしまった): 掛け直す。これがないと、自機が動かないまま
 	_pause_cd = maxf(_pause_cd - delta, 0.0)
 	_ui_time += delta
 	if _update_retry_hold(delta):
@@ -1282,6 +1285,20 @@ func _draw_hud() -> void:
 	_draw_bonus_hud()
 	# アリーナ枠
 	_hud.draw_rect(Rect2(ARENA_POS, PatternGen.ARENA), Color(1, 1, 1, 0.35).lerp(Color(1.0, 0.35, 0.38, 0.75), clampf(_hit_glow, 0.0, 1.0)), false, 2.0)   # 被弾中は枠がなめらかに赤くなる
+
+## いま、マウスを捕まえて(相対移動で)自機を動かしている状態のはずか(ポーズ・演出中・ゲームオーバー・スキップのボタンを押せる間は、違う)。
+func _should_capture() -> bool:
+	return _mouse_mode and _arrived and not _guiding and not _menu_open() and not _dead and not _skip_free and not _done
+
+
+## ウィンドウのフォーカスが戻った(Alt+Tab・別のウィンドウをクリックしたあと)。
+## 捕まえているはずなら、いったん外してから掛け直す(Input.mouse_mode は、同じ値を入れても何も起きないので、外すところから)。
+## 外れたあとの「捕まえたまま」では、マウスの移動量が届かず、自機が動かなくなることがあるため。
+func _on_window_focus_in() -> void:
+	if _should_capture():
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+		_capture_mouse()
+
 
 func _capture_mouse() -> void:
 	# カーソルを隠して移動量だけを受け取る(自機とカーソルがずれない)

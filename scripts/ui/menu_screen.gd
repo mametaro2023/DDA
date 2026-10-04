@@ -14,6 +14,7 @@ signal settings_requested(section: int)
 signal song_picked(loader, bm, settings: Dictionary, level: float)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
+const SongBrowser = preload("res://scripts/song_browser.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
 const Settings = preload("res://scripts/settings.gd")
@@ -676,6 +677,15 @@ func _release_later(old_loader) -> void:
 		old_loader.difficulties.clear())
 
 
+## 前の曲の弾幕を、別スレッドで手放す。保存から読んだ弾幕は、キャッシュ(_gen_cache)と共有していないので、ここで手放すと、解放だけで 20〜30 ms かかって、
+## 画面が 1 フレーム止まる(一覧の動きが跳ぶ)。キャッシュと共有しているものは、手放しても解放されない(ここでは何も起きない)。
+func _release_gens_later(old: Array) -> void:
+	if old.is_empty():
+		return
+	var holder := {"g": old}   # 最後の参照を、別スレッドで外す(この関数が終わると、old の参照は holder だけになる)
+	WorkerThreadPool.add_task(func(): holder.g = null)
+
+
 ## 弾幕のキャッシュ(曲のファイル → 難易度の並び順と、MOD 適用前の弾幕)。別スレッドからも使うので、Mutex で守る。新しく使ったものを末尾にして、古いものから捨てる。
 const GEN_CACHE_MAX := 10
 static var _gen_cache: Dictionary = {}
@@ -711,50 +721,7 @@ static func _make_gen(bm, v2: bool) -> Dictionary:
 
 ## (別スレッドで動く)曲を開いて、難易度ごとの弾幕・難易度(MOD 適用後)・背景画像・試聴用の音声まで作る。画面には触らない。
 static func _load_song(path: String, mod_params: Dictionary) -> Dictionary:
-	var l = OszLoader.new()
-	if not l.open(path):
-		return {"ok": false, "error": l.error}
-	var first = l.difficulties[0]
-	var image: Image = l.load_image_data(first.background) if first.background != "" else null
-	if image != null and image.get_width() > 1280:   # 背景は 1280×720 の画面に出すだけ。大きい画像は、ここ(別スレッド)で縮めて、テクスチャにする負担を減らす
-		image.resize(1280, maxi(int(round(1280.0 * image.get_height() / image.get_width())), 1), Image.INTERPOLATE_BILINEAR)
-	# Danmaku 難易度(Lv。MOD なしの状態)の低い順に並べ替える
-	# 弾幕の生成が読み込みの大半(1 難易度で 20〜200 ms)。一度作った曲は覚えておき(直近 GEN_CACHE_MAX 曲)、次からは作らない。
-	# 作るときは、難易度どうしが独立なので並列に作る(generate は共有の状態を持たない)。MOD の適用は別(下の ratings)なので、MOD を変えても使える
-	var diffs: Array = l.difficulties
-	var v2 := bool(mod_params.get("gen_v2", false))   # MOD「弾幕 v2」: 弾幕の作り方が違うので、覚えておくのも別(v1 / v2 の両方を覚える)
-	var key := "%s|%d|%d|%s" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path), "v2" if v2 else "v1"]   # ファイルが差し替わったら別物
-	var gens: Array = []
-	var cached := _gen_cache_get(key, diffs.size())
-	if not cached.is_empty():
-		var order: Array = cached.order
-		l.difficulties = order.map(func(i): return diffs[i])
-		gens = cached.gens
-	else:
-		var made: Array = []
-		made.resize(diffs.size())
-		if diffs.size() > 1:
-			var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = _make_gen(diffs[i], v2), diffs.size())
-			WorkerThreadPool.wait_for_group_task_completion(gid)
-		else:
-			made[0] = _make_gen(diffs[0], v2)
-		var pairs: Array = []
-		for i in range(diffs.size()):
-			pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
-		# 並びは表示する Lv の低い順(同じなら本家★)。生の密度(rating.score)では、弾速が AR で変わる弾幕 v2 で Lv と順が食い違う
-		pairs.sort_custom(func(a, b): return a.g.level < b.g.level if not is_equal_approx(a.g.level, b.g.level) else a.g.stars < b.g.stars)
-		l.difficulties = pairs.map(func(q): return q.bm)
-		gens = pairs.map(func(q): return q.g)
-		_gen_cache_put(key, pairs.map(func(q): return q.i), gens)
-	var ratings: Array = gens.map(func(g): return PatternGen.summary(Mods.apply(g, mod_params)))
-	var audio: AudioStream = l.load_audio(first.audio_filename)
-	var from := maxf(first.preview_time / 1000.0, 0.0)
-	var full: AudioStream = audio
-	var cropped := _crop_mp3(audio, from)
-	if cropped != null:   # MP3 の途中から流すと、探す処理で数十 ms 止まる。あらかじめ、その位置から始まる音声にしておく
-		audio = cropped
-		from = 0.0
-	return {"ok": true, "loader": l, "gens": gens, "v2": v2, "ratings": ratings, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
+	return SongBrowser.load_song(path, mod_params)   # lazer 風の選曲と同じ読み込み(保存した譜面を使う。ChartCache)
 
 
 ## MP3 の、from 秒あたりから始まる音声(データの途中から切り出す。MP3 は、途中からでも読み始められる)。MP3 でない・先頭のとき・長さが分からないときは null。
@@ -803,6 +770,7 @@ func _on_song_loaded(res: Dictionary) -> void:
 	if res.image != null:
 		tex = ImageTexture.create_from_image(res.image)
 	_set_background(tex)
+	_release_gens_later(_gens)
 	_gens = res.gens
 	_gens_v2 = bool(res.v2)
 	_full_audio = res.audio_full

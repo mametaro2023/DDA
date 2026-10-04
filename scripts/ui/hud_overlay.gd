@@ -214,12 +214,13 @@ func _takes_wheel() -> bool:
 
 
 ## 短い通知を、画面の下に出す。
-func toast(msg: String) -> void:
+## time = 出しておく秒数(既定は TOAST_TIME)。
+func toast(msg: String, time := TOAST_TIME) -> void:
 	_toast_l.text = msg
 	_toast.reset_size()
 	_toast.position = Vector2((1280.0 - _toast.size.x) * 0.5, 640.0)
 	_toast.visible = true
-	_toast_t = TOAST_TIME
+	_toast_t = time
 	UiSfx.play("toast")
 	if _toast_tween != null and _toast_tween.is_valid():
 		_toast_tween.kill()

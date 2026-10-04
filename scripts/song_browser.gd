@@ -21,6 +21,7 @@ const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const Records = preload("res://scripts/records.gd")
+const ChartCache = preload("res://scripts/chart_cache.gd")
 
 ## 設定の辞書(画面と同じものを共有する。mods・last_song・last_diff を読み書きする)
 var settings: Dictionary = {}
@@ -49,6 +50,7 @@ var auto_sel_idx := -1          # 自動で選んだ曲の番号(その曲のま
 var _restore_key := ""          # 一覧を作り直す間、選んでいた曲(足し直されたときに、選択を戻す)
 var _reload_keep := ""          # 弾幕の作り方が変わって読み直すとき: 選んでいた難易度の version(空なら、ふつうの選曲)
 var _closed := false
+static var _pruned := false     # 保存した譜面の整理(ChartCache.prune)を、もうしたか(起動のあと 1 回)
 
 
 ## 画面を離れる(以後に届く読み込みの結果は捨てる)。
@@ -216,12 +218,17 @@ func _register(sg: Dictionary) -> void:
 # --- 検索と並び替え(表示用) ---
 
 ## 並び替えの種類 [id, 名前]。設定の song_sort に、id を保存する
-const SORT_MODES := [["title", "曲名"], ["artist", "アーティスト"], ["added", "追加順"], ["rank", "ランク"]]
+const SORT_MODES := [["title", "曲名"], ["artist", "アーティスト"], ["added", "追加順"], ["rank", "ランク"], ["diff", "難易度"], ["length", "長さ"]]
 ## ランク順の並び(左ほど上)。記録のない曲は、いちばん後ろ
 const RANK_ORDER := ["SS", "S", "A", "B", "C", "D", "F"]
 
 ## 曲(ids = 難易度の識別子の一覧)の最高記録を返す関数(確認用に差し替えられる)。既定はプレイ記録(Records)
 var best_of: Callable = func(ids: Array) -> Dictionary: return Records.best_of_song(ids)
+## 曲 i の譜面の一覧 [[譜面の識別子, 難易度名, Lv], ...] を返す関数。難易度順(chart_view)が使う。
+## 既定は何も返さない。選曲画面が、SongArt に保存した推定の★・測った Lv で差し替える(確認用にも差し替えられる)
+var charts_of: Callable = func(_i: int) -> Array: return []
+## 曲 i の長さ(秒)を返す関数。長さ順が使う。分からない曲は 0 以下(長さ順では、いちばん後ろ)。選曲画面が、SongArt に保存した長さで差し替える(確認用にも差し替えられる)
+var length_of: Callable = func(_i: int) -> float: return -1.0
 
 ## 検索の文字(空なら全部)。曲名・アーティストに含まれる曲だけを出す(大文字小文字・空白は区別しない)
 var query := ""
@@ -255,6 +262,18 @@ func view() -> Array:
 				if int(songs[a].mtime) != int(songs[b].mtime):
 					return int(songs[a].mtime) > int(songs[b].mtime)
 				return a < b)
+		"length":   # 短い順(長さが分からない曲は後ろ。同じ長さなら曲名順)
+			var lens := {}
+			for i in out:
+				lens[i] = floorf(float(length_of.call(i)))
+			out.sort_custom(func(a, b):
+				var ua: bool = lens[a] <= 0.0
+				var ub: bool = lens[b] <= 0.0
+				if ua != ub:
+					return ub
+				if not ua and lens[a] != lens[b]:
+					return lens[a] < lens[b]
+				return _cmp(str(songs[a].title).to_lower(), str(songs[b].title).to_lower(), str(songs[a].artist).to_lower(), str(songs[b].artist).to_lower(), a, b))
 		"rank":   # 最高ランクの高い順(同じなら最高スコアの高い順、記録のない曲は後ろに曲名順)
 			var key := {}
 			for i in out:
@@ -267,6 +286,35 @@ func view() -> Array:
 				return _cmp(str(songs[a].title).to_lower(), str(songs[b].title).to_lower(), str(songs[a].artist).to_lower(), str(songs[b].artist).to_lower(), a, b))
 		_:
 			out.sort_custom(func(a, b): return _cmp(str(songs[a].title).to_lower(), str(songs[b].title).to_lower(), str(songs[a].artist).to_lower(), str(songs[b].artist).to_lower(), a, b))
+	return out
+
+
+## 難易度順(sort_mode == "diff")か。このときの一覧は、曲ごとではなく、譜面(曲 × 難易度)を 1 つずつ並べる(chart_view)。
+func chart_mode() -> bool:
+	return sort_mode == "diff"
+
+
+## 難易度順の一覧: 検索に合う曲の譜面を、1 つずつバラして、Lv の低い順に並べる(同じ Lv は、曲名 → 元の番号 → 難易度名の順)。
+## 要素は {s: 曲の番号, id: 譜面の識別子, name: 難易度名, lv: Lv}。まだ難易度が分かっていない曲(charts_of が空を返す曲)は、出ない。
+func chart_view() -> Array:
+	var out: Array = []
+	for i in range(songs.size()):
+		if not matches(i):
+			continue
+		for d in charts_of.call(i):
+			out.append({"s": i, "id": str(d[0]), "name": str(d[1]), "lv": snappedf(float(d[2]), 0.01)})   # 画面に出る小数 2 桁で比べる
+	var titles := {}
+	for c in out:
+		if not titles.has(c.s):
+			titles[c.s] = str(songs[c.s].title).to_lower()
+	out.sort_custom(func(a, b):
+		if a.lv != b.lv:
+			return a.lv < b.lv
+		if titles[a.s] != titles[b.s]:
+			return titles[a.s] < titles[b.s]
+		if a.s != b.s:
+			return a.s < b.s
+		return str(a.name) < str(b.name))
 	return out
 
 
@@ -358,10 +406,21 @@ func _release_later(old_loader) -> void:
 		old_loader.difficulties.clear())
 
 
+## 前の曲の弾幕を、別スレッドで手放す。保存から読んだ弾幕は、キャッシュ(_gen_cache)と共有していないので、ここで手放すと、解放だけで 20〜30 ms かかって、
+## 画面が 1 フレーム止まる(一覧の動きが跳ぶ)。キャッシュと共有しているものは、手放しても解放されない(ここでは何も起きない)。
+func _release_gens_later(old: Array) -> void:
+	if old.is_empty():
+		return
+	var holder := {"g": old}   # 最後の参照を、別スレッドで外す(この関数が終わると、old の参照は holder だけになる)
+	WorkerThreadPool.add_task(func(): holder.g = null)
+
+
 func _on_load_done(res: Dictionary) -> void:
 	if _closed or int(res.job) != job:   # 画面を離れた / 別の曲を選び直した
 		if res.get("loader") != null:
 			res.loader.close()
+		if res.get("gens") is Array:
+			_release_gens_later(res.gens)   # 捨てる弾幕の解放も、別スレッドで(曲を次々に選んだとき、画面が止まらない)
 		return
 	job_pending = false
 	if not res.ok:
@@ -372,6 +431,7 @@ func _on_load_done(res: Dictionary) -> void:
 		return
 	_release_later(loader)   # 前の曲の譜面は、量が多く、ここで手放すと解放だけで十数 ms かかる
 	loader = res.loader
+	_release_gens_later(gens)
 	gens = res.gens
 	gens_v2 = bool(res.get("v2", false))
 	full_audio = res.audio_full
@@ -499,41 +559,61 @@ func debug_regen() -> void:
 
 ## (別スレッドで動く)曲を開いて、難易度ごとの弾幕・難易度(MOD 適用後)・背景画像・試聴用の音声まで作る。画面には触らない。
 static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
+	if not _pruned:   # 保存した譜面(ChartCache)が増えすぎていたら、起動のあと 1 回だけ、別のスレッドで古いものを捨てる
+		_pruned = true
+		WorkerThreadPool.add_task(ChartCache.prune)
+	var v2 := bool(mod_params.get("gen_v2", false))   # MOD「弾幕 v2」: 弾幕の作り方が違うので、覚えておくのも別(v1 / v2 の両方を覚える)
+	# 保存してあれば(ChartCache)、譜面の解析も弾幕の生成もしない。ふつうは、ここで終わる(曲の入れものを開いて、音と画像を読むだけ)
 	var l = OszLoader.new()
-	if not l.open(path):
-		return {"ok": false, "error": l.error}
-	var first = l.difficulties[0]
+	var first = null
+	var gens_out: Array = []
+	var from_disk := false
+	var saved := ChartCache.load_entry(path, v2)
+	if not saved.is_empty() and l.open_cached(path, saved.bms):
+		gens_out = saved.gens
+		for bm in l.difficulties:
+			if str(bm.md5) == str(saved.get("first_md5", "")):
+				first = bm
+		if first == null:
+			first = l.difficulties[0]
+		from_disk = true
+	else:
+		l = OszLoader.new()
+		if not l.open(path):
+			return {"ok": false, "error": l.error}
+		first = l.difficulties[0]
 	var image: Image = l.load_image_data(first.background) if first.background != "" else null
 	if image != null and image.get_width() > 1280:   # 背景は 1280×720 の画面に出すだけ。大きい画像は、ここ(別スレッド)で縮めて、テクスチャにする負担を減らす
 		image.resize(1280, maxi(int(round(1280.0 * image.get_height() / image.get_width())), 1), Image.INTERPOLATE_BILINEAR)
-	# Danmaku 難易度(Lv。MOD なしの状態)の低い順に並べ替える
-	# 弾幕の生成が読み込みの大半(1 難易度で 20〜200 ms)。一度作った曲は覚えておき(直近 GEN_CACHE_MAX 曲)、次からは作らない。
+	# Danmaku 難易度(Lv。MOD なしの状態)の低い順に並べ替える(保存したものは、並べ終わっている)
+	# 弾幕の生成が読み込みの大半(1 難易度で 20〜200 ms)。保存していない曲は、ここで作り(直近 GEN_CACHE_MAX 曲はメモリにも覚える)、保存する。
 	# 作るときは、難易度どうしが独立なので並列に作る(generate は共有の状態を持たない)。MOD の適用は別(下の ratings)なので、MOD を変えても使える
-	var diffs: Array = l.difficulties
-	var v2 := bool(mod_params.get("gen_v2", false))   # MOD「弾幕 v2」: 弾幕の作り方が違うので、覚えておくのも別(v1 / v2 の両方を覚える)
-	var key := "%s|%d|%d|%s" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path), "v2" if v2 else "v1"]   # ファイルが差し替わったら別物
-	var gens_out: Array = []
-	var cached := _gen_cache_get(key, diffs.size())
-	if not cached.is_empty():
-		var order: Array = cached.order
-		l.difficulties = order.map(func(i): return diffs[i])
-		gens_out = cached.gens
-	else:
-		var made: Array = []
-		made.resize(diffs.size())
-		if diffs.size() > 1:
-			var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = make_gen(diffs[i], v2), diffs.size())
-			WorkerThreadPool.wait_for_group_task_completion(gid)
+	if not from_disk:
+		var diffs: Array = l.difficulties
+		var key := "%s|%d|%d|%s" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path), "v2" if v2 else "v1"]   # ファイルが差し替わったら別物
+		var cached := _gen_cache_get(key, diffs.size())
+		if not cached.is_empty():
+			var order: Array = cached.order
+			l.difficulties = order.map(func(i): return diffs[i])
+			gens_out = cached.gens
 		else:
-			made[0] = make_gen(diffs[0], v2)
-		var pairs: Array = []
-		for i in range(diffs.size()):
-			pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
-		# 並びは表示する Lv の低い順(同じなら本家★)。生の密度(rating.score)では、弾速が AR で変わる弾幕 v2 で Lv と順が食い違う
-		pairs.sort_custom(func(a, b): return a.g.level < b.g.level if not is_equal_approx(a.g.level, b.g.level) else a.g.stars < b.g.stars)
-		l.difficulties = pairs.map(func(q): return q.bm)
-		gens_out = pairs.map(func(q): return q.g)
-		_gen_cache_put(key, pairs.map(func(q): return q.i), gens_out)
+			var made: Array = []
+			made.resize(diffs.size())
+			if diffs.size() > 1:
+				var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = make_gen(diffs[i], v2), diffs.size())
+				WorkerThreadPool.wait_for_group_task_completion(gid)
+			else:
+				made[0] = make_gen(diffs[0], v2)
+			var pairs: Array = []
+			for i in range(diffs.size()):
+				pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
+			# 並びは表示する Lv の低い順(同じなら本家★)。生の密度(rating.score)では、弾速が AR で変わる弾幕 v2 で Lv と順が食い違う
+			pairs.sort_custom(func(a, b): return a.g.level < b.g.level if not is_equal_approx(a.g.level, b.g.level) else a.g.stars < b.g.stars)
+			l.difficulties = pairs.map(func(q): return q.bm)
+			gens_out = pairs.map(func(q): return q.g)
+			_gen_cache_put(key, pairs.map(func(q): return q.i), gens_out)
+		# 次からは、解析も生成もせずに読めるように、保存する(Lv 順に並んだあとの状態で)
+		ChartCache.save_entry(path, v2, {"bms": l.difficulties.map(func(b): return b.to_meta()), "gens": gens_out, "first_md5": str(first.md5)})
 	var ratings_out: Array = gens_out.map(func(g): return PatternGen.summary(Mods.apply(g, mod_params)))
 	var audio: AudioStream = l.load_audio(first.audio_filename)
 	var from := maxf(first.preview_time / 1000.0, 0.0)

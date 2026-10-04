@@ -18,7 +18,7 @@
 | P3 土台 | `lazer/lazer_style.gd`(色・フォント・テーマ)、`lazer_chrome.gd`・`lazer_frame.gd`(ツールバー・フッター・背景・側面パネル・トグル・スライダー)、`lazer_button.gd`(斜めのボタン)、`lazer_icons.gd`(線画のアイコン)、`lazer_logo.gd`(ロゴ) |
 | P4 画面 | タイトル・選曲・プレイ(HUD)・リザルト・マルチ(入口とロビー)・設定・遊び方・MOD・確認・更新を lazer 風に。パネルは classic のパネルを継承し、中身の処理はそのままで見た目だけを差し替える(遊び方 = 設定と同じ左の縦長パネル `lazer_howto.gd`、MOD = 下からせり上がる札のシート `lazer_mods.gd`、確認・更新 = 丸いアイコンつきのダイアログ `lazer_dialog.gd` / `lazer_quit.gd` / `lazer_update.gd`)。プレイ中の休憩のカウントダウン・ボスのゲージと WARNING(`lazer_boss_gauge.gd`)・ボーナスタイムも lazer 風 |
 | P5 切り替え | 設定の「画面」に、UI の見た目の選択を追加(選ぶと、タイトル・選曲はすぐ作り直される)。既定は classic(**lazer を既定にする時期は未定**) |
-| P6 記録・検索・並び替え | `scripts/records.gd`(`user://records.json`)、`SongBrowser` の `view()`(検索・並び替え。記録を使う「ランク」順もある)。lazer 風の選曲に反映(classic の選曲画面には、まだ出していない) |
+| P6 記録・検索・並び替え | `scripts/records.gd`(`user://records.json`)、`SongBrowser` の `view()`(検索・並び替え。記録を使う「ランク」順もある)・`chart_view()`(「難易度」順。曲ではなく譜面ごとに並べる)。lazer 風の選曲に反映(classic の選曲画面には、まだ出していない) |
 
 `UiSet` の契約に `make_howto` / `make_mods` / `make_quit` を追加(`tests/test_ui_contract.gd` が両方の UI セットで確かめる)。マルチ画面の確認パネルは `_make_confirm()` で差し替える。
 

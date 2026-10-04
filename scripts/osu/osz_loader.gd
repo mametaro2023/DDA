@@ -38,7 +38,8 @@ static func is_folder(p: String) -> bool:
 	return DirAccess.dir_exists_absolute(p)
 
 
-func open(p: String) -> bool:
+## 曲の入れもの(zip またはフォルダ)を開く。中の譜面は読まない。開けなければ false(理由は error)。
+func _open_container(p: String) -> bool:
 	path = p
 	_dir = ""
 	if is_folder(p):
@@ -51,6 +52,37 @@ func open(p: String) -> bool:
 			error = zip_error_message(err)
 			_reader = null
 			return false
+	return true
+
+
+## 保存した情報(Beatmap.to_meta の一覧。難易度の並びのまま)から、譜面を解析せずに開く(ChartCache)。
+## 譜面は軽い版で、ノーツは、使うときに、その譜面のファイルだけを開き直して読み込む。
+func open_cached(p: String, metas: Array) -> bool:
+	if not _open_container(p):
+		return false
+	for m in metas:
+		var file := str(m.source_file)
+		difficulties.append(Beatmap.from_meta(m, Callable(get_script(), "read_objects").bind(p, file)))   # この OszLoader を持たない(持つと、譜面と互いに参照し合って、解放されない)
+	if difficulties.is_empty():
+		close()
+		return false
+	return true
+
+
+## p の中の譜面ファイル file を解析して、ノーツだけを返す(軽い版が、使うときに呼ぶ。開き直すので、元の OszLoader が閉じていてもよい)。
+static func read_objects(p: String, file: String) -> Array:
+	var l := new()
+	if not l._open_container(p):
+		return []
+	var real := l._find(file)
+	var bm := OsuParser.parse(l._read(real if real != "" else file).get_string_from_utf8(), file) if real != "" else null
+	l.close()
+	return bm.hit_objects if bm != null else []
+
+
+func open(p: String) -> bool:
+	if not _open_container(p):
+		return false
 	var modes: Array = []   # 入っていた譜面のモード(osu!standard がないときの説明に使う)
 	for f in _files():
 		if f.to_lower().ends_with(".osu"):

@@ -145,7 +145,7 @@ func _write_index() -> void:
 		var img := "<img src=\"data:image/png;base64,%s\">" % Marshalls.raw_to_base64(FileAccess.get_file_as_bytes(png)) if FileAccess.file_exists(png) else ""
 		rows += "<tr><th>%s</th><td>%s</td><td>%s</td><td>%s</td></tr>\n" % [
 			nm, _cell(now_files), _cell(before_files) if not before_files.is_empty() else "<span class=dim>なし</span>", img]
-	var html := """<!doctype html><html lang="ja"><meta charset="utf-8"><title>DDA 効果音の聴き比べ</title>
+	var html := """<!doctype html><html lang="ja"><meta charset="utf-8"><title>Danmaku 効果音の聴き比べ</title>
 <style>
 body{background:#0b0d16;color:#dde;font:14px/1.5 system-ui,sans-serif;margin:24px}
 table{border-collapse:collapse}td,th{border-bottom:1px solid #223;padding:8px 10px;vertical-align:top;text-align:left}
@@ -154,7 +154,7 @@ button{background:#1b2440;color:#dde;border:1px solid #345;border-radius:6px;pad
 button:hover{background:#263257}.dim{color:#667}.rap{background:#2a2050}
 #status{position:fixed;right:16px;top:12px;color:#f88}
 </style>
-<h1>DDA 効果音の聴き比べ</h1>
+<h1>Danmaku 効果音の聴き比べ</h1>
 <div id=status></div>
 <p class=dim>「今」= assets/sfx(tools/sfx_forge.gd -- --preview で作り直した音)/「前」= sfx_preview/before(-- --snapshot で取っておいた音)。
 数字のボタンで変種を 1 つずつ、「連打」でゲーム中のように変種をランダムに 8 回鳴らします。</p>

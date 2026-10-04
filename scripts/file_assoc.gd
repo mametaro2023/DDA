@@ -1,10 +1,12 @@
 extends RefCounted
 ## Windows の「.osz を開くアプリ」に、このアプリを加える(現在のユーザーだけ。レジストリの HKCU\Software\Classes)。
-## 既定のアプリは奪わない: 「プログラムから開く」の一覧に DDA が出るようにするだけ(Windows は、既定のアプリをアプリが勝手に
+## 既定のアプリは奪わない: 「プログラムから開く」の一覧に Danmaku が出るようにするだけ(Windows は、既定のアプリをアプリが勝手に
 ## 変えることを許していない)。既定にするには、Windows の設定(既定のアプリ)で選ぶ。
-## 起動コマンドは `"DDA.exe" -- "%1"`(-- のあとの引数がゲームに届く)。
+## 起動コマンドは `"Danmaku.exe" -- "%1"`(-- のあとの引数がゲームに届く)。
 
-const PROG_ID := "DDA.osz"
+const PROG_ID := "Danmaku.osz"
+## 名前を変える前の ProgID(この exe で登録されていたら、起動時に新しい ProgID へ移す)
+const OLD_PROG_ID := "DDA.osz"
 const CLASSES := "HKCU\\Software\\Classes\\"
 
 
@@ -21,12 +23,12 @@ static func register(exe: String, ext := ".osz", prog_id := PROG_ID) -> bool:
 	# 値に引用符を含むので、コマンドの引数では渡せない(引用符がこわれる)。.reg ファイル(UTF-16。パスに日本語があってもよい)を作って取り込む
 	var root := "[HKEY_CURRENT_USER\\Software\\Classes\\"
 	var lines := PackedStringArray(["Windows Registry Editor Version 5.00", "",
-		root + prog_id + "]", "@=" + _q("osu! beatmap (DDA)"), "",
+		root + prog_id + "]", "@=" + _q("osu! beatmap (Danmaku)"), "",
 		root + prog_id + "\\DefaultIcon]", "@=" + _q("\"%s\",0" % exe), "",
 		root + prog_id + "\\shell\\open\\command]", "@=" + _q(cmd), "",
 		root + ext + "\\OpenWithProgids]", "\"%s\"=hex(0):" % prog_id, "",
 		root + "Applications\\" + exe.get_file() + "\\shell\\open\\command]", "@=" + _q(cmd), ""])
-	var path := OS.get_temp_dir().path_join("dda_assoc_%d.reg" % Time.get_ticks_usec())
+	var path := OS.get_temp_dir().path_join("danmaku_assoc_%d.reg" % Time.get_ticks_usec())
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		return false
@@ -36,6 +38,20 @@ static func register(exe: String, ext := ".osz", prog_id := PROG_ID) -> bool:
 	var code := OS.execute("reg", ["import", path.replace("/", "\\")])
 	DirAccess.remove_absolute(path)
 	return code == 0
+
+
+## 名前を変える前の ProgID(DDA.osz)で、この exe が登録されていたら、新しい ProgID で登録し直して、古い登録を消す。起動時に呼ぶ(何度呼んでもよい)。
+static func migrate_legacy(exe: String) -> bool:
+	if not supported():
+		return false
+	var old_cmd := registered_command(OLD_PROG_ID)
+	if old_cmd == "" or not old_cmd.to_lower().contains(exe.replace("/", "\\").to_lower()):   # 古い登録が、この exe(同じ場所)を指しているときだけ
+		return false
+	if not register(exe):
+		return false
+	OS.execute("reg", ["delete", CLASSES + ".osz\\OpenWithProgids", "/v", OLD_PROG_ID, "/f"])
+	OS.execute("reg", ["delete", CLASSES + OLD_PROG_ID, "/f"])
+	return true
 
 
 ## 登録を消す。

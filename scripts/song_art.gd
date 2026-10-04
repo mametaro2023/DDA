@@ -1,0 +1,179 @@
+extends Node
+## 曲の一覧の見た目に使う、曲ごとの小さな情報(UI を持たない): 背景画像の縮小版(サムネイル)と、難易度の一覧(名前と、色に使う推定の★)。
+## 曲を全部は開かずに一覧を出すため、初めての曲だけ別スレッドで .osz を開いて作り、user:// に保存する(次からは、保存したものを読むだけ)。
+##   サムネイル … user://thumbs/<曲の識別子>.jpg(幅 THUMB_W まで縮めたもの)
+##   難易度 … user://song_art.json({識別子: {"diffs": [[譜面の識別子, 難易度名, 推定★], ...], "img": 画像があるか}})
+## 使い方: SongArt.request(曲の識別子, .osz のパス, 受け取り(cb(info)))。info = {diffs, tex(なければ null)}。
+## 作業は 1 曲ずつ(曲の読み込みと CPU を取り合わない)。テクスチャへの変換は、1 フレームに 1 枚まで(止まりを作らない)。
+## 読み込んだテクスチャは、最近使った MEM_MAX 曲ぶんだけ覚えておく。
+
+const OszLoader = preload("res://scripts/osu/osz_loader.gd")
+
+const META_PATH := "user://song_art.json"
+const THUMB_DIR := "user://thumbs"
+const THUMB_W := 480
+const MEM_MAX := 160
+const VERSION := 1
+
+static var inst: Node
+
+static var _meta := {}          # 識別子 → {diffs, img}
+static var _meta_loaded := false
+static var _meta_dirty := false
+static var _tex := {}           # 識別子 → Texture2D(null = 画像なし)
+static var _order: Array = []   # 覚えている順(古い順)
+static var _queue: Array = []   # [{key, path}](先頭から処理)
+static var _waiting := {}       # 識別子 → [cb, ...]
+static var _busy := false
+static var _ready_q: Array = [] # 別スレッドから戻った結果(メインスレッドで、1 フレームに 1 つずつテクスチャにする)
+static var _save_t := 0.0
+
+
+## いつでも呼べるように、必要なら木に自分を置く(最初に request したとき)。
+static func _ensure(tree: SceneTree) -> void:
+	if inst != null and is_instance_valid(inst):
+		return
+	inst = load("res://scripts/song_art.gd").new()
+	inst.name = "SongArt"
+	tree.root.add_child.call_deferred(inst)
+
+
+static func _load_meta() -> void:
+	if _meta_loaded:
+		return
+	_meta_loaded = true
+	var f := FileAccess.open(META_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var d = JSON.parse_string(f.get_as_text())
+	f.close()
+	if d is Dictionary and int(d.get("v", 0)) == VERSION and d.get("songs") is Dictionary:
+		_meta = d.songs
+
+
+## すでに分かっている難易度の一覧(なければ空)。[[譜面の識別子, 難易度名, 推定★], ...](易しい順)
+static func diffs_of(key: String) -> Array:
+	_load_meta()
+	var m = _meta.get(key)
+	return m.diffs if m is Dictionary else []
+
+
+## 覚えているテクスチャ(なければ null。まだ読んでいないのか、画像がないのかは区別しない)。
+static func texture_of(key: String) -> Texture2D:
+	return _tex.get(key)
+
+
+## 曲の情報を求める。そろっていれば、次のフレームで cb(info) を呼ぶ。なければ作って(読み込んで)から呼ぶ。
+## front = true は、待ち行列の先頭に入れる(選んだ曲・見えている曲)。cb の持ち主が消えていたら、呼ばない。
+static func request(tree: SceneTree, key: String, path: String, cb: Callable, front := false) -> void:
+	_ensure(tree)
+	_load_meta()
+	if _tex.has(key) and _meta.has(key):
+		_touch(key)
+		_call_back.bind(cb, {"diffs": _meta[key].diffs, "tex": _tex[key]}).call_deferred()
+		return
+	if _waiting.has(key):
+		(_waiting[key] as Array).append(cb)
+		if front:   # すでに並んでいる: 先頭へ
+			for i in range(_queue.size()):
+				if _queue[i].key == key:
+					var job: Dictionary = _queue[i]
+					_queue.remove_at(i)
+					_queue.push_front(job)
+					break
+		return
+	_waiting[key] = [cb]
+	var job := {"key": key, "path": path, "have_meta": _meta.has(key)}
+	if front:
+		_queue.push_front(job)
+	else:
+		_queue.append(job)
+
+
+## まだ作業が残っているか(撮影で、画像がそろうのを待つのに使う)。
+static func busy() -> bool:
+	return _busy or not _queue.is_empty() or not _ready_q.is_empty()
+
+
+## 待ち行列を空にする(画面を離れたとき。作業中の 1 曲は、そのまま終わらせる)。
+static func cancel_all() -> void:
+	_queue.clear()
+	_waiting.clear()
+
+
+static func _call_back(cb: Callable, info: Dictionary) -> void:
+	if cb.is_valid():
+		cb.call(info)
+
+
+static func _touch(key: String) -> void:
+	_order.erase(key)
+	_order.append(key)
+	while _order.size() > MEM_MAX:
+		_tex.erase(_order.pop_front())
+
+
+func _process(delta: float) -> void:
+	if not _busy and not _queue.is_empty():
+		var job: Dictionary = _queue.pop_front()
+		_busy = true
+		var thumb := "%s/%s.jpg" % [THUMB_DIR, job.key]
+		var meta_has_img := bool((_meta.get(job.key, {}) as Dictionary).get("img", false)) if job.have_meta else false
+		WorkerThreadPool.add_task(func():
+			var r := _work(job, thumb, meta_has_img)
+			_finish.call_deferred(r))
+	if not _ready_q.is_empty():   # テクスチャへの変換(転送)は 1 フレームに 1 枚
+		var r: Dictionary = _ready_q.pop_front()
+		var key: String = r.key
+		if r.has("diffs"):
+			_meta[key] = {"diffs": r.diffs, "img": r.img != null}
+			_meta_dirty = true
+		var tex: Texture2D = ImageTexture.create_from_image(r.img) if r.img != null else null
+		_tex[key] = tex
+		_touch(key)
+		var info := {"diffs": (_meta.get(key, {}) as Dictionary).get("diffs", []), "tex": tex}
+		for cb in _waiting.get(key, []):
+			_call_back(cb, info)
+		_waiting.erase(key)
+	if _meta_dirty:
+		_save_t += delta
+		if _save_t > 1.0:   # まとめて保存する
+			_save_t = 0.0
+			_meta_dirty = false
+			var f := FileAccess.open(META_PATH, FileAccess.WRITE)
+			if f != null:
+				f.store_string(JSON.stringify({"v": VERSION, "songs": _meta}))
+				f.close()
+
+
+func _finish(r: Dictionary) -> void:
+	_busy = false
+	if not r.is_empty():
+		_ready_q.append(r)
+
+
+## 別スレッド: 保存したサムネイルがあれば読むだけ。なければ .osz を開いて、難易度の一覧とサムネイルを作る。
+static func _work(job: Dictionary, thumb: String, meta_has_img: bool) -> Dictionary:
+	if job.have_meta:
+		var img: Image = null
+		if meta_has_img and FileAccess.file_exists(thumb):
+			img = Image.load_from_file(thumb)
+		if img != null or not meta_has_img:
+			return {"key": job.key, "img": img}
+	var l = OszLoader.new()
+	if not l.open(str(job.path)):
+		return {"key": job.key, "img": null, "diffs": []}
+	var diffs: Array = []
+	var bg := ""
+	for bm in l.difficulties:   # OszLoader の並び(物量の少ない順)= 選曲で選んだときの並び
+		diffs.append([str(bm.md5), str(bm.version), snappedf(float(bm.stars), 0.01)])
+		if bg == "" and bm.background != "":
+			bg = bm.background
+	var img: Image = l.load_image_data(bg) if bg != "" else null
+	l.close()
+	if img != null:
+		if img.get_width() > THUMB_W:
+			img.resize(THUMB_W, maxi(1, int(round(img.get_height() * float(THUMB_W) / img.get_width()))), Image.INTERPOLATE_BILINEAR)
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(THUMB_DIR))
+		img.save_jpg(thumb, 0.85)
+	return {"key": job.key, "img": img, "diffs": diffs}

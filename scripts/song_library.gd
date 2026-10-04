@@ -13,13 +13,20 @@ static func norm(p: String) -> String:
 	return p.replace("\\", "/").simplify_path().trim_suffix("/").to_lower()
 
 
+const UserDirMigrate = preload("res://scripts/user_dir_migrate.gd")
+
+
 static func search_dirs() -> Array:
 	var dirs: Array = []
 	var seen := {}
 	var proj := ProjectSettings.globalize_path("res://")
 	var exe := OS.get_executable_path().get_base_dir()
-	for d in [proj, proj.path_join("songs"), exe, exe.path_join("songs"),
-			ProjectSettings.globalize_path("user://songs")]:
+	var cands: Array = [proj, proj.path_join("songs"), exe, exe.path_join("songs"), ProjectSettings.globalize_path("user://songs")]
+	if not OS.has_feature("template"):   # ソースから動かしたとき: 前の名前のユーザーデータの曲も読む(引っ越しは書き出した版だけなので。読むだけで、動かさない)
+		var base := OS.get_user_data_dir().get_base_dir()
+		for nm in UserDirMigrate.OLD_NAMES:
+			cands.append(base.path_join(nm).path_join("songs"))
+	for d in cands:
 		d = str(d).replace("\\", "/")
 		var key := norm(d)
 		if not seen.has(key):

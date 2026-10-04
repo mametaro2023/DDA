@@ -216,9 +216,9 @@ func _upnp_worker(p: int, gen: int) -> void:
 	var upnp := UPNP.new()
 	var err := upnp.discover(2000, 2, "InternetGatewayDevice")
 	if err == UPNP.UPNP_RESULT_SUCCESS and upnp.get_gateway() != null and upnp.get_gateway().is_valid_gateway():
-		var r := upnp.add_port_mapping(p, p, "DDA", "UDP", 7200)   # 2 時間で自動的に閉じる(異常終了しても残らない)。貸し出し期間に非対応のルーターは、無期限で開ける
+		var r := upnp.add_port_mapping(p, p, "Danmaku", "UDP", 7200)   # 2 時間で自動的に閉じる(異常終了しても残らない)。貸し出し期間に非対応のルーターは、無期限で開ける
 		if r != UPNP.UPNP_RESULT_SUCCESS:
-			r = upnp.add_port_mapping(p, p, "DDA", "UDP")
+			r = upnp.add_port_mapping(p, p, "Danmaku", "UDP")
 		if r == UPNP.UPNP_RESULT_SUCCESS:
 			res.ok = true
 			res.ip = upnp.query_external_address()

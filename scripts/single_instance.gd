@@ -6,7 +6,7 @@ extends Node
 signal file_received(path: String)
 
 const PORT := 24660
-const MAGIC := "DDA-OPEN|"
+const MAGIC := "Danmaku-OPEN|"
 
 var _udp: PacketPeerUDP
 

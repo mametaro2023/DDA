@@ -8,8 +8,8 @@ if (mode === 'bad') digest = 'deadbeef' + digest.slice(8);
 const base = `http://127.0.0.1:${port}`;
 const releases = [
   { tag_name: 'v9.9.9-beta', draft: false, prerelease: true, html_url: base + '/page', body: '## テスト用のリリース\n- 新機能 A\n- **修正** B',
-    assets: [{ name: 'DDA_beta_v9.9.9.zip', size: zip.length, browser_download_url: base + '/asset.zip', digest: 'sha256:' + digest }] },
-  { tag_name: 'v0.2.0-beta', draft: false, prerelease: true, html_url: base + '/old', body: 'old', assets: [{ name: 'DDA_beta_v0.2.0.zip', size: 1, browser_download_url: base + '/old.zip' }] },
+    assets: [{ name: 'Danmaku_beta_v9.9.9.zip', size: zip.length, browser_download_url: base + '/asset.zip', digest: 'sha256:' + digest }] },
+  { tag_name: 'v0.2.0-beta', draft: false, prerelease: true, html_url: base + '/old', body: 'old', assets: [{ name: 'Danmaku_beta_v0.2.0.zip', size: 1, browser_download_url: base + '/old.zip' }] },
   { tag_name: 'v10.0.0', draft: true, prerelease: false, html_url: base + '/draft', body: 'draft (無視される)', assets: [{ name: 'x.zip', size: 1, browser_download_url: base + '/x.zip' }] },
 ];
 http.createServer((req, res) => {

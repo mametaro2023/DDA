@@ -3,10 +3,11 @@ extends Node
 ##
 ## 流れ:
 ##   1. check()        … リリース一覧(API)を取り、いちばん新しいバージョンが今より新しいかを調べる(ベータ版のプレリリースも対象)。
-##   2. start_download() … リリースの zip をダウンロードし、大きさ(と、API が教えるハッシュ)を確かめ、中の DDA.exe などを取り出す。
+##   2. start_download() … リリースの zip をダウンロードし、大きさ(と、API が教えるハッシュ)を確かめ、中の Danmaku.exe などを取り出す。
 ##   3. apply_and_quit() … 別のプロセス(PowerShell)を起動して、このアプリが終わるのを待ってから、exe を入れ替えて、新しいアプリを起動する。
 ##      入れ替えに失敗したら、元の exe を戻して、元のアプリを起動し直す(壊れた状態にならない)。songs フォルダなど、
-##      ほかのファイルには触れない(入れ替えるのは DDA.exe と、README.txt・LICENSE-Godot.txt だけ)。
+##      ほかのファイルには触れない(入れ替えるのは、いま動いている exe(名前はそのまま)と、README.txt・LICENSE-Godot.txt だけ)。
+##      zip の中の本体は Danmaku.exe(名前を変える前のリリースは DDA.exe。どちらでも受け取る)。
 ##
 ## 安全のため: ダウンロード先は、このリポジトリのリリースのアドレス(RELEASE_PREFIX)に限る。httpS で取得し、サイズ・SHA-256 を確かめ、
 ## zip の中の決まった名前のファイルだけを取り出す(パスの区切り・.. は使わない)。取り出した exe が Windows の実行ファイルの形でなければ断る。
@@ -16,7 +17,9 @@ const API_URL := "https://api.github.com/repos/mametaro2023/DDA/releases?per_pag
 const RELEASE_PREFIX := "https://github.com/mametaro2023/DDA/releases/download/"
 const PAGE_URL := "https://github.com/mametaro2023/DDA/releases"
 const WORK_DIR := "user://update"
-const ALLOWED := ["DDA.exe", "README.txt", "LICENSE-Godot.txt"]
+## zip の中のアプリ本体の名前(先にあるほうを使う)
+const EXE_NAMES := ["Danmaku.exe", "DDA.exe"]
+const ALLOWED := ["Danmaku.exe", "DDA.exe", "README.txt", "LICENSE-Godot.txt"]
 const MIN_EXE_BYTES := 1000000
 
 signal check_finished(info: Dictionary)
@@ -33,6 +36,7 @@ var force_apply := false
 var current := ""
 var info: Dictionary = {}       # 最後の確認の結果
 var stage_dir := ""             # 取り出した新しいファイルの置き場(絶対パス)
+var stage_exe := ""             # 取り出したアプリ本体のファイル名(Danmaku.exe か DDA.exe)
 
 var _http: HTTPRequest
 var _downloading := false
@@ -113,7 +117,7 @@ func check() -> void:
 	_http.timeout = 10.0
 	add_child(_http)
 	_http.request_completed.connect(_on_check_done)
-	var err := _http.request(api_url, PackedStringArray(["User-Agent: DDA-updater", "Accept: application/vnd.github+json"]))
+	var err := _http.request(api_url, PackedStringArray(["User-Agent: Danmaku-updater", "Accept: application/vnd.github+json"]))
 	if err != OK:
 		_finish_check({"ok": false, "error": "接続できません"})
 
@@ -180,7 +184,7 @@ func start_download() -> void:
 	_http.max_redirects = 8
 	add_child(_http)
 	_http.request_completed.connect(_on_download_done)
-	if _http.request(url, PackedStringArray(["User-Agent: DDA-updater"])) != OK:
+	if _http.request(url, PackedStringArray(["User-Agent: Danmaku-updater"])) != OK:
 		_http.queue_free()
 		_http = null
 		failed.emit("ダウンロードを始められません")
@@ -265,9 +269,14 @@ func _extract() -> String:
 			w.close()
 			found[base] = bytes.size()
 	z.close()
-	if not found.has("DDA.exe") or int(found["DDA.exe"]) < MIN_EXE_BYTES:
-		return "ダウンロードしたファイルに、アプリ本体(DDA.exe)がありません"
-	var head := FileAccess.open(stage_dir.path_join("DDA.exe"), FileAccess.READ)
+	stage_exe = ""
+	for nm in EXE_NAMES:
+		if found.has(nm) and int(found[nm]) >= MIN_EXE_BYTES:
+			stage_exe = nm
+			break
+	if stage_exe == "":
+		return "ダウンロードしたファイルに、アプリ本体(Danmaku.exe)がありません"
+	var head := FileAccess.open(stage_dir.path_join(stage_exe), FileAccess.READ)
 	var magic := head.get_buffer(2)
 	head.close()
 	if magic.size() < 2 or magic[0] != 0x4D or magic[1] != 0x5A:   # "MZ"
@@ -285,7 +294,7 @@ static func _remove_dir(dir: String) -> void:
 
 # --- 3. 入れ替え ---
 
-const APPLY_SCRIPT := """param([int]$ProcId, [string]$Dir, [string]$Stage, [string]$ExeName)
+const APPLY_SCRIPT := """param([int]$ProcId, [string]$Dir, [string]$Stage, [string]$ExeName, [string]$NewExe)
 $ErrorActionPreference = 'Stop'
 try { Wait-Process -Id $ProcId -Timeout 60 } catch {}
 $exe = Join-Path $Dir $ExeName
@@ -295,7 +304,7 @@ for ($i = 0; $i -lt 40; $i++) {
   try {
     if (Test-Path $old) { Remove-Item $old -Force }
     Move-Item $exe $old -Force
-    Copy-Item (Join-Path $Stage 'DDA.exe') $exe -Force
+    Copy-Item (Join-Path $Stage $NewExe) $exe -Force
     $ok = $true
     break
   } catch {
@@ -317,7 +326,7 @@ Start-Process -FilePath $exe
 
 ## 入れ替えを別のプロセスに任せて、このアプリを終了する(新しいアプリが起動する)。
 func apply_and_quit() -> void:
-	if stage_dir == "" or not FileAccess.file_exists(stage_dir.path_join("DDA.exe")):
+	if stage_dir == "" or stage_exe == "" or not FileAccess.file_exists(stage_dir.path_join(stage_exe)):
 		failed.emit("更新のファイルがありません")
 		return
 	var script := ProjectSettings.globalize_path(WORK_DIR).path_join("apply.ps1")
@@ -329,7 +338,7 @@ func apply_and_quit() -> void:
 	f.close()
 	var exe := OS.get_executable_path()
 	var pid := OS.create_process("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script,
-		"-ProcId", str(OS.get_process_id()), "-Dir", exe.get_base_dir(), "-Stage", stage_dir, "-ExeName", exe.get_file()])
+		"-ProcId", str(OS.get_process_id()), "-Dir", exe.get_base_dir(), "-Stage", stage_dir, "-ExeName", exe.get_file(), "-NewExe", stage_exe])
 	if pid <= 0:
 		failed.emit("更新を始められません")
 		return

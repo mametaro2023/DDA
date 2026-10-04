@@ -1,7 +1,7 @@
 extends RefCounted
 ## osu!standard の星評価の近似(エイム/スピードのストレイン方式)。
 ## 公式値そのものではなく、譜面ごとの難易度の相対関係を再現するための推定。
-## DDA の難易度そのものには使わず、「本家の星に近づける」ための基準(pattern_gen.gd)としてだけ使う。
+## Danmaku の難易度そのものには使わず、「本家の星に近づける」ための基準(pattern_gen.gd)としてだけ使う。
 
 const Beatmap = preload("res://scripts/osu/beatmap.gd")
 

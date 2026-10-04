@@ -1,5 +1,5 @@
 extends SceneTree
-## DDA 難易度(画面内の弾数 + 弾速・弾サイズの項。Lv は★と同じ目盛り)を、手元の全 .osz について表示し、
+## Danmaku 難易度(画面内の弾数 + 弾速・弾サイズの項。Lv は★と同じ目盛り)を、手元の全 .osz について表示し、
 ## 目標への追従と、公式の星との順位相関を確認する。
 ## godot --headless --path . --script tests/test_rating.gd
 

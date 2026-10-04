@@ -9,8 +9,10 @@ signal play_requested
 signal multi_requested
 signal update_requested
 signal settings_requested(section: int)
+## 「新しい UI で遊ぼう」から、別の UI セットを試す(main が設定を書き換えて、タイトルを作り直す)
+signal ui_try_requested(ui_id: String)
 
-const OszLoader = preload("res://scripts/osu/osz_loader.gd")
+const AttractBackdrop = preload("res://scripts/attract_backdrop.gd")
 const Settings = preload("res://scripts/settings.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const Volume = preload("res://scripts/volume.gd")
@@ -20,6 +22,9 @@ const Ambient = preload("res://scripts/ui/ambient.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
+const LazerStyle = preload("res://scripts/ui/lazer/lazer_style.gd")
+const LazerButton = preload("res://scripts/ui/lazer/lazer_button.gd")
+const LazerLogo = preload("res://scripts/ui/lazer/lazer_logo.gd")
 
 const BG_TINT := Color(0.4, 0.4, 0.46)
 const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"], ["終了", "QUIT"]]
@@ -31,6 +36,8 @@ const ITEM_H := 54.0
 const ITEM_GAP := 10.0
 const PITCHES := [1.0, 1.122, 1.26, 1.5, 1.68]   # 項目ごとの選択音の高さ(↑↓ で音階のように聞こえる)
 
+## 画面の種類(main が、いま何の画面かを知るのに使う。ui_set.gd の契約)
+var kind := "title"
 var settings: Dictionary = {}
 var update_info: Dictionary = {}   # 新しいバージョンがあるとき、main が渡す(あとから見つかった場合は show_update)
 var _update_btn: Button
@@ -45,6 +52,7 @@ var _audio: AudioStreamPlayer
 var _last_path := ""
 var _overlay: Control        # 開いているパネル(遊び方 / 設定)
 var _leaving := false
+var _promo: Control           # 「新しい UI で遊ぼう」のカード(右下)
 var _ambient: Node2D
 var _letters: Array = []     # ロゴの 1 文字ずつ(入場のあと、ゆっくり浮き沈みする)
 var _hl: Panel               # 選択中の項目の下で、上下になめらかに動く枠
@@ -89,24 +97,21 @@ func _ready() -> void:
 	# --- タイトルの文字 ---
 	# ロゴは 1 文字ずつ、上から弾んで落ちてくる
 	var lx := 104.0
-	for i in range(3):
-		var ch := "DDA"[i]
-		var letter := UiStyle.label(ch, 132, UiStyle.ACCENT, true)
-		letter.position = Vector2(lx, 92)
+	var word := "Danmaku"
+	for i in range(word.length()):
+		var ch := word[i]
+		var letter := UiStyle.label(ch, 112, UiStyle.ACCENT, true)
+		letter.position = Vector2(lx, 104)
 		add_child(letter)
-		lx += UiStyle.bold().get_string_size(ch, HORIZONTAL_ALIGNMENT_LEFT, -1, 132).x
-		letter.set_meta("base_y", 92.0)
+		lx += UiStyle.bold().get_string_size(ch, HORIZONTAL_ALIGNMENT_LEFT, -1, 112).x
+		letter.set_meta("base_y", 104.0)
 		_letters.append(letter)
-		UiStyle.spring(letter, "position:y", 92.0 - 70.0, 92.0, 0.7, 0.04 + 0.09 * i)
-		UiStyle.tween(letter, "modulate:a", 0.0, 1.0, 0.25, 0.04 + 0.09 * i)
-	var sub := UiStyle.label("DANMAKU DODGER", 20, UiStyle.TEXT_DIM)
-	sub.position = Vector2(112, 250)
-	add_child(sub)
+		UiStyle.spring(letter, "position:y", 104.0 - 70.0, 104.0, 0.7, 0.04 + 0.06 * i)
+		UiStyle.tween(letter, "modulate:a", 0.0, 1.0, 0.25, 0.04 + 0.06 * i)
 	var ver := UiStyle.chip("BETA   v%s" % _version(), UiStyle.GOLD)
-	ver.position = Vector2(112, 292)
+	ver.position = Vector2(112, 266)
 	add_child(ver)
 	_ver_chip = ver
-	UiStyle.pop_in(sub, 0.15, Vector2(-30, 0), 0.6)
 	UiStyle.pop_in(ver, 0.25, Vector2(-30, 0), 0.6)
 
 	# --- 項目 ---
@@ -152,6 +157,85 @@ func _ready() -> void:
 	_play_random.call_deferred()
 	if bool(update_info.get("newer", false)):
 		show_update(update_info)
+	if not bool(settings.get("ui_promo_hidden", false)):
+		_build_ui_promo()
+
+
+## 右下の「新しい UI で遊ぼう」のカード: 新しい UI(lazer 風)の小さなロゴと説明、ピンクの「試してみる」と、✕(二度と出さない)。
+## 押すと、UI の見た目を lazer 風にして、タイトルがその見た目で作り直される(設定の「画面」で、いつでも戻せる)。
+## 新しい UI の色(ピンク)で描き、クラシックの画面の中で「別の見た目がある」と分かるようにする。点滅などで目を引くことはしない。
+func _build_ui_promo() -> void:
+	var card := PanelContainer.new()
+	card.add_theme_stylebox_override("panel", LazerStyle.box(Color(0.07, 0.055, 0.1, 0.92), Color(LazerStyle.PINK.r, LazerStyle.PINK.g, LazerStyle.PINK.b, 0.55), 1, 14, 18, 14))
+	card.position = Vector2(846, 528)
+	card.custom_minimum_size = Vector2(400, 0)
+	add_child(card)
+	_promo = card
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 16)
+	card.add_child(h)
+	var logo := LazerLogo.new(96.0)   # 新しい UI のロゴ(小さく。回る弾も見える)
+	logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	logo.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	h.add_child(logo)
+	var v := VBoxContainer.new()
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v.add_theme_constant_override("separation", 4)
+	h.add_child(v)
+	var head := HBoxContainer.new()
+	var t := LazerStyle.label("新しい UI で遊ぼう", 19, LazerStyle.TEXT, true)
+	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(t)
+	var x_btn := Button.new()
+	x_btn.text = "✕"
+	x_btn.flat = true
+	x_btn.focus_mode = Control.FOCUS_NONE
+	x_btn.tooltip_text = "表示しない"
+	x_btn.add_theme_color_override("font_color", LazerStyle.TEXT_MUTE)
+	x_btn.add_theme_color_override("font_hover_color", Color.WHITE)
+	x_btn.set_meta("juice_sound", "back")
+	x_btn.pressed.connect(_hide_ui_promo)
+	head.add_child(x_btn)
+	v.add_child(head)
+	var d := LazerStyle.label("lazer 風の、新しい見た目のメニューと画面。設定の「画面」で、いつでも元に戻せます。", 13, LazerStyle.TEXT_DIM)
+	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	d.custom_minimum_size = Vector2(250, 0)
+	v.add_child(d)
+	var go := LazerButton.new("試してみる", LazerStyle.PINK, "play", Color(0.2, 0.04, 0.11))
+	go.text = "試してみる"
+	go.custom_minimum_size = Vector2(170, 38)
+	go.size_flags_horizontal = Control.SIZE_SHRINK_END
+	go.font_size = 15
+	go.slant = 10.0
+	go.pressed.connect(func():
+		if _overlay != null or _leaving:
+			return
+		_leaving = true
+		UiSfx.play("confirm")
+		var at := go.get_global_rect().get_center()
+		UiFx.ring(self, at, LazerStyle.PINK, 16.0, 140.0, 0.5, 2.5)
+		ui_try_requested.emit("lazer"))
+	v.add_child(go)
+	UiStyle.pop_in(card, 0.7, Vector2(30, 0), 0.6)
+
+
+## ✕: カードを消して、次からは出さない。
+func _hide_ui_promo() -> void:
+	if _promo == null:
+		return
+	var st := Settings.load_all()
+	st.ui_promo_hidden = true
+	Settings.save_all(st)
+	settings.ui_promo_hidden = true
+	var p := _promo
+	_promo = null
+	if not UiStyle.animate:
+		p.queue_free()
+		return
+	var tw := p.create_tween().set_parallel(true)
+	tw.tween_property(p, "modulate:a", 0.0, 0.22)
+	tw.tween_property(p, "position:x", p.position.x + 30.0, 0.22).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tw.chain().tween_callback(p.queue_free)
 
 
 ## 新しいバージョンの案内(版の表示の右隣。項目のカードには重ならない)。押すと、アップデートのパネルが開く。
@@ -165,7 +249,7 @@ func show_update(info: Dictionary) -> void:
 	_update_btn.add_theme_stylebox_override("hover", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.26), UiStyle.ACCENT, 1, 4, 14, 6))
 	_update_btn.add_theme_color_override("font_color", UiStyle.ACCENT)
 	_update_btn.add_theme_color_override("font_hover_color", Color.WHITE)
-	_update_btn.position = Vector2(112 + _ver_chip.get_combined_minimum_size().x + 14.0, 286)
+	_update_btn.position = Vector2(112 + _ver_chip.get_combined_minimum_size().x + 14.0, 260)
 	_update_btn.pressed.connect(func():
 		if _overlay == null and not _leaving:
 			update_requested.emit())
@@ -206,29 +290,15 @@ func _set_background(tex: Texture2D) -> void:
 func _play_random() -> void:
 	if _leaving:
 		return
-	var paths := SongLibrary.find_all()
-	if paths.is_empty():
+	var pick := AttractBackdrop.new().pick(_last_path)   # 選び方は scripts/attract_backdrop.gd(lazer のタイトルと共通)
+	if pick.is_empty():
 		return
-	paths.shuffle()
-	if paths.size() > 1:
-		paths.erase(_last_path)
-	for path in paths:
-		var l = OszLoader.new()
-		if not l.open(path):
-			continue
-		var bm = l.difficulties[randi() % l.difficulties.size()]
-		var stream: AudioStream = l.load_audio(bm.audio_filename)
-		var tex: Texture2D = l.load_image(bm.background) if bm.background != "" else null
-		l.close()
-		if stream == null:
-			continue
-		_last_path = path
-		_set_background(tex)
-		_audio.stream = stream
-		_audio.volume_db = -40.0
-		_audio.play(maxf(bm.preview_time / 1000.0, 0.0))
-		UiStyle.tween(_audio, "volume_db", -40.0, MUSIC_DB, 1.6)   # 曲は、ふわっと入る
-		return
+	_last_path = pick.path
+	_set_background(pick.tex)
+	_audio.stream = pick.stream
+	_audio.volume_db = -40.0
+	_audio.play(pick.start)
+	UiStyle.tween(_audio, "volume_db", -40.0, MUSIC_DB, 1.6)   # 曲は、ふわっと入る
 
 
 ## 曲を小さくして止める。
@@ -339,6 +409,16 @@ func _slide_out() -> void:
 		t.tween_method(func(v: float): UiStyle._set_dx(c, v), c.offset_left, -50.0, 0.22).set_delay(0.03 * k).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	var th := _hl.create_tween()
 	th.tween_property(_hl, "modulate:a", 0.0, 0.2)
+
+
+## 自動更新のパネルを、いま開いてよいか(別のパネルが開いている・「プレイ」などで画面を離れ始めているときは、だめ)
+func can_accept_auto_update() -> bool:
+	return _overlay == null and not _leaving
+
+
+## パネル(遊び方・更新・終了の確認など)を重ねて開く。閉じるのはパネルの closed(ui_set.gd の契約)
+func open_panel(panel: Control) -> void:
+	_open(panel)
 
 
 func _open(panel: Control) -> void:

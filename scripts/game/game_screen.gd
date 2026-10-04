@@ -75,6 +75,8 @@ const BG_TINT := Color(0.28, 0.28, 0.32)
 const ARENA_BG_ALPHA := 0.62
 const TAPE_STOP_TIME := 1.7  # ゲームオーバー時に曲が止まるまでの秒数
 
+## 画面の種類(main が、いま何の画面かを知るのに使う。ui_set.gd の契約)
+var kind := "game"
 var loader
 var bm
 var settings: Dictionary
@@ -135,7 +137,7 @@ var _hp_rng := RandomNumberGenerator.new()
 var _low_vis := 0.0       # 体力が低いときの、画面の左右端の赤み(0..1。目標へなめらかに追従する)
 var _gauge_ghost := 1.0  # 体力バーの残像(被弾で減った分がゆっくり縮む)
 var _score_disp := 0.0   # 画面に表示しているスコア(sim.score へイージングで追従)
-var _score_font: FontVariation
+var _score_font: Font
 var _death_t := 0.0
 var _graze_l: Label
 var _hit_l: Label
@@ -213,6 +215,11 @@ var _beat_glow := 0.0     # 今の光の強さ 0..1(キアイ中、拍の頭で�
 
 ## 選曲で作っておいたもの {gen: 弾幕(MOD 適用前), audio: 曲全体の音声}。ないものは、ここで作る・読む
 var pre: Dictionary = {}
+
+
+## ポーズ中か(main が、F11 の全画面を受け付けるかの判断に使う)
+func is_paused() -> bool:
+	return _paused
 
 
 func setup(p_loader, p_bm, p_settings: Dictionary) -> void:
@@ -859,6 +866,8 @@ func _record_study(st: Dictionary) -> void:
 func _stats() -> Dictionary:
 	var d := {
 		"title": bm.display_name(),
+		"md5": bm.md5,   # 記録(records.gd)を、譜面の難易度ごとに残すための識別子
+		"version": bm.version,
 		"level": gen.level,
 		"mean": gen.rating.mean,
 		"peak": gen.rating.peak,

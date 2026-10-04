@@ -57,7 +57,7 @@ func open(p: String) -> bool:
 		error = no_standard_message(modes)
 		close()
 		return false
-	# 暫定の並び(物量密度順)。メニューで DDA 難易度の順に並べ直す。
+	# 暫定の並び(物量密度順)。メニューで Danmaku 難易度の順に並べ直す。
 	difficulties.sort_custom(func(a, b): return a.density() < b.density())
 	return true
 

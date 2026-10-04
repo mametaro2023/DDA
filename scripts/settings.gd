@@ -24,6 +24,9 @@ const DEFAULTS := {
 	"last_auto_update": "", # 最後に自動更新を始めたバージョン(同じバージョンで繰り返し更新し続けないための印)
 	"player_name": "",    # マルチプレイでの表示名(空なら初回に自動で決める)
 	"speed_study": false, # 弾速の実験に参加する(scripts/speed_study.gd。ひとりで遊ぶとき、弾速などを変えた弾幕で遊び、結果を user://speed_study.csv に記録する)
+	"song_sort": "title", # 選曲の並び順(song_browser.gd の SORT_MODES の id。lazer 風の選曲画面)
+	"ui_style": "classic", # UI の見た目(scripts/ui/ui_sets.gd の名前。知らない名前のときは classic)
+	"ui_promo_hidden": false, # クラシックのタイトルの「新しい UI で遊ぼう」を出さない(✕ で閉じた・一度試した)
 	"mirror_consent": false, # マルチプレイで曲を、非公式のミラーサイトからダウンロードすることに同意した(最初のダウンロードのときに聞く)
 }
 

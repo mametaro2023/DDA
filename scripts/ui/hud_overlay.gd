@@ -192,11 +192,15 @@ func _input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 
 
-## このホイール操作を、音量に使うか。スクロールできる一覧・スライダー・文字入力の上では、本来の動きに譲る
+## このホイール操作を、音量に使うか。スクロールできる一覧・スライダー・文字入力・グループ wheel_area の範囲の上では、本来の動きに譲る
 ## (メーターが出ている間と、Ctrl を押しているときは、どこでも音量)。
 func _takes_wheel() -> bool:
 	if _shown or Input.is_key_pressed(KEY_CTRL):
 		return true
+	var mp := get_viewport().get_mouse_position()
+	for area in get_tree().get_nodes_in_group("wheel_area"):   # 画面が「ホイールはここで使う」と決めた範囲(曲の一覧など。スクロールできる量に関係なく)
+		if area is Control and area.is_visible_in_tree() and (area as Control).get_global_rect().has_point(mp):
+			return false
 	var n: Node = get_viewport().gui_get_hovered_control()
 	while n != null:
 		if n is Slider or n is TextEdit or n is ItemList:

@@ -1,17 +1,36 @@
 extends RefCounted
 ## UI の共通スタイル(色・部品・Theme)。メニュー・設定・ポーズ・リザルトで共有する。
 ## 方針: 暗い背景 / 細い線 / 水色のアクセント(プレイ中の HUD と揃える)。点滅・フラッシュは使わない。
+##
+## 色は、UI セットごとに差し替えられる(set_palette。lazer 風の UI のあいだは、アクセントがピンクになるなど)。
+## 初期値(CLASSIC_PALETTE)が、従来の UI の色。まだ作り直していない部品も、いまの UI セットの配色で描かれる。
 
-const BG := Color(0.03, 0.035, 0.06)
-const PANEL := Color(0.055, 0.065, 0.1, 1.0)
-const LINE := Color(1, 1, 1, 0.12)
-const ACCENT := Color(0.42, 0.95, 1.0)
-const TEXT := Color(1, 1, 1, 0.92)
-const TEXT_DIM := Color(1, 1, 1, 0.58)
-const TEXT_FAINT := Color(1, 1, 1, 0.36)
-const DANGER := Color(1.0, 0.4, 0.42)
-const GOLD := Color(1.0, 0.88, 0.4)
-const GOOD := Color(0.5, 1.0, 0.7)
+const CLASSIC_PALETTE := {
+	"BG": Color(0.03, 0.035, 0.06),
+	"PANEL": Color(0.055, 0.065, 0.1, 1.0),
+	"LINE": Color(1, 1, 1, 0.12),
+	"ACCENT": Color(0.42, 0.95, 1.0),
+	"TEXT": Color(1, 1, 1, 0.92),
+	"TEXT_DIM": Color(1, 1, 1, 0.58),
+	"TEXT_FAINT": Color(1, 1, 1, 0.36),
+	"DANGER": Color(1.0, 0.4, 0.42),
+	"GOLD": Color(1.0, 0.88, 0.4),
+	"GOOD": Color(0.5, 1.0, 0.7),
+}
+
+static var BG: Color = CLASSIC_PALETTE.BG
+static var PANEL: Color = CLASSIC_PALETTE.PANEL
+static var LINE: Color = CLASSIC_PALETTE.LINE
+static var ACCENT: Color = CLASSIC_PALETTE.ACCENT
+static var TEXT: Color = CLASSIC_PALETTE.TEXT
+static var TEXT_DIM: Color = CLASSIC_PALETTE.TEXT_DIM
+static var TEXT_FAINT: Color = CLASSIC_PALETTE.TEXT_FAINT
+static var DANGER: Color = CLASSIC_PALETTE.DANGER
+static var GOLD: Color = CLASSIC_PALETTE.GOLD
+static var GOOD: Color = CLASSIC_PALETTE.GOOD
+## 本文のフォントの差し替え(null なら、標準のフォント)。bold_font_override は太字(null なら、標準を太らせたもの)
+static var font_override: Font = null
+static var bold_font_override: Font = null
 
 ## 難易度(Lv)の色の停留点。Lv に応じて連続的に変わる。
 const LEVEL_STOPS := [
@@ -24,7 +43,26 @@ static var _bold: FontVariation
 static var drag_moved := false
 
 
-static func bold() -> FontVariation:
+## 配色・フォントを差し替える(UI セットが、使い始めるときに呼ぶ)。p に無い色は、従来の色に戻る。空の辞書で、従来の UI に戻る。
+static func set_palette(p: Dictionary, p_font: Font = null, p_bold: Font = null) -> void:
+	BG = p.get("BG", CLASSIC_PALETTE.BG)
+	PANEL = p.get("PANEL", CLASSIC_PALETTE.PANEL)
+	LINE = p.get("LINE", CLASSIC_PALETTE.LINE)
+	ACCENT = p.get("ACCENT", CLASSIC_PALETTE.ACCENT)
+	TEXT = p.get("TEXT", CLASSIC_PALETTE.TEXT)
+	TEXT_DIM = p.get("TEXT_DIM", CLASSIC_PALETTE.TEXT_DIM)
+	TEXT_FAINT = p.get("TEXT_FAINT", CLASSIC_PALETTE.TEXT_FAINT)
+	DANGER = p.get("DANGER", CLASSIC_PALETTE.DANGER)
+	GOLD = p.get("GOLD", CLASSIC_PALETTE.GOLD)
+	GOOD = p.get("GOOD", CLASSIC_PALETTE.GOOD)
+	font_override = p_font
+	bold_font_override = p_bold
+	_bold = null
+
+
+static func bold() -> Font:
+	if bold_font_override != null:
+		return bold_font_override
 	if _bold == null:
 		_bold = FontVariation.new()
 		_bold.base_font = ThemeDB.fallback_font
@@ -89,6 +127,8 @@ static func fmt(n: int) -> String:
 ## 全画面共通の Theme(ボタン・スライダー・スクロールバーを暗色・細線に揃える)。
 static func make_theme() -> Theme:
 	var t := Theme.new()
+	if font_override != null:
+		t.default_font = font_override
 	t.default_font_size = 15
 	t.set_color("font_color", "Label", TEXT)
 	# ボタン

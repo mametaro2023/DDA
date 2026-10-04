@@ -66,9 +66,10 @@ func _init() -> void:
 	_write(old.path_join("songs/b.osz"), "b")
 	_check(UserDirMigrate.migrate(old, cur) == 2 and not DirAccess.dir_exists_absolute(old), "全部移せたら、空になった前の場所を消す")
 	_check(UserDirMigrate.migrate(cur, cur) == 0, "前の場所と今の場所が同じなら、何もしない")
+	_check(OS.has_feature("template") or UserDirMigrate.run() == 0, "ソースから動かしたときは、起動時の引っ越しをしない(共有している前の名前の場所を空にしない)")
 	_rm_tree(root)
 
-	_check(UserDirMigrate.OLD_NAME == "DDA - osu! Danmaku Dodger" and ProjectSettings.get_setting("application/config/name") == "DDA - Danmaku Dodger",
-		"前の名前と今の名前: %s → %s" % [UserDirMigrate.OLD_NAME, ProjectSettings.get_setting("application/config/name")])
+	_check(UserDirMigrate.OLD_NAMES == ["DDA - Danmaku Dodger", "DDA - osu! Danmaku Dodger"] and ProjectSettings.get_setting("application/config/name") == "Danmaku",
+		"前の名前と今の名前: %s → %s" % [str(UserDirMigrate.OLD_NAMES), ProjectSettings.get_setting("application/config/name")])
 	print("RESULT: ", "OK" if _fail == 0 else "%d FAILURES" % _fail)
 	quit(1 if _fail > 0 else 0)

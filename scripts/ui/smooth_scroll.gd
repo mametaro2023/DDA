@@ -3,7 +3,8 @@ extends Node
 ## 使い方: SmoothScroll.attach(scroll)。scroll_to_control(card) で、そのカードが見える位置へなめらかに動く。
 ## attach(scroll, true) なら、一覧をドラッグしてもスクロールできる: 左ドラッグ = つかんだ分だけ動く(離すと少し滑る)、
 ## 右ドラッグ = 同じ向きに速く動く(一覧の高さぶんドラッグすると、だいたい全体を移動できる)。
-## 揺れ・点滅はなく、目標へ一方向に近づくだけ(UiStyle.animate が false のときは、すぐ動く)。
+## 揺れ・点滅はなく、目標へ一方向に近づくだけ(UiStyle.animate が false のときは、すぐ動く)。ホイール・ドラッグはすぐ反応し、
+## プログラムからの移動(scroll_to / scroll_to_control)は、止まった状態から加速して止まる(急に跳ばない)。
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
@@ -14,6 +15,8 @@ const RATE := 16.0        # 目標へ近づく速さ(大きいほど速い)
 const DRAG_START := 6.0   # これだけ動かしたら、クリックではなくドラッグ(px)
 const FAST_MIN := 4.0     # 右ドラッグの倍率の下限
 const FLING := 0.16       # 左ドラッグを離したとき、離す直前の速さ × この秒数だけ滑る
+const SPRING_W := 13.0    # プログラムからの移動(選んだ行へ寄せる など)の、ばねの強さ。止まった状態から加速して、行き過ぎずに止まる(約 0.35 秒)
+const MAX_DT := 1.0 / 30.0   # 1 フレームで進める時間の上限(重いフレームのあとでも、一度に大きく跳ばない)
 
 var sc: ScrollContainer
 ## false を返すとき、ホイールを受け付けない(上にパネルが重なっているときなど)。未設定なら常に受け付ける
@@ -28,6 +31,8 @@ var _drag_from := 0.0     # 押したときのスクロール位置
 var _drag_moved := false
 var _drag_hist: Array = []   # 左ドラッグの最近の位置 [ミリ秒, スクロール位置](離したときの勢いを、直前 0.1 秒の動きから求める)
 var _tick_i := 0          # 目盛りの音を鳴らした位置(STEP ごと)
+var _vel := 0.0           # ばねで動いているときの速さ(px/秒)
+var _spring := false      # true: プログラムからの移動(ばね)。false: ホイール・ドラッグ(すぐ反応して、減速しながら近づく)
 
 
 static func attach(scroll: ScrollContainer, drag := false) -> Node:
@@ -66,6 +71,8 @@ func _input(event: InputEvent) -> void:
 	if not sc.get_global_rect().has_point(sc.get_global_mouse_position()):
 		return
 	_sync()
+	_spring = false
+	_vel = 0.0
 	var d := -1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0
 	var before := _target
 	_target = clampf(_target + d * STEP * maxf(event.factor, 1.0), 0.0, _max_scroll())
@@ -83,6 +90,8 @@ func _drag_input(event: InputEvent) -> bool:
 			if _drag_btn != 0 or not _can_drag(event.position):
 				return false
 			_sync()
+			_spring = false
+			_vel = 0.0
 			_drag_btn = event.button_index
 			_drag_y0 = event.position.y
 			_drag_from = _target
@@ -154,7 +163,37 @@ func _sync() -> void:
 	if sc.scroll_vertical != _last:
 		_pos = float(sc.scroll_vertical)
 		_target = _pos
+		_vel = 0.0
 		_last = sc.scroll_vertical
+	var mx := _max_scroll()
+	if _pos > mx + 0.5:   # 位置は、今スクロールできる範囲の中に置く(範囲の外に残っていると、中身が伸びたときに一度に跳ぶ)
+		_pos = mx
+		_vel = minf(_vel, 0.0)
+
+
+## 今の位置と目標を、同じだけずらす(中身の並びが変わったとき、見えている行を画面の同じ場所に保つ)。実際にずれた量(px)を返す。
+func shift(dy: float) -> int:
+	_sync()
+	var s0 := sc.scroll_vertical
+	_pos = maxf(_pos + dy, 0.0)
+	_target = maxf(_target + dy, 0.0)
+	_apply()
+	return sc.scroll_vertical - s0
+
+
+## 目標の位置(中身の上端からの px)へ、なめらかに動く。中身がまだ伸びている途中でも、その位置を目指す(届くまでは、端で待つ)。
+func scroll_to(y: float) -> void:
+	_sync()
+	_spring = true
+	_target = maxf(y, 0.0)
+	if not UiStyle.animate:
+		_pos = _target
+		_apply()
+
+
+func target() -> float:
+	_sync()
+	return _target
 
 
 ## control(スクロールの中のカード)が見える位置へ、なめらかに動く。
@@ -169,6 +208,7 @@ func scroll_to_control(control: Control, margin := 8.0) -> void:
 			break
 	if content == null:
 		return
+	_spring = true
 	var top := control.get_global_rect().position.y - content.get_global_rect().position.y
 	var bottom := top + control.size.y
 	var page := sc.size.y
@@ -184,13 +224,39 @@ func scroll_to_control(control: Control, margin := 8.0) -> void:
 
 func _process(delta: float) -> void:
 	_sync()
-	if absf(_target - _pos) < 0.3:
+	if absf(_target - _pos) < 0.3 and absf(_vel) < 4.0:
+		_vel = 0.0
 		if _pos != _target:
 			_pos = _target
 			_apply()
 		return
-	_pos = lerpf(_pos, _target, 1.0 - exp(-RATE * delta))
+	var dt := minf(delta, MAX_DT)
+	if _spring:   # 臨界減衰のばね: 止まった状態からなめらかに動き出し、行き過ぎずに止まる。目標が途中で変わっても、速さを保ってつながる
+		var steps := maxi(1, int(ceil(dt * 240.0)))
+		var h := dt / float(steps)
+		for i in range(steps):
+			_vel += (SPRING_W * SPRING_W * (_target - _pos) - 2.0 * SPRING_W * _vel) * h
+			_pos += _vel * h
+	else:
+		_vel = 0.0
+		_pos = lerpf(_pos, _target, 1.0 - exp(-RATE * dt))
+	var mx := _max_scroll()
+	if _pos > mx:   # 中身がまだ伸びている途中: 今の端で待つ(位置だけを端に留め、伸びたら、そこから続きを動く。一度に跳ばない)
+		_pos = mx
+		_vel = minf(_vel, 0.0)
+	if _target > mx and absf(_pos - mx) < 0.3 and absf(_vel) < 4.0 and not _growing():
+		_target = mx   # 中身が伸びきっても届かない目標は、端にする(端で止まったまま、待ち続けない)
 	_apply()
+
+
+## 中身の高さが、このフレームで変わったか(伸びている途中か)。
+var _last_h := -1.0
+func _growing() -> bool:
+	var bar := sc.get_v_scroll_bar()
+	var h := bar.max_value
+	var g := not is_equal_approx(h, _last_h)
+	_last_h = h
+	return g
 
 
 func _apply() -> void:

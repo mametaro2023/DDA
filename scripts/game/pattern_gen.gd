@@ -3,7 +3,7 @@ extends RefCounted
 ##
 ## 座標はアリーナ座標(osu 512x384 を 1.875 倍した 960x720)。時刻は秒。
 ##
-## ## DDA 難易度 v4(このゲーム独自。Lv は本家の星と同じ目盛り)
+## ## Danmaku 難易度 v4(このゲーム独自。Lv は本家の星と同じ目盛り)
 ## 難易度は「画面内にある弾の数(密度)」を軸に、弾速・弾サイズを補助項として測る。
 ##
 ##   1. 各弾が画面から出るまでの時間を解析的に求め、0.1 秒ごとの画面内の弾数 N(t) を得る(measure)。
@@ -651,7 +651,7 @@ static func _exit_time(p: Vector2, d: Vector2, speed: float) -> float:
 	return maxf(minf(tx, ty), 0.0) / speed
 
 
-## DDA 難易度 v1: 画面内の弾数 N(t) から {mean, p95, peak, score, duration} を返す(events は時刻順)。
+## Danmaku 難易度 v1: 画面内の弾数 N(t) から {mean, p95, peak, score, duration} を返す(events は時刻順)。
 ##   score = 0.5 * mean + 0.5 * p95   (最初〜最後の発射の間を 0.1 秒ごとに評価)
 ##   duration = 最初〜最後の発射の秒数から、休憩地帯 breaks([[始まり, 終わり], ...] 秒)と重なる時間を引いたもの(長さの補正に使う)
 static func measure(events: Array, breaks := []) -> Dictionary:

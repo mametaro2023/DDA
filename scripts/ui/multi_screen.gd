@@ -8,6 +8,9 @@ extends Control
 signal back_requested        # 入口から、タイトルへ
 signal pick_song_requested   # ホスト: 曲・MOD の選択画面へ
 
+## 画面の種類(main が、いま何の画面かを知るのに使う。ui_set.gd の契約)
+var kind := "multi"
+
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
@@ -65,6 +68,30 @@ func _ready() -> void:
 	if str(settings.player_name) == "":
 		settings.player_name = "PLAYER%03d" % (randi() % 1000)
 		Settings.save_all(settings)
+	_build_backdrop()
+	_audio = AudioStreamPlayer.new()
+	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
+	_audio.volume_db = -6.0
+	add_child(_audio)
+	_content = Control.new()
+	_content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_content)
+
+	net.joined.connect(_on_joined)
+	net.join_failed.connect(_on_join_failed)
+	net.left.connect(_on_left)
+	net.roster_changed.connect(_on_state_changed)
+	net.room_changed.connect(_on_state_changed)
+	net.code_changed.connect(_on_state_changed)
+	if net.is_active():
+		_show_lobby()
+	else:
+		_show_entry()
+
+
+## 背景・テーマを作る(_bg_holder・_bg・_ambient を設定する)。lazer 風の画面は、これを差し替える。
+func _build_backdrop() -> void:
 	theme = UiStyle.make_theme()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	UiStyle.backdrop(self)
@@ -86,25 +113,6 @@ func _ready() -> void:
 	add_child(shade)
 	_ambient = Ambient.new()
 	add_child(_ambient)
-	_audio = AudioStreamPlayer.new()
-	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
-	_audio.volume_db = -6.0
-	add_child(_audio)
-	_content = Control.new()
-	_content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_content.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(_content)
-
-	net.joined.connect(_on_joined)
-	net.join_failed.connect(_on_join_failed)
-	net.left.connect(_on_left)
-	net.roster_changed.connect(_on_state_changed)
-	net.room_changed.connect(_on_state_changed)
-	net.code_changed.connect(_on_state_changed)
-	if net.is_active():
-		_show_lobby()
-	else:
-		_show_entry()
 
 
 func _exit_tree() -> void:
@@ -492,6 +500,11 @@ func _build_missing(sv: VBoxContainer, song: Dictionary) -> void:
 	sv.add_child(row)
 
 
+## 確認パネルを作る(lazer 風のマルチ画面は、lazer 風の確認パネルに差し替える)。
+func _make_confirm() -> Control:
+	return QuitPanel.new()
+
+
 ## ダウンロードの前に、非公式のミラーサイトから取ることへの同意を求める(同意したら覚えておき、次からは聞かない。設定の mirror_consent)。
 func _ask_download(song: Dictionary) -> void:
 	if bool(settings.get("mirror_consent", false)):
@@ -499,7 +512,7 @@ func _ask_download(song: Dictionary) -> void:
 		return
 	if _confirm != null:
 		return
-	var q := QuitPanel.new()
+	var q = _make_confirm()
 	q.setup("非公式のミラーサイトから取得します", "同意してダウンロード", "キャンセル",
 		"この曲(.osz)を、osu! 公式ではないミラーサイト(osu.direct・Nerinyan・catboy.best)からダウンロードして取り込みます。
 " +
@@ -630,7 +643,7 @@ func _request_leave() -> void:
 		return
 	if _confirm != null:
 		return
-	var q := QuitPanel.new()
+	var q = _make_confirm()
 	q.setup("部屋を閉じますか？", "閉じる", "キャンセル")
 	q.confirmed.connect(func():
 		q.queue_free()

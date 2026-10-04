@@ -402,6 +402,32 @@ func _build_screen() -> Control:
 		bool(settings.vsync), "", func(on: bool):
 			settings.vsync = on
 			Settings.apply_vsync(on)))
+	# UI の見た目(クラシック / lazer 風など)。選んだあと、設定を閉じると、いまのタイトル・選曲画面から切り替わる
+	var gap_u := Control.new()
+	gap_u.custom_minimum_size = Vector2(0, 8)
+	v.add_child(gap_u)
+	v.add_child(UiStyle.label("UI の見た目", 16, UiStyle.TEXT, true))
+	var ui_sets = load("res://scripts/ui/ui_sets.gd")   # (preload だと、UI セット ↔ このパネルが循環するので、使うときに読む)
+	var ui_seg := HBoxContainer.new()
+	ui_seg.add_theme_constant_override("separation", 8)
+	var ui_group := ButtonGroup.new()
+	for id in ui_sets.ids():
+		var ub := Button.new()
+		ub.text = str(ui_sets.get_set(id).display_name())
+		ub.toggle_mode = true
+		ub.button_group = ui_group
+		ub.focus_mode = Control.FOCUS_NONE
+		ub.custom_minimum_size = Vector2(150, 34)
+		ub.set_pressed_no_signal(str(settings.get("ui_style", "classic")) == id)
+		var ui_id: String = id
+		ub.pressed.connect(func():
+			settings.ui_style = ui_id
+			changed.emit("ui_style"))
+		ui_seg.add_child(ub)
+	v.add_child(ui_seg)
+	var ui_gap := Control.new()
+	ui_gap.custom_minimum_size = Vector2(0, 8)
+	v.add_child(ui_gap)
 	v.add_child(_toggle_card("FPS を表示", "画面の右下に、描画と処理の FPS を出します(プレイ中は、弾の判定の計算回数も出ます)", UiStyle.ACCENT,
 		FpsOverlay.enabled, "", func(on: bool):
 			settings.show_fps = on
@@ -462,7 +488,7 @@ func _build_other() -> Control:
 			dflt.pressed.connect(FileAssoc.open_default_apps)
 			row.add_child(dflt)
 			v.add_child(row)
-			var hint := UiStyle.label("Windows は、アプリが勝手に既定のアプリを変えることを認めていません。追加したあと「既定のアプリの設定を開く」で、「.osz」を検索して DDA を選んでください(または .osz を右クリック →「プログラムから開く」→ DDA →「常に使う」)。", 12, UiStyle.TEXT_FAINT)
+			var hint := UiStyle.label("Windows は、アプリが勝手に既定のアプリを変えることを認めていません。追加したあと「既定のアプリの設定を開く」で、「.osz」を検索して Danmaku を選んでください(または .osz を右クリック →「プログラムから開く」→ Danmaku →「常に使う」)。", 12, UiStyle.TEXT_FAINT)
 			hint.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 			v.add_child(hint)
 			v.add_child(st)

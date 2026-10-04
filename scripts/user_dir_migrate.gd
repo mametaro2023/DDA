@@ -1,18 +1,27 @@
 extends RefCounted
-## ユーザーデータの引っ越し(v0.8.0 でアプリの名前を「DDA - osu! Danmaku Dodger」から「DDA - Danmaku Dodger」に変えたため)。
+## ユーザーデータの引っ越し(アプリの名前を「DDA - osu! Danmaku Dodger」→ v0.8.0 で「DDA - Danmaku Dodger」→「Danmaku」と変えたため)。
 ## Godot のユーザーデータ(user://)の場所は、アプリの名前で決まる(%APPDATA%\Godot\app_userdata\<名前>)。名前を変えると、
 ## 設定・取り込んだ曲・記録が、前の名前の場所に残ったままになるので、起動するたびに、前の場所が残っていれば、その中身を今の場所へ移す(移し終えたら前の場所は消えるので、ふだんは何もしない)。
 ##   - 前の場所の中身を 1 つずつ移す(同じドライブなので、名前の付け替えだけで速い。曲のフォルダが大きくても待たない)
 ##   - 今の場所にすでに同じ名前のもの(Godot が作るログ・新しい版で作った設定など)があれば、それは移さない(上書きしない)
 ##   - 空になった前の場所は消す。何度呼んでも、すでにあるものは触らないので安全(開発用のツールが先に今の場所へ書いていても、残りは移る)
 
-const OLD_NAME := "DDA - osu! Danmaku Dodger"
+## 前の名前(新しい順)。どれが残っていても、今の場所へ移す(同じ名前のものは、新しい名前のほうを残す)
+const OLD_NAMES := ["DDA - Danmaku Dodger", "DDA - osu! Danmaku Dodger"]
 
 
 ## 起動時に呼ぶ。移したものの数を返す(移さなかったら 0)。
+## 移すのは書き出した版(配布する exe)だけ。ソースから動かしたとき(開発・確認)は移さない: 前の名前の場所は、
+## インストール済みの前の版や、ほかのブランチと共有しているので、開発中に動かすと、それらのデータが空になってしまうため
+## (-- --migrate-user-dir を付けると、ソースからでも移す)。
 static func run() -> int:
+	if not OS.has_feature("template") and not OS.get_cmdline_user_args().has("--migrate-user-dir"):
+		return 0
 	var cur := OS.get_user_data_dir()
-	return migrate(cur.get_base_dir().path_join(OLD_NAME), cur)
+	var moved := 0
+	for nm in OLD_NAMES:
+		moved += migrate(cur.get_base_dir().path_join(nm), cur)
+	return moved
 
 
 ## old の中身を cur へ移す(テストでは、別の場所を渡す)。

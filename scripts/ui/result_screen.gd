@@ -234,9 +234,9 @@ func _ready() -> void:
 		hint.add_child(b)
 	add_child(hint)
 	if UiStyle.animate:
-		get_tree().create_timer(1.2 + 0.08 * hint.get_child_count() + 0.4).timeout.connect(func():
-			if not is_instance_valid(hint):   # もう画面を離れた
-				return
+		var enable := create_tween()   # 画面に結び付いた待ち(画面を離れたら、一緒に消える。タイマーだと、離れたあとに呼ばれて、解放済みの物を触る)
+		enable.tween_interval(1.2 + 0.08 * hint.get_child_count() + 0.4)
+		enable.tween_callback(func():
 			for b in hint.get_children():
 				b.mouse_filter = Control.MOUSE_FILTER_STOP)
 

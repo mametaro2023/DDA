@@ -158,6 +158,38 @@ func _test_roundtrip(label: String, bm, mods: Array, seed_n: int) -> void:
 	_check(_digest(half.sim, half.field) == played.digest and prev_t <= half.start_time() + 6.0037, "%s: 途中で止めたあと、コマ送り(残りのステップ)で続けても同じ(止めたステップ %d)" % [label, was_sub])
 	# 7) 結果の確認(版が変わってずれたとき、見つけられる)
 	_check(Replay.verify(p.sim, {"hits": sim.hits, "graze": sim.graze, "score": sim.score}) and not Replay.verify(p.sim, {"hits": sim.hits + 1, "graze": sim.graze, "score": sim.score}), "%s: 記録の結果と合っていれば true、1 つでもずれていれば false" % label)
+	# 8) 追加のキーフレーム(裏で 1 秒おきに作る)を使って飛んでも、先頭から通した状態と同じ。待ちは、5 秒おきの記録だけのときより短い
+	var dense = load("res://scripts/replay_dense.gd").new()
+	dense.start(bm, {"mods": mods, "density_mul": 1.0}, "", false, rec.frames, rec.keys, sk.sim, sk.field)
+	var waited := 0
+	while not dense.done and waited < 120000:
+		OS.delay_msec(50)
+		waited += 50
+	dense.stop()
+	var key_bytes: int = var_to_bytes(rec.keys[rec.keys.size() - 1].s).size()
+	print("      追加のキーフレーム %d 個を %.1f 秒で作った(1 個 %d バイト)" % [dense.count(), float(waited) / 1000.0, key_bytes])
+	_check(dense.done and dense.count() >= int((sk.end_time() - sk.start_time()) * 2.0) - 6 and key_bytes < 60000, "%s: 追加のキーフレームが 0.5 秒おきにできる(%d 個。1 個 %d バイトに縮めてある)" % [label, dense.count(), key_bytes])
+	var dp := _player_for(bm, mods, rec)
+	dp.cache = dense
+	var ok2 := true
+	var bad2 := ""
+	for tm in [20.4, 7.3, 33.7, 12.2]:
+		var tgt2: float = clampf(tm, dp.start_time(), dp.end_time())
+		var t1 := Time.get_ticks_usec()
+		dp.seek(tgt2)
+		var cost_dense := Time.get_ticks_usec() - t1
+		var ref2 := _player_for(bm, mods, rec)
+		ref2.advance_to(tgt2, false)
+		var plain := _player_for(bm, mods, rec)
+		var t2 := Time.get_ticks_usec()
+		plain.seek(tgt2)
+		var cost_plain := Time.get_ticks_usec() - t2
+		print("      seek %.1f: 追加あり %.0f ms / なし %.0f ms" % [tgt2, float(cost_dense) / 1000.0, float(cost_plain) / 1000.0])
+		if _digest(dp.sim, dp.field) != _digest(ref2.sim, ref2.field):
+			ok2 = false
+			bad2 = "%.1f" % tgt2
+			break
+	_check(ok2, "%s: 追加のキーフレームから飛んだ状態が、先頭から通した状態と同じ %s" % [label, bad2])
 	# 5) 記録を使った再計算の速さ(目安)
 	var t0 := Time.get_ticks_msec()
 	var sp := _player_for(bm, mods, rec)

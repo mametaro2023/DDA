@@ -368,10 +368,11 @@ func _build_footer_buttons() -> void:
 	if UiStyle.animate:
 		for b in _buttons:
 			b.mouse_filter = Control.MOUSE_FILTER_IGNORE   # 現れるまでは押せない(見えないのにクリックが通らないように)
-		get_tree().create_timer(1.6).timeout.connect(func():
+		var enable := create_tween()   # 画面に結び付いた待ち(画面を離れたら、一緒に消える)
+		enable.tween_interval(1.6)
+		enable.tween_callback(func():
 			for b in _buttons:
-				if is_instance_valid(b):
-					b.mouse_filter = Control.MOUSE_FILTER_STOP)
+				b.mouse_filter = Control.MOUSE_FILTER_STOP)
 
 
 ## 左のカードは左から滑り込み、数字が数え上がり、メーターが伸びて、グラフが左から右へ描かれる。

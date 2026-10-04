@@ -2794,6 +2794,7 @@ func _smoke_replay() -> void:
 	await get_tree().create_timer(0.3).timeout
 	chk.call(r._rt < base + 1.0 and r._rp_playing, "「最初へ」で、最初から再生される(イントロの空白は飛ぶ)")
 	# 7b) 画面の構成・区間・OSD・操作の一覧・書き出しの選択・ドラッグ中の移動
+	chk.call(r._rp_dense != null and r._rp_dense.count() > 10 and r._rp_dense.done, "飛ぶ前に、裏で追加のキーフレームが作られている(%d 個)" % r._rp_dense.count())
 	chk.call(is_equal_approx(r.scale.x, r.ReplayBar.DOCK_SCALE) and r._view_l < 0.0 and r._rp_state_l != null, "パネルのぶん、プレイ画面が縮んでいる(%.3f)。左のパネルに状態が出る(%s)" % [r.scale.x, r._rp_state_l.text if r._rp_state_l != null else ""])
 	r._replay_seek(base + 2.0)
 	await key.call(KEY_I)

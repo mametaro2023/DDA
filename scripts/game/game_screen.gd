@@ -28,6 +28,7 @@ const SpeedStudy = preload("res://scripts/speed_study.gd")
 const Replay = preload("res://scripts/replay.gd")
 const Records = preload("res://scripts/records.gd")
 const ReplayBar = preload("res://scripts/game/replay_bar.gd")
+const ReplayDense = preload("res://scripts/replay_dense.gd")
 
 const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
@@ -136,6 +137,7 @@ var _rp_scrub_resume := false  # 体力グラフのドラッグ中は止めて�
 var _rp_hits := PackedFloat32Array()   # 被弾した時刻(「前の・次の被弾」へ飛ぶ)
 var _rp_verified := false      # 最後まで流して、記録の結果と合っているかを確かめた
 var _rp_state_l: Label         # 左のパネルの「再生中 / 停止中」
+var _rp_dense                  # 追加のキーフレームを、裏で作る係(飛ぶときの待ちを減らす。replay_dense.gd)
 var _view_l := 0.0             # 画面の左右の端(この画面の座標。再生で画面を縮めても、背景・赤みは画面いっぱいに出す)
 var _view_r := 1280.0
 var _view_b := 720.0
@@ -508,6 +510,8 @@ func _arrive() -> void:
 
 func _exit_tree() -> void:
 	_alive -= 1
+	if _rp_dense != null:
+		_rp_dense.stop()   # 裏のスレッドを止めて、終わるのを待つ
 	if _alive <= 0:   # リトライで次のプレイ画面がすでに始まっているときは、触らない(マウスの捕まえを外してしまい、自機と独自カーソルが両方出る)
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN   # OS のカーソルは、どの画面でも隠したまま(アプリ独自のカーソルを出す。cursor_overlay.gd)
 	if net != null and _mp != null:
@@ -2257,6 +2261,9 @@ func _init_replay() -> void:
 			_now = _rt
 			_replay_snap_hud()
 		return
+	_rp_dense = ReplayDense.new()   # まだ見ていない秒へ飛ぶときの待ちを減らす: 裏で別のシムを流して、0.5 秒おきの状態を作っておく
+	_rp.cache = _rp_dense
+	_rp_dense.start(bm, settings, _study_cond, false, replay_data.frames, replay_data.keys, sim, field)
 	_rp_bar = ReplayBar.new()
 	add_child(_rp_bar)
 	_rp_bar.setup(replay_data, _rp.end_time())
@@ -2355,6 +2362,7 @@ func _replay_tick(delta: float) -> void:
 		var target := minf(_rt + step_t, end_t)
 		var done: bool = _rp.advance_to(target, true, 0.0 if replay_export else 9.0)
 		_rt = target if done else _rp.t   # 倍速で間に合わないときは、時計をシムに合わせて遅らせる
+		_rp.cache_here()   # 通ったところも、飛ぶときの出発点として覚える
 		_hit_any = _rp.hit_any
 		_hit_started = _rp.hit_started
 		if absf(_rp_speed - 1.0) < 0.01:   # 効果音は、ふつうの速さのときだけ

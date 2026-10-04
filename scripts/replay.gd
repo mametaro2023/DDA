@@ -105,6 +105,7 @@ class Player extends RefCounted:
 	var sub := 0          # そのフレームの中で、すでに進めたステップ数
 	var sub_t := 0.0      # そのときの、ステップの時刻(足し込んだ値。続きから、同じ足し方で進める)
 	var force_restore := false   # 外から状態を動かした(ゲームオーバー演出で弾を進めた)ので、次のシークは、必ずキーフレームから戻す
+	var cache   # 追加のキーフレーム(replay_dense.gd。なくてもよい)。飛ぶとき、記録のキーフレームと合わせて、いちばん近いものを使う
 	var t := 0.0          # いまの状態の時刻(フレームの途中なら、そのステップの時刻。まだなら、記録の始め)
 	## 直前の advance で起きたこと(描画・音の側が読む。advance のたびに作り直す)
 	var hit_any := false
@@ -231,6 +232,8 @@ class Player extends RefCounted:
 				best = k
 			else:
 				break
+		if cache != null:
+			best = cache.best(target, best)
 		var from_here := idx > 0 and t <= target and t >= float(best.t) and not force_restore   # いまの状態のほうが、キーフレームより目標に近い(前から来ている)
 		if not from_here:
 			restore_key(best)
@@ -243,6 +246,11 @@ class Player extends RefCounted:
 		sub = int(k.get("sub", 0))
 		sub_t = float(k.get("st", 0.0))
 		t = sub_t if sub > 0 else float(k.t)
+
+	## 通ったところを、追加のキーフレームとして覚える(近くにまだなければ)。再生しながら呼ぶ。
+	func cache_here() -> void:
+		if cache != null and not sim.finished and not cache.near(t, 0.8):
+			cache.add(make_key())
 
 	## いまの状態を、キーフレームの形で取る(区間の始点など。フレームの途中でもよい)。
 	func make_key() -> Dictionary:

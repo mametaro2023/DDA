@@ -2715,9 +2715,9 @@ func _smoke_replay() -> void:
 	chk.call(r.sim.player_pos.distance_to(Vector2(480, 612)) > 1.0, "自機が記録どおり動いている")
 	shot.call("play")
 	var drift_max := 0.0
-	for _i in range(20):
+	for _i in range(26):
 		await get_tree().create_timer(0.1).timeout
-		if r._audio.playing:
+		if r._audio.playing and _i >= 8:   # 画面写真の保存で一瞬止まるので、少し待ってから測る(止まったぶんは、ゆっくり音に追いつく)
 			var song_t: float = r._rt - (float(r.sim.loop_index(r._rt)) * r.sim.loop_len if r.sim.loop_len > 0.0 else 0.0)
 			var apos: float = r._audio.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()
 			drift_max = maxf(drift_max, absf(apos - song_t))

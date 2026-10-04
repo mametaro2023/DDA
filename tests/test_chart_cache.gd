@@ -45,7 +45,7 @@ func _init() -> void:
 	DirAccess.make_dir_recursive_absolute(dir)
 	var path := dir.path_join("1 cache test.osz")
 	_make_osz(path, 120)
-	var p := Mods.params([])
+	var p := Mods.params(["v1"])   # 弾幕 v1(MOD「弾幕 v1」。v2 が初期状態)
 	for v2 in [false, true]:
 		DirAccess.remove_absolute(ChartCache.file_of(path, v2))
 	var tag := "v1"
@@ -87,7 +87,7 @@ func _init() -> void:
 	_check(SongBrowser.make_gen(r2.loader.difficulties[0], false) == SongBrowser.make_gen(r1.loader.difficulties[0], false), "軽い版から弾幕を作り直しても、同じ")
 	r1.loader.close()
 	# v2 は別に保存される
-	var r3 := SongBrowser.load_song(path, Mods.params(["v2"]))
+	var r3 := SongBrowser.load_song(path, Mods.params([]))   # 初期状態 = v2
 	_check(r3.ok and bool(r3.v2) and FileAccess.file_exists(ChartCache.file_of(path, true)) and not bool(r3.loader.difficulties[0].get("_lite")), "v2: 別に作って、別のファイルに保存する")
 	r3.loader.close()
 	# 壊れた保存は捨てて、作り直す

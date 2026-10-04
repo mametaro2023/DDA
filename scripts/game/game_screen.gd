@@ -1444,9 +1444,9 @@ func _update_skip_button() -> void:
 		_skip_free = false
 		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
 		_capture_mouse()
-	if _ship_is_cursor():   # アリーナの中では、独自カーソルを出さない(自機とカーソルが 2 つ並ばない)
+	if _ship_is_cursor():   # 自機が動ける範囲の中では、独自カーソルを出さない(自機とカーソルが 2 つ並ばない)。小型化で範囲の外にあるボタンへは、自機が届かないので、外ではカーソルを出す
 		var m: float = GameSim.PLAYER_MARGIN * sim.player_scale
-		CursorOverlay.hide_in(Rect2(ARENA_POS + Vector2(m, m), PatternGen.ARENA - Vector2(m, m) * 2.0))
+		CursorOverlay.hide_in(Rect2(ARENA_POS + sim.move_rect.position + Vector2(m, m), sim.move_rect.size - Vector2(m, m) * 2.0))
 
 
 ## スキップのボタンを押せる間(マウスを捕まえていない): 自機がマウスの位置へそのまま動き、カーソルの代わりになる。

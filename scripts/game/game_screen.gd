@@ -74,6 +74,8 @@ const HUD_FADE_DIST := 90.0
 const HUD_FADE_MIN := 0.14
 ## キアイ中の拍に合わせた光(背景の明るさ・下地の暗さ・弾の周りのハロー)。少しだけ光らせる。
 const KIAI_BG_GAIN := 0.14        # 背景の画像の明るさが、光のピークで 1 + この値 倍まで上がる(僅かに)
+const KIAI_SOFT := 0.3            # 目に優しい表示: 拍の光の振れ幅(拍ごとの明暗)を、この割合に抑える
+const SOFT_BG_ALPHA := 0.76       # 目に優しい表示: フィールドの下地の不透明度(背景の絵を、より暗く沈める)
 const KIAI_ARENA_DIM := 0.035     # フィールドの下地の不透明度が、光のピークでこれだけ下がる(僅かに)
 const KIAI_BASE := 0.12          # キアイ中は、拍の合間でもこれだけ光っている(光の下限)
 const BG_TINT := Color(0.28, 0.28, 0.32)
@@ -216,6 +218,7 @@ var _score_red := 0.0     # スコアが被ダメージで減っている間の�
 var _hp_stripe := 0.0     # 体力バーの斜めの縞の位置(0..縞の周期)
 var _hp_w := HP_W         # 体力バーの長さ。ゲージ満タンぶんの被弾時間が短い MOD(地獄)では、その割合だけ短くなる
 var _bg_img: TextureRect  # 背景の画像(キアイ中の拍で少し明るくなる)
+var _soft := false         # 目に優しい表示(設定 eye_comfort)
 var _arena_bg: ColorRect  # フィールドの暗い下地
 var _kiai_a := 0.0        # キアイ中か(0..1。なめらかに出入りする)
 var _beat_glow := 0.0     # 今の光の強さ 0..1(キアイ中、拍の頭で立ち上がって、次の拍へ向けて消える)
@@ -268,8 +271,9 @@ func _ready() -> void:
 		add_child(tr)
 		_bg_nodes.append(tr)
 		_bg_img = tr
+	_soft = bool(settings.get("eye_comfort", true))
 	_arena_bg = ColorRect.new()
-	_arena_bg.color = Color(0.0, 0.0, 0.02, ARENA_BG_ALPHA)
+	_arena_bg.color = Color(0.0, 0.0, 0.02, SOFT_BG_ALPHA if _soft else ARENA_BG_ALPHA)
 	_arena_bg.position = ARENA_POS
 	_arena_bg.size = PatternGen.ARENA
 	add_child(_arena_bg)
@@ -279,12 +283,15 @@ func _ready() -> void:
 	add_child(_arena)
 	_view_under = ArenaView.new()
 	_view_under.layer = 0
+	_view_under.soft = _soft
 	_arena.add_child(_view_under)
 	field = BulletField.new()
 	_arena.add_child(field)
 	field.setup_render()
+	field.soft = 1.0 if _soft else 0.0
 	_view_over = ArenaView.new()
 	_view_over.layer = 1
+	_view_over.soft = _soft
 	_arena.add_child(_view_over)
 
 	# 音声
@@ -1207,6 +1214,8 @@ func _update_kiai(delta: float, instant := false) -> void:
 	_kiai_a = target if instant else _kiai_a + (target - _kiai_a) * (1.0 - exp(-delta * 4.0))
 	var ph: float = bm.beat_phase_at(t_ms)
 	var pulse := smoothstep(0.0, 0.08, ph) * exp(-ph * 3.6)
+	if _soft:   # 目に優しい表示: 拍ごとの明暗を小さくする(光の下限と、振れ幅を KIAI_SOFT 倍に)
+		pulse *= KIAI_SOFT
 	_beat_glow = _kiai_a * (KIAI_BASE + (1.0 - KIAI_BASE) * pulse)
 	_apply_kiai()
 
@@ -1215,7 +1224,7 @@ func _apply_kiai() -> void:
 	var k := 1.0 + KIAI_BG_GAIN * _beat_glow
 	if _bg_img != null:
 		_bg_img.modulate = Color(BG_TINT.r * k, BG_TINT.g * k, BG_TINT.b * k * 1.06)
-	_arena_bg.color.a = ARENA_BG_ALPHA - KIAI_ARENA_DIM * _beat_glow
+	_arena_bg.color.a = (SOFT_BG_ALPHA if _soft else ARENA_BG_ALPHA) - KIAI_ARENA_DIM * _beat_glow
 	field.halo = _beat_glow
 
 

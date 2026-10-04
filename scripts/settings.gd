@@ -27,6 +27,8 @@ const DEFAULTS := {
 	"song_sort": "title", # 選曲の並び順(song_browser.gd の SORT_MODES の id。lazer 風の選曲画面)
 	"ui_style": "classic", # UI の見た目(scripts/ui/ui_sets.gd の名前。知らない名前のときは classic)
 	"ui_promo_hidden": false, # クラシックのタイトルの「新しい UI で遊ぼう」を出さない(✕ で閉じた・一度試した)
+	"osu_songs": false,   # osu! の Songs フォルダの曲も、一覧に加える(コピーせず、その場で読む。scripts/song_library.gd)
+	"osu_songs_dir": "",  # その Songs フォルダ。空なら osu! の標準の場所から探す
 	"mirror_consent": false, # マルチプレイで曲を、非公式のミラーサイトからダウンロードすることに同意した(最初のダウンロードのときに聞く)
 }
 
@@ -50,6 +52,7 @@ static func save_all(d: Dictionary) -> void:
 	d = d.duplicate()
 	Volume.write_into(d)
 	var cfg := ConfigFile.new()
+	cfg.load(PATH)   # いまの内容を土台にする(この版が知らない項目を、別の版が書いていても消さない)
 	for k in DEFAULTS:
 		cfg.set_value("game", k, d.get(k, DEFAULTS[k]))
 	cfg.save(PATH)

@@ -1,5 +1,5 @@
 extends RefCounted
-## .osz(zip)を開き、譜面と音声/画像を取り出す。
+## .osz(zip)、または osu! の Songs フォルダの中の 1 曲ぶんのフォルダ(.osz を展開したもの)を開き、譜面と音声/画像を取り出す。
 
 const Beatmap = preload("res://scripts/osu/beatmap.gd")
 const OsuParser = preload("res://scripts/osu/osu_parser.gd")
@@ -10,6 +10,8 @@ var error := ""
 var difficulties: Array = []
 
 var _reader: ZIPReader
+var _dir := ""                           # フォルダとして開いたときの、そのフォルダ(zip のときは空)
+var _dir_files: PackedStringArray = []   # フォルダ直下のファイル名
 
 ## osu! の譜面のモード(Mode の番号)の名前
 const MODE_NAMES := {0: "osu!standard", 1: "taiko", 2: "catch", 3: "mania"}
@@ -31,18 +33,28 @@ static func zip_error_message(err: int) -> String:
 	return "zip として開けません(%s)。ダウンロードが途中で終わっていないか、確かめてください" % error_string(err)
 
 
+## パスがフォルダか(osu! の Songs フォルダの中の 1 曲。.osz はファイルなので false)。
+static func is_folder(p: String) -> bool:
+	return DirAccess.dir_exists_absolute(p)
+
+
 func open(p: String) -> bool:
 	path = p
-	_reader = ZIPReader.new()
-	var err := _reader.open(p)
-	if err != OK:
-		error = zip_error_message(err)
-		_reader = null
-		return false
+	_dir = ""
+	if is_folder(p):
+		_dir = p
+		_dir_files = DirAccess.get_files_at(p)
+	else:
+		_reader = ZIPReader.new()
+		var err := _reader.open(p)
+		if err != OK:
+			error = zip_error_message(err)
+			_reader = null
+			return false
 	var modes: Array = []   # 入っていた譜面のモード(osu!standard がないときの説明に使う)
-	for f in _reader.get_files():
+	for f in _files():
 		if f.to_lower().ends_with(".osu"):
-			var bytes := _reader.read_file(f)
+			var bytes := _read(f)
 			var text := bytes.get_string_from_utf8()
 			var bm := OsuParser.parse(text, f)
 			bm.md5 = OsuParser.play_key(text)
@@ -69,16 +81,14 @@ func close() -> void:
 
 
 func has_file(name: String) -> bool:
-	if _reader == null:
-		return false
 	return _find(name) != ""
 
 
 func read_file(name: String) -> PackedByteArray:
 	var real := _find(name)
-	if _reader == null or real == "":
+	if real == "":
 		return PackedByteArray()
-	return _reader.read_file(real)
+	return _read(real)
 
 
 func load_audio(name: String) -> AudioStream:
@@ -117,10 +127,25 @@ func load_image_data(name: String) -> Image:
 	return img
 
 
-## 大文字小文字を無視して zip 内のパスを探す。
+## 中にあるファイルの名前(zip の中のパス、またはフォルダ直下のファイル名)。
+func _files() -> PackedStringArray:
+	if _dir != "":
+		return _dir_files
+	return _reader.get_files() if _reader != null else PackedStringArray()
+
+
+func _read(real: String) -> PackedByteArray:
+	if _dir != "":
+		return FileAccess.get_file_as_bytes(_dir.path_join(real))
+	return _reader.read_file(real)
+
+
+## 大文字小文字を無視して、中のファイルを探す(フォルダのときは、直下になければ「sub/a.mp3」のような下の階層も見る)。
 func _find(name: String) -> String:
-	var lower := name.to_lower()
-	for f in _reader.get_files():
+	var lower := name.replace("\\", "/").to_lower()
+	for f in _files():
 		if f.to_lower() == lower:
 			return f
+	if _dir != "" and lower.contains("/") and not lower.contains("..") and FileAccess.file_exists(_dir.path_join(lower)):
+		return lower
 	return ""

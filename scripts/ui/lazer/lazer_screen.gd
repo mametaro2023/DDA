@@ -3,7 +3,7 @@ extends Control
 ## 画面は、これを継承して _build_base() を呼び、中身を置く。画面の種類(kind)・signal は、画面ごとに契約(ui_set.gd)に従って足す。
 ## 枠の部品そのものは LazerChrome(classic の画面を継承した lazer 版も、同じものを使う)。
 
-## 設定を開く(パネルは main が持つ。どの画面でも開ける)。section: 0=操作 1=音 2=画面 3=その他
+## 設定を開く(パネルは main が持つ。どの画面でも開ける)。section: 0=操作 1=音 2=画面 3=曲 4=その他
 signal settings_requested(section: int)
 
 const LazerStyle = preload("res://scripts/ui/lazer/lazer_style.gd")

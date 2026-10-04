@@ -25,7 +25,10 @@
 選曲(lazer): 曲の行は画像の背景 + 難易度の色の札、選んだ曲の下に難易度の一覧が開く。画像と難易度の色は `scripts/song_art.gd`(別スレッドで作って user:// に保存)。曲名は `lazer_marquee.gd` で流す。並び替えは行が滑って入れ替わる。
 止まり対策: lazer のフォントに日本語の代替フォントを明示(OS のフォント探しを毎回走らせない)、タイトルの曲は別スレッドで読む(`AttractBackdrop.pick_async`)、遊び方のページは開いたときに作る。測り方は `--prof-ui` と `--hitch`。
 
-未着手・今後の候補: classic の選曲画面への検索・記録の表示 / main の新しい機能(osu! の Songs フォルダの曲・弾幕 v2)の取り込み(`SongBrowser` への移し替え)。
+main(v0.10.1)の取り込み(2026-10-04): classic の選曲画面は main のもの(osu! の Songs・弾幕 v2・v2 で遊ぼう・戻ったとき真ん中)をそのまま使い、`kind` / `on_overlay` だけを足した(SongBrowser には載せ替えていない)。
+lazer の選曲は `SongBrowser` に同じ機能を移した: 曲の一覧の索引(何千曲でも速い)・osu! の Songs の曲を少しずつ足す(`pump`)・弾幕 v2 の弾幕と読み直し(`reload_for_style`)。確認は `--smoke-osu-menu`(classic / lazer の両方)。
+
+未着手・今後の候補: classic の選曲画面への検索・記録の表示 / classic の選曲画面を SongBrowser に載せ替える(今は lazer だけが使う)/ 曲が何千あるときの lazer の行(全部作るので、開くのが重い)。
 
 ---
 

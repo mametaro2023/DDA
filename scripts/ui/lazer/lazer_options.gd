@@ -16,7 +16,7 @@ func _ready() -> void:
 	_nav_holder = f.nav_holder
 	_nav_ind = f.nav_ind
 	f.close.pressed.connect(close_panel)
-	_pages = [_build_control(), _build_audio(), _build_screen(), _build_other()]
+	_pages = [_build_control(), _build_audio(), _build_screen(), _build_songs(), _build_other()]
 	for p in _pages:
 		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		f.stack.add_child(p)

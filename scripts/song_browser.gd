@@ -11,9 +11,12 @@ signal song_changing(old: int, new: int)
 signal song_loaded(res: Dictionary)
 ## 読み込みに失敗した(選んでいた番号は、前の曲に戻してある。bad は失敗した曲の番号)
 signal song_load_failed(error: String, bad: int)
+## MOD で弾幕の作り方(v1 / v2)が変わったので、同じ曲を読み直し始めた(終わると song_loaded。res.reload = true)。画面は読み込み中の見た目にする
+signal song_reloading
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
+const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
@@ -22,9 +25,10 @@ const Records = preload("res://scripts/records.gd")
 ## 設定の辞書(画面と同じものを共有する。mods・last_song・last_diff を読み書きする)
 var settings: Dictionary = {}
 
-var songs: Array = []           # [{path, title, artist, key, key2, md5, ids(難易度の識別子の一覧), mtime(ファイルの更新時刻)}]
+var songs: Array = []           # [{path, title, artist, key, key2, md5, ids(難易度の識別子の一覧), mtime(ファイルの更新時刻), folder(osu! の Songs の曲)}]
 var loader                      # 選択中の OszLoader
 var gens: Array = []            # 難易度リストと同じ並びの、MOD 適用前の弾幕(生成結果)
+var gens_v2 := false            # gens が弾幕 v2(MOD)で作ったものか
 var ratings: Array = []         # 同じ並びの Danmaku 難易度(MOD 適用後)
 var song_sel := -1
 var diff_sel := -1
@@ -35,6 +39,15 @@ var prev_sel := -1              # 読み込み中の曲を選ぶ前に選んで�
 var full_audio: AudioStream     # 選んでいる曲の、全体の音声(試聴用は途中から切り出したもの。プレイ画面へ渡す)
 var full_audio_file := ""
 
+var _song_keys := {}            # key → songs の番号(重複の確認が、曲が何千あっても速いように)
+var _song_key2s := {}           # key2(名前|大きさ) → 番号
+var _song_md5s := {}            # 譜面の識別子 → 番号
+var _osu_cursor := 0            # osu! の Songs の曲(SongLibrary.take_ready)を、どこまで一覧に足したか
+var _osu_gen := 0               # 足している osu! の曲の一覧の世代(SongLibrary.osu_gen)。変わったら、足し直す
+var _want_key := ""             # 前回選んでいた曲(まだ一覧に出ていなければ、出たときに選ぶ)
+var auto_sel_idx := -1          # 自動で選んだ曲の番号(その曲のまま、ユーザーが触っていないときだけ、前回の曲に選び直す)
+var _restore_key := ""          # 一覧を作り直す間、選んでいた曲(足し直されたときに、選択を戻す)
+var _reload_keep := ""          # 弾幕の作り方が変わって読み直すとき: 選んでいた難易度の version(空なら、ふつうの選曲)
 var _closed := false
 
 
@@ -44,57 +57,160 @@ func close() -> void:
 
 
 # --- 曲の検出 ---
+## .osz は開いたときにすべて足す。osu! の Songs の曲は、裏で索引ができた曲から、pump で少しずつ足す(何千曲あっても画面が止まらない)。
 
-## 一覧を作り直す。読めなかった曲があれば、その知らせの文を返す(なければ空)。
-func scan() -> String:
+func clear_songs() -> void:
 	songs.clear()
+	_song_keys.clear()
+	_song_key2s.clear()
+	_song_md5s.clear()
+
+
+## 一覧を作り直す(画面を開いたとき)。読めなかった曲があれば、その知らせの文を返す(なければ空)。
+func scan() -> String:
+	clear_songs()
+	_osu_cursor = 0
+	_want_key = SongLibrary.norm(str(settings.get("last_song", "")))
+	_osu_gen = SongLibrary.osu_gen
+	SongLibrary.start_osu_warmup()
+	var paths := SongLibrary.find_osz()   # 同じファイルは 1 つにまとめて返る
+	var failed := _add_songs(paths)
+	SongLibrary.save_index(paths)
+	return _failed_message(failed)
+
+
+func _add_songs(paths: Array) -> Array:
 	var failed: Array = []
-	var paths := SongLibrary.find_all()   # 同じファイルは 1 つにまとめて返る
 	for p in paths:
 		if add_song(p) < 0:
 			failed.append(str(p).get_file())
-	SongLibrary.save_index(paths)
+	return failed
+
+
+static func _failed_message(failed: Array) -> String:
 	if failed.is_empty():
 		return ""
 	return "読み込めなかった曲: " + ", ".join(failed.slice(0, 3)) + (" ほか %d 件" % (failed.size() - 3) if failed.size() > 3 else "")   # 読めなかった曲は、黙って飛ばさず、名前を出す
 
 
-## songs フォルダの中身が変わったとき: 一覧を作り直す。選んでいる曲は、同じ曲を探して選び直す(読み込み直さない)。scan と同じ知らせの文を返す。
-func rescan() -> String:
+## songs フォルダの中身が変わったとき・osu! の Songs の設定が変わったとき: 一覧を更新する。選んでいる曲はそのまま(読み込み直さない)。
+## すでに一覧にある曲は作り直さず、増えた .osz を足し、なくなった曲を外す。osu! の Songs の設定が変わったときだけ、osu! の曲を足し直す。
+## 返す辞書: {msg(知らせの文), rebuild(曲が外れた: 画面は行を作り直す。false なら、増えた分を足すだけでよい)}
+func rescan() -> Dictionary:
 	var cur := ""
 	if song_sel >= 0 and song_sel < songs.size():
 		cur = str(songs[song_sel].key)
-	var msg := scan()
-	song_sel = -1
-	for i in range(songs.size()):
-		if songs[i].key == cur:
-			song_sel = i
-	return msg
+	var osu_reset := SongLibrary.osu_gen != _osu_gen
+	_osu_gen = SongLibrary.osu_gen
+	SongLibrary.start_osu_warmup()
+	var keep: Array = []
+	for sg in songs:
+		if sg.folder:
+			if not osu_reset:
+				keep.append(sg)
+		elif FileAccess.file_exists(sg.path):
+			keep.append(sg)
+	var removed := keep.size() != songs.size()
+	if removed:
+		clear_songs()
+		for sg in keep:
+			_register(sg)
+	if osu_reset:
+		_osu_cursor = 0
+		if cur != "" and not _song_keys.has(cur):
+			_restore_key = cur   # 足し直されたときに、選択を戻す
+	var paths := SongLibrary.find_osz()
+	var failed := _add_songs(paths)
+	SongLibrary.save_index(paths)
+	song_sel = int(_song_keys.get(cur, -1))
+	return {"msg": _failed_message(failed), "rebuild": removed}
+
+
+## osu! の Songs の、索引ができた曲を、budget_us マイクロ秒まで一覧に足す(毎フレーム呼ぶ)。
+## 返す辞書: {added(足した), select(この番号の曲を選ぶ。-1 = なし), restored(一覧を作り直す前に選んでいた曲を、song_sel に戻した)}
+func pump(budget_us := 4000) -> Dictionary:
+	var out := {"added": false, "select": -1, "restored": false}
+	if SongLibrary.osu_dir == "" or _osu_gen != SongLibrary.osu_gen:
+		return out
+	var t0 := Time.get_ticks_usec()
+	while Time.get_ticks_usec() - t0 < budget_us:
+		var batch := SongLibrary.take_ready(_osu_cursor, 10)
+		if batch.is_empty():
+			break
+		_osu_cursor += batch.size()
+		for e in batch:
+			var n := songs.size()
+			if _append(str(e.path), e.info, true) == n:
+				out.added = true
+	if not out.added:
+		return out
+	# 選び直すもの: 一覧を作り直す前に選んでいた曲(選択を戻す)/ 前回の曲(自動で選んだままなら、そこへ移す)/ 何も選ばれていなければ最初の曲
+	if _restore_key != "" and _song_keys.has(_restore_key):
+		song_sel = int(_song_keys[_restore_key])
+		_restore_key = ""
+		out.restored = true
+	elif _want_key != "" and _song_keys.has(_want_key) and auto_sel_idx >= 0 and song_sel == auto_sel_idx and song_sel != int(_song_keys[_want_key]):
+		auto_sel_idx = int(_song_keys[_want_key])   # ユーザーがまだ触っていないので、前回の曲へ
+		out.select = auto_sel_idx
+	elif song_sel < 0 and loader == null and not job_pending and _restore_key == "" and not songs.is_empty():
+		auto_sel_idx = int(_song_keys.get(_want_key, 0))
+		out.select = auto_sel_idx
+	return out
+
+
+## 一覧を作り直す前に選んでいた曲を、足し直されるのを待っているか(その間は、ほかの曲を自動で選ばない)。
+func restoring() -> bool:
+	return _restore_key != ""
+
+
+## osu! の曲を調べている途中か(「曲がありません」を出さない・進み具合を出すため)。{running, done, total}
+static func osu_progress() -> Dictionary:
+	if SongLibrary.osu_dir == "":
+		return {"running": false, "done": 0, "total": 0}
+	return SongLibrary.warm_progress()
 
 
 ## 追加して一覧の番号を返す(重複は既存の番号、読めなければ -1。理由は last_error)。
 func add_song(path: String) -> int:
 	path = path.replace("\\", "/")
 	var key := SongLibrary.norm(path)
-	var size := -1
-	var fh := FileAccess.open(path, FileAccess.READ)
-	if fh != null:
-		size = fh.get_length()
-		fh.close()
+	var size := SongLibrary.file_size(path)
 	var key2 := "%s|%d" % [path.get_file().to_lower(), size]
-	for i in range(songs.size()):   # すでに一覧にある(パスが同じ、または名前と大きさが同じ)
-		if songs[i].key == key or (size >= 0 and songs[i].key2 == key2):
-			return i
+	if _song_keys.has(key):   # すでに一覧にある(パスが同じ、または名前と大きさが同じ)
+		return _song_keys[key]
+	if size >= 0 and _song_key2s.has(key2):
+		return _song_key2s[key2]
 	var info := SongLibrary.info(path)   # 曲を全部は開かずに、題名などを得る(結果は保存されて、次からは開き直さない)
 	if not info.ok:
 		last_error = str(info.error)
 		return -1
-	for i in range(songs.size()):   # 別の名前で同じ曲が入っている(譜面の中身が同じ)ときも、1 つにする
-		if songs[i].md5 == info.md5:
-			return i
-	songs.append({"path": path, "title": info.title, "artist": info.artist, "key": key, "key2": key2, "md5": info.md5,
-		"ids": (info.ids as Dictionary).keys(), "mtime": FileAccess.get_modified_time(path)})
+	return _append(path, info, false)
+
+
+## 索引の要約(info)から、一覧に足して番号を返す(重複は既存の番号)。folder = osu! の Songs の曲(ファイルの大きさは見ない)。
+func _append(path: String, info: Dictionary, folder: bool) -> int:
+	path = path.replace("\\", "/")
+	var key := SongLibrary.norm(path)
+	if _song_keys.has(key):
+		return _song_keys[key]
+	var key2 := "%s|%d" % [path.get_file().to_lower(), -1 if folder else SongLibrary.file_size(path)]
+	if not folder and _song_key2s.has(key2):
+		return _song_key2s[key2]
+	if _song_md5s.has(info.md5):   # 別の名前で同じ曲が入っている(譜面の中身が同じ)ときも、1 つにする
+		return _song_md5s[info.md5]
+	var ids = info.get("ids", {})
+	var sg := {"path": path, "title": info.title, "artist": info.artist, "key": key, "key2": key2, "md5": info.md5,
+		"ids": (ids as Dictionary).keys() if ids is Dictionary else [], "mtime": FileAccess.get_modified_time(path), "folder": folder}
+	_register(sg)
 	return songs.size() - 1
+
+
+func _register(sg: Dictionary) -> void:
+	songs.append(sg)
+	var idx := songs.size() - 1
+	_song_keys[sg.key] = idx
+	_song_key2s[sg.key2] = idx
+	_song_md5s[sg.md5] = idx
 
 
 # --- 検索と並び替え(表示用) ---
@@ -176,11 +292,7 @@ func step_in_view(from: int, dir: int) -> int:
 
 ## 直前にプレイした曲の番号(なければ 0)。
 func last_song_index() -> int:
-	var pick := 0
-	for i in range(songs.size()):
-		if songs[i].key == SongLibrary.norm(str(settings.last_song)):
-			pick = i
-	return pick
+	return int(_song_keys.get(SongLibrary.norm(str(settings.last_song)), 0))
 
 
 # --- 曲を選ぶ ---
@@ -198,9 +310,33 @@ func select_song(i: int) -> bool:
 	song_sel = i
 	job += 1
 	job_pending = true
+	_reload_keep = ""
 	song_changing.emit(old, i)
+	_start_job(songs[i].path)
+	return true
+
+
+## MOD で弾幕の作り方(v1 / v2)が変わったか(変わっていたら、reload_for_style で読み直す)。
+func needs_style_reload() -> bool:
+	return loader != null and bool(Mods.params(settings.mods).gen_v2) != gens_v2
+
+
+## 同じ曲を、今の弾幕の作り方で読み直す(選んでいた難易度はそのまま。弾幕は作り方ごとに覚えているので、戻すときは速い)。
+func reload_for_style() -> void:
+	if loader == null or job_pending or song_sel < 0 or song_sel >= songs.size():
+		return
+	_reload_keep = str(loader.difficulties[diff_sel].version) if diff_sel >= 0 else ""
+	if _reload_keep == "":
+		_reload_keep = " "
+	job += 1
+	job_pending = true
+	song_reloading.emit()
+	_start_job(songs[song_sel].path)
+
+
+## 読み込み(別スレッド)を始める。結果は _on_load_done へ(いまの job のものだけが使われる)。
+func _start_job(path: String) -> void:
 	var my_job := job
-	var path: String = songs[i].path
 	var p := Mods.params(settings.mods)
 	var me: WeakRef = weakref(self)   # 読み込み中に画面が閉じられても、届け先がなければ捨てる
 	WorkerThreadPool.add_task(func():
@@ -211,7 +347,6 @@ func select_song(i: int) -> bool:
 			target._on_load_done.call_deferred(res)
 		elif res.get("loader") != null:
 			res.loader.close())
-	return true
 
 
 ## 前の曲の OszLoader を、別スレッドで手放す(主スレッドで手放すと止まる)。弾幕の一覧は、キャッシュ(_gen_cache)と共有しているので、ここでは壊さない。
@@ -230,6 +365,7 @@ func _on_load_done(res: Dictionary) -> void:
 		return
 	job_pending = false
 	if not res.ok:
+		_reload_keep = ""
 		var bad := song_sel
 		song_sel = prev_sel   # 選べなかったので、元の曲の選択に戻す
 		song_load_failed.emit(str(res.error), bad)
@@ -237,6 +373,7 @@ func _on_load_done(res: Dictionary) -> void:
 	_release_later(loader)   # 前の曲の譜面は、量が多く、ここで手放すと解放だけで十数 ms かかる
 	loader = res.loader
 	gens = res.gens
+	gens_v2 = bool(res.get("v2", false))
 	full_audio = res.audio_full
 	full_audio_file = str(res.audio_file)
 	# 曲を移ったときは、前に選んでいた難易度に Lv がいちばん近いものを選ぶ(Lv 7 を遊んでいる人が、曲を変えるたびに易しい譜面に戻らない)。最初の 1 回は 3 番目
@@ -257,7 +394,15 @@ func _on_load_done(res: Dictionary) -> void:
 		for k2 in range(loader.difficulties.size()):
 			if loader.difficulties[k2].version == settings.last_diff:
 				diff_sel = k2
+	res["reload"] = _reload_keep != ""
+	if _reload_keep != "":   # 弾幕の作り方が変わった読み直し: 選んでいた難易度に戻す
+		for k4 in range(loader.difficulties.size()):
+			if str(loader.difficulties[k4].version) == _reload_keep:
+				diff_sel = k4
+		_reload_keep = ""
 	song_loaded.emit(res)
+	if needs_style_reload():   # 読み込んでいるあいだに、弾幕 v2 の入り切りが変わっていた
+		reload_for_style()
 
 
 # --- 難易度 ---
@@ -339,6 +484,19 @@ static func _gen_cache_put(key: String, order: Array, gens_made: Array) -> void:
 	_gen_mutex.unlock()
 
 
+## 弾幕を作る。v2 = MOD「弾幕 v2」(PatternGenV2)。
+static func make_gen(bm, v2: bool) -> Dictionary:
+	return PatternGenV2.generate(bm, {}) if v2 else PatternGen.generate(bm, {})
+
+
+## 開発用: 弾幕の作り方をその場で切り替える(順序は変えない。スクリーンショットの MOD 指定用)。
+func debug_regen() -> void:
+	var v2 := bool(Mods.params(settings.mods).gen_v2)
+	if loader != null and v2 != gens_v2:
+		gens = loader.difficulties.map(func(bm): return make_gen(bm, v2))
+		gens_v2 = v2
+
+
 ## (別スレッドで動く)曲を開いて、難易度ごとの弾幕・難易度(MOD 適用後)・背景画像・試聴用の音声まで作る。画面には触らない。
 static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	var l = OszLoader.new()
@@ -348,11 +506,12 @@ static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	var image: Image = l.load_image_data(first.background) if first.background != "" else null
 	if image != null and image.get_width() > 1280:   # 背景は 1280×720 の画面に出すだけ。大きい画像は、ここ(別スレッド)で縮めて、テクスチャにする負担を減らす
 		image.resize(1280, maxi(int(round(1280.0 * image.get_height() / image.get_width())), 1), Image.INTERPOLATE_BILINEAR)
-	# Danmaku 難易度(画面内の弾数。MOD なしの状態)の低い順に並べ替える
+	# Danmaku 難易度(Lv。MOD なしの状態)の低い順に並べ替える
 	# 弾幕の生成が読み込みの大半(1 難易度で 20〜200 ms)。一度作った曲は覚えておき(直近 GEN_CACHE_MAX 曲)、次からは作らない。
 	# 作るときは、難易度どうしが独立なので並列に作る(generate は共有の状態を持たない)。MOD の適用は別(下の ratings)なので、MOD を変えても使える
 	var diffs: Array = l.difficulties
-	var key := "%s|%d|%d" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path)]   # ファイルが差し替わったら別物
+	var v2 := bool(mod_params.get("gen_v2", false))   # MOD「弾幕 v2」: 弾幕の作り方が違うので、覚えておくのも別(v1 / v2 の両方を覚える)
+	var key := "%s|%d|%d|%s" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path), "v2" if v2 else "v1"]   # ファイルが差し替わったら別物
 	var gens_out: Array = []
 	var cached := _gen_cache_get(key, diffs.size())
 	if not cached.is_empty():
@@ -363,14 +522,15 @@ static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
 		var made: Array = []
 		made.resize(diffs.size())
 		if diffs.size() > 1:
-			var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = PatternGen.generate(diffs[i], {}), diffs.size())
+			var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = make_gen(diffs[i], v2), diffs.size())
 			WorkerThreadPool.wait_for_group_task_completion(gid)
 		else:
-			made[0] = PatternGen.generate(diffs[0], {})
+			made[0] = make_gen(diffs[0], v2)
 		var pairs: Array = []
 		for i in range(diffs.size()):
 			pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
-		pairs.sort_custom(func(a, b): return a.g.rating.score < b.g.rating.score)
+		# 並びは表示する Lv の低い順(同じなら本家★)。生の密度(rating.score)では、弾速が AR で変わる弾幕 v2 で Lv と順が食い違う
+		pairs.sort_custom(func(a, b): return a.g.level < b.g.level if not is_equal_approx(a.g.level, b.g.level) else a.g.stars < b.g.stars)
 		l.difficulties = pairs.map(func(q): return q.bm)
 		gens_out = pairs.map(func(q): return q.g)
 		_gen_cache_put(key, pairs.map(func(q): return q.i), gens_out)
@@ -382,7 +542,7 @@ static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	if cropped != null:   # MP3 の途中から流すと、探す処理で数十 ms 止まる。あらかじめ、その位置から始まる音声にしておく
 		audio = cropped
 		from = 0.0
-	return {"ok": true, "loader": l, "gens": gens_out, "ratings": ratings_out, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
+	return {"ok": true, "loader": l, "gens": gens_out, "v2": v2, "ratings": ratings_out, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
 
 
 ## MP3 の、from 秒あたりから始まる音声(データの途中から切り出す。MP3 は、途中からでも読み始められる)。MP3 でない・先頭のとき・長さが分からないときは null。

@@ -25,6 +25,7 @@ extends RefCounted
 ##   aim=true: a0 は自機方向からの相対角
 
 const Beatmap = preload("res://scripts/osu/beatmap.gd")
+const BulletField = preload("res://scripts/game/bullet_field.gd")   # 弾の挙動の種類(BEH_*)と、反射の範囲
 
 const ARENA := Vector2(960, 720)
 const SCALE := 1.875
@@ -95,6 +96,13 @@ const TARGET_TABLE := [
 	[1.0, 8.0], [1.5, 12.0], [2.1, 28.0], [2.5, 40.0], [3.7, 80.0],
 	[4.4, 105.0], [5.2, 135.0], [5.9, 165.0], [6.7, 200.0],
 ]
+## 弾幕 v2 の表。★5.9 までは v1 と同じで、それより上(Lv に直すと約 ★5 以上)は、★ 1 あたりに必要な弾数を約 1.5 倍にしている(表の外は、最後の傾きで延ばす。最初は約 2 倍にしたが、きつすぎた)。
+## v1 の表では、★5 から ★7〜8 で画面内の弾数が約 1.5 倍にしか増えず、数字ほど難しさに差が出なかったため、高★でより多くの弾を出す。
+## 表は「★ + LEVEL_SHIFT」で引くので、表の 5.9 は譜面の★約 4.9、6.7 は約 5.7、8.3 は約 7.3 に当たる。
+const TARGET_TABLE_V2 := [
+	[1.0, 8.0], [1.5, 12.0], [2.1, 28.0], [2.5, 40.0], [3.7, 80.0],
+	[4.4, 105.0], [5.2, 135.0], [5.9, 165.0], [6.7, 218.0], [7.5, 270.0], [8.3, 322.0], [9.1, 376.0], [10.0, 437.0],
+]
 
 ## 弾数の規則: 局所ノーツ密度 r(前後 RATE_WINDOW 秒のオブジェクト数 / 窓幅, 個/秒)に比例して増やす。
 ##   リングの方向数 = round(2 * mul * (RING_A + RING_B * r + RING_C * r^2))    (3..44)
@@ -112,43 +120,56 @@ static func to_arena(p: Vector2) -> Vector2:
 	return p * SCALE
 
 
-## opts: density_mul(目標の弾数にかかる倍率), size_mul(弾サイズの倍率。実験用),
-##       speed_mul(弾速の倍率。弾速の実験用(scripts/speed_study.gd)。目標の Lv は変えないので、弾数が自動で増減して同じ Lv になる)
-## 戻り値: events, gizmos, warn_lead, rating{mean,p95,peak,score}, level(Lv), speed, size, stars, target_level
+## opts: gen_fn(弾幕の作り方。Callable(bm, k, mul, speed, size) -> {events, gizmos, warn_lead}。省略は v1 の _generate。弾幕 v2 は pattern_gen_v2.gd のもの),
+##       style(結果の "style" に入れる名前。省略は "v1"), size_weight(true で、弾ごとの大きさ(shot.size)を Lv に入れる。弾幕 v2),
+##       density_mul(目標の弾数にかかる倍率), size_mul(弾サイズの倍率。実験用),
+##       speed_mul(弾速の倍率。弾速の実験用(scripts/speed_study.gd)。目標の Lv は変えないので、弾数が自動で増減して同じ Lv になる),
+##       speed_k(基準の弾速に掛ける倍率。省略は★に応じた SPEED_VAR の範囲。弾幕 v2 は譜面の AR から決めて渡す),
+##       speed_ref(Lv の弾速補正が 1 になる基準の弾速。省略は BASE_SPEED。弾幕 v2 は AR の弾速を渡す = AR の違いは Lv に入れない。speed_mul はその上で効く)
+## 戻り値: events, gizmos, warn_lead, rating{mean,p95,peak,score}, level(Lv), speed, speed_ref, size, stars, target_level
 static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	var stars := reference_stars(bm)
 	var k := clampf((stars - STAR_MIN) / (STAR_MAX - STAR_MIN), 0.0, 1.0)
-	var speed := BASE_SPEED * lerpf(1.0 - SPEED_VAR, 1.0 + SPEED_VAR, k) * float(opts.get("speed_mul", 1.0))
+	var speed_k := float(opts.get("speed_k", lerpf(1.0 - SPEED_VAR, 1.0 + SPEED_VAR, k)))
+	var speed := BASE_SPEED * speed_k * float(opts.get("speed_mul", 1.0))
+	var speed_ref := float(opts.get("speed_ref", BASE_SPEED))
 	var size := base_size(k) * float(opts.get("size_mul", 1.0))
 	# 目標の adj(弾速・弾サイズの補正後スコア)。density_mul が 1 なら目標 Lv = 推定★
-	var target_adj := target_score_for(stars + LEVEL_SHIFT) * float(opts.get("density_mul", 1.0))
-	var target_level := maxf(stars_for_score(target_adj) - LEVEL_SHIFT, 0.0)
+	var tbl: Array = opts.get("table", TARGET_TABLE)   # ★ ⇔ 弾数の表(v1 = TARGET_TABLE / 弾幕 v2 = TARGET_TABLE_V2)
+	var target_adj := target_score_for(stars + LEVEL_SHIFT, tbl) * float(opts.get("density_mul", 1.0))
+	var target_level := maxf(stars_for_score(target_adj, tbl) - LEVEL_SHIFT, 0.0)
 	var br: Array = []   # 休憩地帯 [始まり, 終わり](秒)。長さの補正は、休憩を除いた時間で測る
 	for b in bm.breaks:
 		br.append([b[0] / 1000.0, b[1] / 1000.0])
 	# 1) 弾数の倍率 mul を自動調整して、adj を目標に合わせる
+	var gfn: Callable = opts.get("gen_fn", _generate)
+	var weighted := bool(opts.get("size_weight", false))   # 弾ごとの大きさを Lv に入れる(弾幕 v2)
 	var mul := 1.0
 	var out := {}
 	var rating := {}
 	for i in range(6):
-		out = _generate(bm, k, mul, speed, size)
-		rating = measure(out.events, br)
-		var adj := adjusted_score(rating.score, speed, size)
+		out = gfn.call(bm, k, mul, speed, size)
+		rating = measure(out.events, br, size if weighted else 0.0)
+		var adj := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref)
 		if rating.score < 0.5 or absf(adj - target_adj) <= target_adj * 0.05:
 			break
 		mul = clampf(mul * target_adj / adj, 0.1, 6.0)
 	# 2) 弾数の下限/上限で合わせきれなかった分は、弾サイズで吸収する(弾数 N(t) は変わらない)
-	var adj_now := adjusted_score(rating.score, speed, size)
+	var adj_now := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref)
 	if rating.score >= 0.5 and absf(adj_now - target_adj) > target_adj * 0.03:
 		var danger := danger_radius(size) * target_adj / adj_now
 		var absorbed := clampf((danger - PLAYER_HIT_R * PLAYER_SIZE_MUL) / (HIT_SCALE * BULLET_SIZE_MUL), size * SIZE_ABSORB_MIN, size * SIZE_ABSORB_MAX)
 		if not is_equal_approx(absorbed, size):
 			size = absorbed
-			out = _generate(bm, k, mul, speed, size)
+			out = gfn.call(bm, k, mul, speed, size)
+	out["style"] = str(opts.get("style", "v1"))
+	out["size_weight"] = weighted   # Mods.apply が、測り直すときに同じ数え方をする
 	out["rating"] = rating
 	out["breaks"] = br
-	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration)
+	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration, speed_ref, tbl)
+	out["table"] = tbl   # Mods.apply が、測り直すときに同じ表で Lv にする
 	out["speed"] = speed
+	out["speed_ref"] = speed_ref   # Mods.apply が、測り直すときに同じ基準で補正する
 	out["size"] = size
 	out["stars"] = stars
 	out["target_level"] = target_level
@@ -184,8 +205,9 @@ static func danger_radius(size: float, player_r := PLAYER_HIT_R) -> float:
 
 
 ## 弾速・弾サイズの補正をかけた難易度スコア adj。
-static func adjusted_score(score: float, speed: float, size: float, player_r := PLAYER_HIT_R) -> float:
-	return score * pow(speed / BASE_SPEED, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, SIZE_EXP)
+## speed_ref = 弾速が補正 1 になる基準(省略は BASE_SPEED)。弾幕 v2 は譜面の AR で決まる弾速を基準にするので、AR の違いは補正に入らない(MOD の弾速の倍率だけが入る)。
+static func adjusted_score(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, speed_ref := BASE_SPEED) -> float:
+	return score * pow(speed / speed_ref, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, SIZE_EXP)
 
 
 ## 長さ(持久力)の補正の倍率。duration = 最初のノーツ〜最後の発射の秒数(休憩地帯を除く。0 以下なら補正なし)。
@@ -196,13 +218,12 @@ static func length_factor(duration: float) -> float:
 
 
 ## Lv(本家の星と同じ目盛り)= adj(× 長さの補正)を TARGET_TABLE で逆引きした★換算値から、LEVEL_SHIFT を引いたもの。
-static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF) -> float:
-	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r) * length_factor(duration)) - LEVEL_SHIFT, 0.0)
+static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF, speed_ref := BASE_SPEED, tbl: Array = TARGET_TABLE) -> float:
+	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r, speed_ref) * length_factor(duration), tbl) - LEVEL_SHIFT, 0.0)
 
 
 ## TARGET_TABLE(★→スコア)の逆引き。表の外は端の傾きで延長する(下側は原点へ向かう)。
-static func stars_for_score(s: float) -> float:
-	var tbl := TARGET_TABLE
+static func stars_for_score(s: float, tbl: Array = TARGET_TABLE) -> float:
 	if s <= tbl[0][1]:
 		return tbl[0][0] * maxf(s, 0.0) / tbl[0][1]
 	for i in range(1, tbl.size()):
@@ -223,8 +244,7 @@ static func reference_stars(bm: Beatmap) -> float:
 
 
 ## 星 → 目標の難易度スコア(TARGET_TABLE を線形補間。表の外側は端の傾きで延長する)。
-static func target_score_for(stars: float) -> float:
-	var tbl := TARGET_TABLE
+static func target_score_for(stars: float, tbl: Array = TARGET_TABLE) -> float:
 	if stars <= tbl[0][0]:
 		return tbl[0][1]
 	for i in range(1, tbl.size()):
@@ -651,10 +671,105 @@ static func _exit_time(p: Vector2, d: Vector2, speed: float) -> float:
 	return maxf(minf(tx, ty), 0.0) / speed
 
 
+## 距離 dist を、初速 v0・加速度 a(目標の速さ vt で止まる)で進むのにかかる秒。
+static func _accel_time(dist: float, v0: float, a: float, vt: float) -> float:
+	if absf(a) < 0.000001 or is_equal_approx(v0, vt):
+		return dist / maxf(v0, 0.000001)
+	var t_ramp := (vt - v0) / a   # 目標の速さに着くまでの秒(向きが合わない加速度なら、負になる)
+	if t_ramp <= 0.0:
+		return dist / maxf(v0, 0.000001)
+	var d_ramp := (v0 + vt) * 0.5 * t_ramp
+	if dist <= d_ramp:
+		return (-v0 + sqrt(maxf(v0 * v0 + 2.0 * a * dist, 0.0))) / a
+	return t_ramp + (dist - d_ramp) / maxf(vt, 0.000001)
+
+
+## 弾幕 v2: 挙動のある弾 1 発ぶんを、画面内にいる区間として diff に足す(BulletField.update の挙動の見積り。弾が出ていくまでの時間を解析的に求める)。
+##   ACCEL … 加減速を入れた時間 / STOPGO … 止まる前の直進 + 停止 + 回した向きでの直進 / SPLIT … 親は分裂まで + 子弾(全周)/ BOUNCE … 反射の回数ぶん縁で曲がる
+static func _mark_behaving(diff: PackedFloat64Array, cells: int, t: float, p: Vector2, ang: float, s: Dictionary, w := 1.0, w_child := 1.0) -> void:
+	var beh: Dictionary = s.beh
+	var sp: float = s.speed
+	var d := Vector2.from_angle(ang)
+	var life := 0.0
+	match int(beh.k):
+		BulletField.BEH_ACCEL:
+			var dist := _exit_time(p, d, 1.0)   # 速さ 1 のときの秒 = 出ていくまでの距離
+			life = _accel_time(dist, sp, float(beh.a), float(beh.b))
+		BulletField.BEH_STOPGO:
+			var stop_t := float(beh.a)
+			var life0 := _exit_time(p, d, sp)
+			if life0 <= stop_t:
+				life = life0
+			else:
+				var p1 := p + d * sp * stop_t
+				var d2 := d.rotated(float(beh.c))
+				life = stop_t + float(beh.b) + 0.25 + _exit_time(p1, d2, sp)
+		BulletField.BEH_SPLIT:
+			var split_t := float(beh.a)
+			var life0 := _exit_time(p, d, sp)
+			if life0 <= split_t:
+				life = life0
+			else:
+				life = split_t
+				var p1 := p + d * sp * split_t
+				var n := int(beh.b)
+				var csp := sp * float(beh.c)
+				for j in range(n):
+					var cl := _exit_time(p1, Vector2.from_angle(ang + TAU * float(j) / float(n)), csp)
+					_mark_span(diff, cells, t + split_t, t + split_t + cl, w_child)
+		BulletField.BEH_BOUNCE:
+			var q := p
+			var dd := d
+			var left := int(beh.a)
+			var r := BulletField.BOUNCE_RECT
+			while left > 0 and life < 60.0:
+				var tx := INF
+				var ty := INF
+				if dd.x > 0.000001:
+					tx = (r.end.x - q.x) / dd.x
+				elif dd.x < -0.000001:
+					tx = (r.position.x - q.x) / dd.x
+				if dd.y > 0.000001:
+					ty = (r.end.y - q.y) / dd.y
+				elif dd.y < -0.000001:
+					ty = (r.position.y - q.y) / dd.y
+				var tt := maxf(minf(tx, ty), 0.0)
+				if tt == INF:
+					break
+				q += dd * tt
+				life += tt / sp
+				if tx <= ty:
+					dd.x = -dd.x
+				else:
+					dd.y = -dd.y
+				left -= 1
+			life += _exit_time(q, dd, sp)
+		_:
+			life = _exit_time(p, d, sp)
+	_mark_span(diff, cells, t, t + life, w)
+
+
+static func _mark_span(diff: PackedFloat64Array, cells: int, t0: float, t1: float, w := 1.0) -> void:
+	var i0 := clampi(int(t0 / SAMPLE_DT), 0, cells - 1)
+	var i1 := clampi(int(t1 / SAMPLE_DT) + 1, 0, cells - 1)
+	diff[i0] += w
+	diff[i1] -= w
+
+
+## 弾 1 発の重み(弾幕 v2 の弾サイズの 3 段階)。弾サイズが基準 size_ref と違うぶんを、Lv の弾サイズ補正と同じ式(危険半径の比の SIZE_EXP 乗)で数える。
+## size_ref <= 0 なら 1(v1 は、弾ごとの大きさを見ない)。
+static func _weight(size: float, size_ref: float) -> float:
+	if size_ref <= 0.0:
+		return 1.0
+	return pow(danger_radius(size) / danger_radius(size_ref), SIZE_EXP)
+
+
 ## Danmaku 難易度 v1: 画面内の弾数 N(t) から {mean, p95, peak, score, duration} を返す(events は時刻順)。
 ##   score = 0.5 * mean + 0.5 * p95   (最初〜最後の発射の間を 0.1 秒ごとに評価)
 ##   duration = 最初〜最後の発射の秒数から、休憩地帯 breaks([[始まり, 終わり], ...] 秒)と重なる時間を引いたもの(長さの補正に使う)
-static func measure(events: Array, breaks := []) -> Dictionary:
+## size_ref > 0(弾幕 v2): 弾 1 発を、弾サイズ(shot.size)と size_ref(基準の弾サイズ)の危険半径の比で重みづけして数える(大きい弾ほど重い)。
+##   adjusted_score が譜面全体の弾サイズ(size_ref)の補正を掛けるので、弾ごとの違いだけをここで入れる。
+static func measure(events: Array, breaks := [], size_ref := 0.0) -> Dictionary:
 	if events.is_empty():
 		return {"mean": 0.0, "p95": 0.0, "peak": 0.0, "score": 0.0, "duration": 0.0}
 	# 計測の区間は「最初のノーツ(最初に弾を撃つイベント)」から「最後の発射」まで。
@@ -669,29 +784,37 @@ static func measure(events: Array, breaks := []) -> Dictionary:
 	if t0 < 0.0:
 		return {"mean": 0.0, "p95": 0.0, "peak": 0.0, "score": 0.0, "duration": 0.0}
 	var cells := int((t1 + 20.0) / SAMPLE_DT) + 3
-	var diff := PackedInt32Array()
+	var diff := PackedFloat64Array()   # 整数の弾数なら、倍精度なので誤差なし(v1 の結果は変わらない)
 	diff.resize(cells)
 	for e in events:
-		var p: Vector2 = e.pos
 		for s in e.shots:
+			var p: Vector2 = e.pos
+			if s.has("off"):   # 弾幕 v2: 発射位置のずれ
+				p += s.off as Vector2
 			var i0 := maxi(int(e.t / SAMPLE_DT), 0)
 			var base: float = s.a0
 			if s.aim:
 				base += (AIM_REF - p).angle()
+			var w := _weight(float(s.size), size_ref) if size_ref > 0.0 else 1.0
+			if s.has("beh"):   # 弾幕 v2: 挙動のある弾(寿命・子弾を見積もる)
+				var wc := _weight(float(s.size) * BulletField.SPLIT_SIZE, size_ref) if size_ref > 0.0 else 1.0
+				for i in range(s.n):
+					_mark_behaving(diff, cells, e.t, p, shot_angle(s, base, i), s, w, wc)
+				continue
 			for i in range(s.n):
 				var life := _exit_time(p, Vector2.from_angle(shot_angle(s, base, i)), s.speed)
 				var i1 := mini(int((e.t + life) / SAMPLE_DT) + 1, cells - 1)
-				diff[i0] += 1
-				diff[i1] -= 1
+				diff[i0] += w
+				diff[i1] -= w
 	var a := maxi(int(t0 / SAMPLE_DT), 0)
 	var b := int(t1 / SAMPLE_DT)
-	var counts := PackedInt32Array()
-	var run := 0
+	var counts := PackedFloat64Array()
+	var run := 0.0
 	for i in range(0, b + 1):
 		run += diff[i]
 		if i >= a:
 			counts.append(run)
-	var sum := 0
+	var sum := 0.0
 	for v in counts:
 		sum += v
 	var mean := float(sum) / float(maxi(counts.size(), 1))

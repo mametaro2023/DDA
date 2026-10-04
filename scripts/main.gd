@@ -43,6 +43,7 @@ var _settings_panel: Control       # 開いている設定パネル(どの画面
 var _settings_dict: Dictionary = {}
 var _ui_before := ""               # 設定を開いたときの UI の見た目(閉じたとき、変わっていたら、いまの画面を作り直す)
 var _settings_btn: Button          # 画面の右上の「設定」(タイトル・選曲画面は、自分で設定を開く入口を持つので出さない)
+var _songs_changed := false      # 設定パネルで、osu! の Songs フォルダの設定が変わった(閉じたときに、選曲画面の一覧を作り直す)
 var _watch_known := {}             # songs フォルダに、いま見えている .osz(名前|大きさ → パス)
 var _watch_pending := {}           # 見つけたが、コピーの途中かもしれないもの(大きさが落ち着くまで待つ)
 var _watch_ready := false
@@ -66,7 +67,9 @@ func _ready() -> void:
 	UserDirMigrate.run()   # アプリの名前を変えたので、前の名前のユーザーデータ(設定・曲・記録)を移す(残っていなければ何もしない)
 	if OS.has_feature("template"):   # 書き出した版: 前の名前(DDA.osz)で「プログラムから開く」に登録していたら、新しい名前へ移す
 		FileAssoc.migrate_legacy(OS.get_executable_path())
-	Volume.init_from(Settings.load_all())
+	var first_settings := Settings.load_all()
+	Volume.init_from(first_settings)
+	SongLibrary.apply_osu_settings(first_settings)   # osu! の Songs フォルダを使う設定のとき、その場所(スクリーンショット・動作確認の起動でも同じ)
 	var args := OS.get_cmdline_user_args()
 	for a in args:   # 開発用の確認・スクリーンショットでは、使う人のプレイ記録を残さない
 		var a_s := str(a)
@@ -161,6 +164,9 @@ func _ready() -> void:
 	if args.has("--prof-play"):
 		_prof_play()
 		return
+	if args.has("--smoke-osu-menu"):
+		_smoke_osu_menu()
+		return
 	if args.has("--smoke-carousel"):
 		_smoke_carousel()
 		return
@@ -200,6 +206,7 @@ func _ready() -> void:
 		get_tree().quit()
 		return
 	var ui_settings := Settings.load_all()
+	SongLibrary.start_osu_warmup()   # osu! の Songs フォルダの曲の索引を、裏で作っておく
 	UiSfx.enabled = bool(ui_settings.ui_sound)
 	SfxBank.preload_all(["pop", "whistle", "clap", "boom", "tick", "hit", "explosion"])   # ゲーム中の効果音は、プレイ画面を開く前に読んでおく
 	Settings.apply_display(ui_settings)   # 垂直同期・ウィンドウの大きさ
@@ -433,7 +440,11 @@ func _update_settings_button() -> void:
 	_settings_btn.visible = _current != null and not own and _kind != "game" and _kind != "title" and _kind != "menu" and _settings_panel == null
 
 
-## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=曲 4=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+func _exit_tree() -> void:
+	SongLibrary.stop_warmup()   # 裏で索引を作っているスレッドを、閉じる前に止める
+
+
 func open_settings(section := 0) -> void:
 	if _settings_panel != null or _current == null or _kind == "game":
 		return
@@ -444,6 +455,9 @@ func open_settings(section := 0) -> void:
 	var p = UiSets.current().make_options()
 	p.setup(_settings_dict)
 	p.changed.connect(func(kind: String):
+		if kind == "songs":
+			_songs_changed = true   # 一覧の作り直しは、パネルを閉じたとき(曲が多いと重いので、設定中は止めない)
+			Settings.save_all(_settings_dict)   # 選んだ時点で保存する(パネルを閉じずにゲームを終えても、次の起動で使えるように)
 		if _current != null and _current.has_method("on_settings_changed"):
 			_current.on_settings_changed(kind))
 	p.closed.connect(close_settings)
@@ -467,6 +481,9 @@ func close_settings() -> void:
 		_current.on_overlay(false)
 	if is_instance_valid(_current):
 		_current.set_process_input(true)
+		if _songs_changed and _current.has_method("refresh_songs"):
+			_current.refresh_songs()
+	_songs_changed = false
 	p.queue_free()
 	_update_settings_button()
 	if ui_changed:   # UI の見た目が変わった: タイトル・選曲は、新しい見た目で作り直す(ほかの画面は、次に開くときから)
@@ -754,6 +771,16 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
+			if extra.has("toggle"):   # 読み込みのあとで MOD を付ける(弾幕 v2 の入り切りで、曲を読み直す流れ): --shot menu out.png toggle v2
+				while _current._job_pending or _current._diff_cards.is_empty():
+					await get_tree().process_frame
+				print("toggle: 読み込み後 v2=%s Lv=%.2f" % [str(_current._gens_v2), float(_current._ratings[_current._diff_sel].level)])
+				_current.settings.mods = extra.filter(func(x): return not Mods.find(x).is_empty())
+				_current._on_mods_changed()
+				while _current._job_pending:
+					await get_tree().process_frame
+				await get_tree().process_frame
+				print("toggle: 切り替え後 v2=%s Lv=%.2f 選択=%d" % [str(_current._gens_v2), float(_current._ratings[_current._diff_sel].level), _current._diff_sel])
 			if extra.has("empty"):   # 曲が 1 つもない状態: --shot menu out.png empty
 				await _current.debug_empty()
 			if extra.has("loading"):   # 曲の読み込み中の見た目: --shot menu out.png loading
@@ -784,7 +811,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
 			_current.open_mods()
 		"options":
-			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=その他)
+			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=曲 4=その他)
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
 			_current.open_options(int(extra[0]) if extra.size() > 0 and extra[0].is_valid_int() else 0)
 		"game":
@@ -812,6 +839,17 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				_current._set_paused(false)
 				_current._set_ship_in(1.0)
 				_current._tick_resume_wait(0.35)
+			for ex in extra:   # 自機の位置を決める(エリアの中の自機の演出を撮る): ... Insane 62 v2 practice pos:200,360
+				if str(ex).begins_with("pos:"):
+					var xy := str(ex).trim_prefix("pos:").split(",")
+					_current.sim.player_pos = Vector2(float(xy[0]), float(xy[1]))
+					_current.sim._update_zone_debuff(_current._now)
+					_current._refresh()
+			for ex in extra:   # エリアの効果の演出だけを撮る(自機にその効果がかかっている状態にする): ... Insane 30 v2 practice fx:heal
+				if str(ex).begins_with("fx:"):
+					_current.sim.zone_debuff = str(ex).trim_prefix("fx:")
+					_current.sim.zone_push = Vector2(110, 0) if _current.sim.zone_debuff == "flow" else Vector2.ZERO
+					_current._refresh()
 			if extra.has("nearhp") or extra.has("nearscore"):   # 自機を体力バー / スコアの近くに置いて、HUD の透過を撮る
 				_current.sim.player_pos = Vector2(200, 34) if extra.has("nearhp") else Vector2(800, 40)
 				_current._update_hud_fade(0.0, true)
@@ -1532,6 +1570,100 @@ func _smoke_modscroll() -> void:
 	chk.call(_settings_panel == null, "設定: 「✕」で閉じる")
 	Settings.restore(orig)
 	print("smoke-modscroll: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+## .osz の中の譜面(.osu)の数。
+func _osu_count(osz: String) -> int:
+	var z := ZIPReader.new()
+	if z.open(osz) != OK:
+		return 0
+	var n := 0
+	for f in z.get_files():
+		if f.to_lower().ends_with(".osu"):
+			n += 1
+	z.close()
+	return n
+
+
+## 開発用: 選曲画面(いまの UI)で、osu! の Songs フォルダの曲が、少しずつ一覧に足され、選んで読み込めることを確かめる。
+## あわせて、弾幕 v2 の入り切りで同じ曲を読み直し、選んでいた難易度が保たれることも見る。-- [--ui lazer] --smoke-osu-menu
+## 手元の .osz(songs に入れていないもの)を一時フォルダに展開して、Songs フォルダの代わりにする。ユーザーの設定は、終わりに元へ戻す。
+func _smoke_osu_menu() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	var have := {}
+	for p in SongLibrary.find_osz():
+		have[str(p).get_file().to_lower()] = true
+	var src: Array = []
+	for f in DirAccess.get_files_at("C:/Desktop/my_apps/DDA"):
+		if f.to_lower().ends_with(".osz") and not have.has(f.to_lower()):
+			src.append("C:/Desktop/my_apps/DDA/" + f)
+	src.sort_custom(func(a, b): return _osu_count(a) > _osu_count(b))   # 難易度の多い曲から(弾幕 v2 の読み直しで、難易度が保たれるかを見るため)
+	src = src.slice(0, 2)
+	if src.is_empty():
+		print("smoke-osu-menu: (試せる .osz がないので省略)")
+		get_tree().quit()
+		return
+	var tmp := OS.get_temp_dir().path_join("danmaku_osu_menu_test").replace("\\", "/")
+	var songs_dir := tmp.path_join("Songs")
+	for osz in src:
+		var dest := songs_dir.path_join(str(osz).get_file().get_basename())
+		DirAccess.make_dir_recursive_absolute(dest)
+		var z := ZIPReader.new()
+		z.open(osz)
+		for f in z.get_files():
+			if f.ends_with("/"):
+				continue
+			var out := dest.path_join(f)
+			DirAccess.make_dir_recursive_absolute(out.get_base_dir())
+			var w := FileAccess.open(out, FileAccess.WRITE)
+			w.store_buffer(z.read_file(f))
+			w.close()
+		z.close()
+	var s2 := original.duplicate()
+	s2.osu_songs = true
+	s2.osu_songs_dir = songs_dir
+	s2.mods = []
+	Settings.save_all(s2)
+	SongLibrary.apply_osu_settings(s2)
+	show_menu()
+	await get_tree().create_timer(0.8).timeout
+	var m = _current
+	var folders := func() -> int: return m._songs.filter(func(sg): return bool(sg.get("folder", false))).size()
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 20000 and (folders.call() < src.size() or m._song_cards.size() < m._songs.size()):
+		await get_tree().process_frame
+	chk.call(folders.call() == src.size(), "osu! の Songs の曲が一覧に足される(フォルダの曲 %d / %d、全部で %d 曲)" % [folders.call(), src.size(), m._songs.size()])
+	chk.call(m._song_cards.size() == m._songs.size(), "足された曲にも行ができる(%d 行)" % m._song_cards.size())
+	var idx: int = m._songs.size() - 1
+	chk.call(bool(m._songs[idx].get("folder", false)), "足された曲は、フォルダの曲として覚えている(%s)" % str(m._songs[idx].path).get_file())
+	while m._job_pending:
+		await get_tree().process_frame
+	m._select_song(idx)
+	while m._job_pending:
+		await get_tree().process_frame
+	await get_tree().process_frame
+	chk.call(m._loader != null and m._song_sel == idx and m._diff_cards.size() >= 1, "フォルダの曲を選んで読み込める(難易度 %d 個)" % m._diff_cards.size())
+	# 弾幕 v2 の入り切り: 同じ曲を読み直し、選んでいた難易度はそのまま
+	if m.has_method("_enable_v2") and m._diff_cards.size() >= 2:
+		m._select_diff(1)
+		var ver: String = str(m._loader.difficulties[m._diff_sel].version)
+		m._enable_v2()
+		var t1 := Time.get_ticks_msec()
+		var v2_now := func() -> bool: return bool(m.browser.gens_v2) if "browser" in m else bool(m._gens_v2)
+		while (m._job_pending or not v2_now.call()) and Time.get_ticks_msec() - t1 < 20000:
+			await get_tree().process_frame
+		await get_tree().process_frame
+		chk.call(v2_now.call() and str(m._loader.difficulties[m._diff_sel].version) == ver, "弾幕 v2 を付けると読み直し、難易度はそのまま(%s)" % ver)
+		chk.call(str((m._gens[m._diff_sel] as Dictionary).get("style", "")) == "v2", "弾幕が v2 の作り方になっている")
+	Settings.restore(original)
+	SongLibrary.apply_osu_settings(original)
+	print("smoke-osu-menu: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()
 
 

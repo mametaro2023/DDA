@@ -95,6 +95,9 @@ var _stat_k := 1.0               # 内訳のバーの動きの進み(0 → 1)
 var _art_asked := {}             # 画像を SongArt に頼んだ行
 var _key_to_row := {}            # 曲の識別子 → 行の番号
 var _art_t := 0.0
+var _view_at := 0                # 最後に並びを行へ反映した時刻(osu! の曲を足している間に、ときどき反映する)
+var _progress_at := 0
+var _v2_btn: Button              # フッターの「弾幕 v2 で遊ぼう」(v2 を付けていないときだけ出る)
 ## 一度読み込んで測った Lv(MOD なし)。譜面の識別子 → Lv。行の色の札に使う(この起動の間だけ覚える)
 static var _lv_seen := {}
 static var _shade: Texture2D
@@ -134,6 +137,7 @@ func _ready() -> void:
 	browser.song_changing.connect(_on_song_changing)
 	browser.song_loaded.connect(_on_song_loaded)
 	browser.song_load_failed.connect(_on_song_load_failed)
+	browser.song_reloading.connect(func(): _set_loading(true))   # 弾幕 v2 の入り切りで、同じ曲を読み直している
 	browser.sort_mode = str(settings.get("song_sort", "title"))
 	_build_base()
 	_build_toolbar(["ロビー", "曲を選ぶ"] if pick_mode else ["ソロ"])
@@ -161,7 +165,10 @@ func _ready() -> void:
 	_scan()
 	_rebuild_song_cards()
 	if not _songs.is_empty():
-		_select_song(browser.last_song_index())
+		var first := browser.last_song_index()
+		_select_song(first)
+		browser.auto_sel_idx = first
+		_center_selected()
 
 
 func _exit_tree() -> void:
@@ -410,6 +417,9 @@ func _build_footer_buttons() -> void:
 	_footer_button("MOD", LazerStyle.PURPLE, "dots", 162, 150, open_mods, Color(0.1, 0.04, 0.2))
 	_footer_button("ランダム", LazerStyle.BLUE, "shuffle", 306, 170, _random_song, Color(0.03, 0.12, 0.2))
 	_footer_button("設定", Color(0.24, 0.22, 0.31), "gear", 470, 150, func(): open_options(0), LazerStyle.TEXT)
+	var v2c: Color = Mods.find("v2").color
+	_v2_btn = _footer_button("弾幕 v2 で遊ぼう", v2c, "plus", 760, 250, _enable_v2, v2c.darkened(0.75))
+	_v2_btn.tooltip_text = "MOD「弾幕 v2」を付ける: 譜面ごとに特徴の出る弾幕と、特殊エリア。いつでも MOD から外せます"
 	var play := _footer_button("決定" if pick_mode else "プレイ", LazerStyle.YELLOW, "play", 1280 - 260, 260, _start, Color(0.2, 0.13, 0.0))
 	play.disabled = true   # 曲を読み込み終わるまで押せない(_set_loading が切り替える)
 	play.font_size = 20
@@ -436,6 +446,9 @@ func _set_loading(on: bool) -> void:
 	if _play_btn != null:
 		_play_btn.disabled = on or _loader == null
 		_play_btn.queue_redraw()
+	if _v2_btn != null:
+		_v2_btn.disabled = on or _loader == null
+		_v2_btn.queue_redraw()
 
 
 ## 左の情報を薄くする・戻す。薄くするのは 0.15 秒たってもまだ読み込み中のときだけ(すぐ終わる読み込みでは、何も変わらない)。
@@ -461,7 +474,7 @@ func _set_status(msg: String) -> void:
 
 func _sync_empty() -> void:
 	if _empty_box != null:
-		_empty_box.visible = _songs.is_empty()
+		_empty_box.visible = _songs.is_empty() and not bool(browser.osu_progress().running)   # osu! の曲を調べている間は、「曲がありません」を出さない
 		_info.visible = not _songs.is_empty()   # 曲がないときは、空の情報パネルを出さない
 		_stats.visible = not _songs.is_empty()
 		_rec_card.visible = not _songs.is_empty()
@@ -480,11 +493,14 @@ func _scan() -> void:
 
 ## songs フォルダの中身が変わったとき(main が知らせる): 一覧を作り直す。選んでいる曲はそのまま(読み込み直さない)。
 func refresh_songs() -> void:
-	var msg := browser.rescan()
-	if msg != "":
-		_set_status(msg)
-	_rebuild_song_cards(false)
-	if _song_sel < 0 and not _songs.is_empty() and _loader == null:
+	var r := browser.rescan()
+	if str(r.msg) != "":
+		_set_status(str(r.msg))
+	if bool(r.rebuild):
+		_rebuild_song_cards(false)
+	else:
+		_sync_cards()
+	if _song_sel < 0 and not _songs.is_empty() and _loader == null and not browser.restoring():
 		_select_song(0)
 
 
@@ -540,31 +556,103 @@ func _rebuild_song_cards(animate := true) -> void:
 	_key_to_row.clear()
 	_diff_rows.clear()
 	_anchor_y = -1.0
-	for i in range(_songs.size()):
-		_key_to_row[str(_songs[i].md5)] = i
-		var card := UiStyle.card(ROW_H, func(): _select_song(i), func(): _start())
-		card.clip_children = CanvasItem.CLIP_CHILDREN_AND_DRAW   # 画像を、角丸の形で切り抜く
-		card.mouse_entered.connect(func():
-			card.set_meta("hover", true)
-			if i != _song_sel:
-				UiSfx.play("hover", 1.0)
-			_restyle_song(i))
-		card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_song(i))
-		var holder := UiStyle.wrap_card(card, ROW_H)
-		card.offset_right = -MARGIN_R
-		_box.add_child(holder)
-		_rows.append(holder)
-		_song_cards.append(card)
-		_fill_row(i)
-		_restyle_song(i, false)
-		if animate:
-			_enter_card(card, 0.08 + minf(i, 8) * 0.05)
 	_box.add_child(_tail)
+	for i in range(_songs.size()):
+		_make_row(i, animate)
 	_sync_empty()
 	_apply_view()
 	if _song_sel >= 0 and _song_sel < _songs.size():
 		_open_diffs(false)
 	_art_t = 1.0   # 見えている行の画像を、すぐに頼む
+
+
+## 曲 i の行を作って、一覧の末尾(下端の余白の手前)に足す。
+func _make_row(i: int, animate: bool) -> void:
+	_key_to_row[str(_songs[i].md5)] = i
+	var card := UiStyle.card(ROW_H, func(): _select_song(i), func(): _start())
+	card.clip_children = CanvasItem.CLIP_CHILDREN_AND_DRAW   # 画像を、角丸の形で切り抜く
+	card.mouse_entered.connect(func():
+		card.set_meta("hover", true)
+		if i != _song_sel:
+			UiSfx.play("hover", 1.0)
+		_restyle_song(i))
+	card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_song(i))
+	var holder := UiStyle.wrap_card(card, ROW_H)
+	card.offset_right = -MARGIN_R
+	_box.add_child(holder)
+	if _tail != null and is_instance_valid(_tail):
+		_box.move_child(_tail, -1)
+	_rows.append(holder)
+	_song_cards.append(card)
+	_fill_row(i)
+	_restyle_song(i, false)
+	if animate:
+		_enter_card(card, 0.08 + minf(i, 8) * 0.05)
+
+
+## 一覧に足された曲(行がまだない曲)の行を作る。budget_ms > 0 なら、その時間まで(残りは次のフレーム)。作り終えたら true。
+func _sync_cards(budget_ms := -1.0) -> bool:
+	var t0 := Time.get_ticks_usec()
+	var made := false
+	while _song_cards.size() < _songs.size():
+		_make_row(_song_cards.size(), false)
+		made = true
+		if budget_ms > 0.0 and Time.get_ticks_usec() - t0 > int(budget_ms * 1000.0):
+			break
+	var done := _song_cards.size() >= _songs.size()
+	if made and (done or Time.get_ticks_msec() - _view_at > 500):   # 並びへの反映は、作り終えたとき(と、作っている間はときどき)
+		_view_at = Time.get_ticks_msec()
+		_apply_view()
+	_sync_empty()
+	return done
+
+
+## 開いたときに選んだ曲(前回の曲)を、一覧の真ん中に出す(プレイから戻ったとき、一覧の先頭が出ないように)。
+## 行の位置は、レイアウトが終わるまで決まらないので、2 フレーム待ってから、動かさずに置く。待っている間に、別の曲を選んだら何もしない。
+func _center_selected() -> void:
+	var want := _song_sel
+	if want < 0 or not is_inside_tree():
+		return
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not is_inside_tree() or _song_sel != want or want >= _rows.size():
+		return
+	_smooth.center_on_control(_rows[want], true)
+
+
+## osu! の Songs の曲を、少しずつ一覧に足す(毎フレーム)。前回の曲が見つかったら、そこを選ぶ。
+func _pump_osu() -> void:
+	var r := browser.pump(3000)
+	if bool(r.added) or _song_cards.size() < _songs.size():
+		_sync_cards(3.0)
+	if bool(r.restored) or int(r.select) >= 0:
+		_sync_cards()   # 選ぶ曲の行は、すぐに要る
+	if bool(r.restored):   # 一覧を作り直す前に選んでいた曲(読み込み直さない)
+		_restyle_all()
+		_anchor_y = (_rows[_song_sel] as Control).position.y if _song_sel >= 0 and _song_sel < _rows.size() else -1.0
+		_open_diffs(false)
+	elif int(r.select) >= 0:
+		_select_song(int(r.select))
+		_center_selected()
+	_pump_progress()
+
+
+## osu! の曲を調べている間の、進み具合(左上の情報の下に、薄い文字で)。
+func _pump_progress() -> void:
+	var now := Time.get_ticks_msec()
+	if now - _progress_at < 300 or _status == null:
+		return
+	_progress_at = now
+	var pr := browser.osu_progress()
+	var mine := _status.text.begins_with("osu! の曲")
+	if bool(pr.running) and (_status.text == "" or mine):
+		_status.text = "osu! の曲を準備しています… %d / %d" % [int(pr.done), int(pr.total)]
+		_status.add_theme_color_override("font_color", LazerStyle.TEXT_MUTE)
+		_sync_empty()
+	elif mine:
+		_status.text = ""
+		_status.add_theme_color_override("font_color", LazerStyle.RED)
+		_sync_empty()
 
 
 ## 行の中身を作る: 背景の画像・暗くする帯・文字と難易度の色の札・最高ランク・縁。
@@ -708,6 +796,7 @@ func _request_visible_art() -> void:
 
 func _process(delta: float) -> void:
 	super._process(delta)
+	_pump_osu()
 	_release_spacers(delta)
 	_art_t += delta
 	if _art_t > 0.2:
@@ -1193,10 +1282,12 @@ func _on_song_load_failed(error: String, bad: int) -> void:
 func _on_song_loaded(res: Dictionary) -> void:
 	var first = _loader.difficulties[0]
 	_meta_l.text = "BPM %.0f      譜面  %s" % [60000.0 / first.beat_length_at(first.first_time()), first.creator]
+	var reload := bool(res.get("reload", false))   # 弾幕 v2 の入り切りで読み直した: 背景と試聴は、そのまま
 	var tex: Texture2D = null
-	if res.image != null:
+	if res.image != null and not reload:
 		tex = ImageTexture.create_from_image(res.image)
-	set_background(tex)
+	if not reload:
+		set_background(tex)
 	for d in range(_ratings.size()):   # 測った Lv を覚えておく(ほかの曲へ移ったあとも、行の色の札に使う)
 		_lv_seen[str(_loader.difficulties[d].md5)] = float(_ratings[d].base_level)
 	var card: PanelContainer = _song_cards[_song_sel]
@@ -1209,6 +1300,8 @@ func _on_song_loaded(res: Dictionary) -> void:
 	_update_detail()
 	if _mod_panel != null:   # MOD パネルを開いたまま曲が読み込まれた
 		_mod_panel.refresh_info()
+	if reload:
+		return
 	_audio.stop()
 	if res.audio != null:
 		await get_tree().process_frame   # 札を作る処理と、同じフレームにしない(音の開始も、少し時間がかかる)
@@ -1308,6 +1401,11 @@ func _refresh_mod_bar() -> void:
 	for c in _mod_bar.get_children():
 		c.queue_free()
 	var p := Mods.params(settings.mods)
+	if _v2_btn != null:   # 弾幕 v2 を付けていないときだけ、フッターに「弾幕 v2 で遊ぼう」を出す
+		var want: bool = not p.gen_v2
+		if want and not _v2_btn.visible:
+			UiStyle.pop_in(_v2_btn, 0.0, Vector2(0, 20), 0.35)
+		_v2_btn.visible = want
 	if p.ids.is_empty():
 		_mod_bar.add_child(LazerStyle.label("MOD なし", 14, LazerStyle.TEXT_MUTE))
 		return
@@ -1408,7 +1506,11 @@ func open_mods() -> void:
 
 
 func _on_mods_changed() -> void:
+	_refresh_mod_bar()
 	if _loader == null:
+		return
+	if browser.needs_style_reload():   # 弾幕 v2 の入り切り: 弾幕そのものが変わるので、曲を読み直す(終わったら難易度も出る)
+		browser.reload_for_style()
 		return
 	_rate_all()
 	_refresh_mod_bar()
@@ -1430,6 +1532,18 @@ func _close_mods() -> void:
 ## MOD パネルに出す、選択中の難易度の MOD 適用後 Lv(難易度がなければ -1)。
 func _mod_level() -> float:
 	return browser.selected_level()
+
+
+## 「弾幕 v2 で遊ぼう」を押した: MOD「弾幕 v2」を付ける(曲を読み直す)。
+func _enable_v2() -> void:
+	if _launching or _mod_panel != null or _options != null:
+		return
+	var ids: Array = settings.mods.duplicate()
+	if not ids.has("v2"):
+		ids.append("v2")
+	settings.mods = ids
+	Settings.save_all(settings)
+	_on_mods_changed()
 
 
 ## 曲の一覧がホイールを受け付けるか(MOD パネルや設定パネルが上に重なっているときは、受け付けない)。
@@ -1527,6 +1641,7 @@ func debug_loading() -> void:
 ## MOD を指定して付けた状態にする。
 func debug_set_mods(ids: Array) -> void:
 	settings.mods = ids
+	browser.debug_regen()
 	if _loader != null:
 		_rate_all()
 		_fill_diffs()

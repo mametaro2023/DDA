@@ -49,7 +49,11 @@ func _ready() -> void:
 	head.add_child(_stat_block("ベーススコア倍率", _mul_l, 170.0))
 	# MOD の札(横 COLS 枚ずつ)
 	var grid := GridContainer.new()
-	grid.columns = COLS
+	var shown_n := 0
+	for m0 in Mods.ALL:
+		if not (multi and bool(m0.get("solo", false))):
+			shown_n += 1
+	grid.columns = COLS if shown_n <= COLS * 2 else ceili(shown_n / 2.0)   # 2 段に収める(MOD が増えたら、札を細くする)
 	grid.add_theme_constant_override("h_separation", 14)
 	grid.add_theme_constant_override("v_separation", 14)
 	grid.size_flags_vertical = Control.SIZE_EXPAND_FILL

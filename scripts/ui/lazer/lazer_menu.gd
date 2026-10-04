@@ -11,6 +11,8 @@ extends "res://scripts/ui/lazer/lazer_screen.gd"
 ## pre: 選曲のときに作っておいたもの {gen: 選んだ難易度の弾幕(MOD 適用前), audio: 曲全体の音声(あれば)}。プレイ画面が、作り直さず(読み込み直さず)に使う
 signal play_requested(loader, bm, settings: Dictionary, pre: Dictionary)
 signal back_requested
+## 記録の行の再生ボタンが押された(name = リプレイのファイル名。main が開く)
+signal replay_requested(name: String)
 ## マルチプレイの部屋の曲を選ぶモード(pick_mode = true): 「決定」で、開始せずに選んだ内容を返す(level は MOD 適用後の Lv)
 signal song_picked(loader, bm, settings: Dictionary, level: float)
 
@@ -22,6 +24,7 @@ const OszImport = preload("res://scripts/osz_import.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const Records = preload("res://scripts/records.gd")
+const Replay = preload("res://scripts/replay.gd")
 const Volume = preload("res://scripts/volume.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
@@ -136,6 +139,7 @@ var _stat_rows: Array = []       # [[名前, 0..1, 値の文字]]
 var _stat_note := ""
 var _rec_card: Control            # 左下: 選んだ難易度のローカル記録
 var _rec_rows: Array = []         # 記録の行(records.gd の 1 件ずつ)
+var _rec_hover := -1              # マウスが乗っている、再生ボタンのある記録の行
 var _search: LineEdit
 var _sort_btns: Array = []
 var _no_match: Label              # 検索に合う曲がないとき
@@ -271,8 +275,12 @@ func _draw_stats() -> void:
 func _build_records() -> void:
 	_rec_card = Control.new()
 	_place(_rec_card, 24, 476, 540, 180)
-	_rec_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_rec_card.mouse_filter = Control.MOUSE_FILTER_PASS   # 行ごとの再生ボタン(リプレイがあるものだけ)を押せるように
 	_rec_card.draw.connect(_draw_records)
+	_rec_card.gui_input.connect(_rec_input)
+	_rec_card.mouse_exited.connect(func():
+		_rec_hover = -1
+		_rec_card.queue_redraw())
 	_intro_nodes.append(_rec_card)
 
 
@@ -302,7 +310,41 @@ func _draw_records() -> void:
 		_rec_card.draw_string(f, Vector2(204, y + 18), " ".join(mods), HORIZONTAL_ALIGNMENT_LEFT, 190, 13, LazerStyle.PURPLE)
 		var d := Time.get_datetime_dict_from_unix_time(int(r.get("t", 0)))
 		_rec_card.draw_string(f, Vector2(w - 110, y + 18), "%d/%02d/%02d" % [d.year, d.month, d.day], HORIZONTAL_ALIGNMENT_RIGHT, 90, 13, LazerStyle.TEXT_MUTE)
+		if _rec_has_replay(r):   # 再生ボタン(三角)
+			var on := i == _rec_hover
+			var c := Vector2(w - 150.0, y + 13.0)
+			var col: Color = LazerStyle.BLUE if on else Color(LazerStyle.TEXT_MUTE.r, LazerStyle.TEXT_MUTE.g, LazerStyle.TEXT_MUTE.b, 0.8)
+			_rec_card.draw_circle(c, 11.0, Color(col.r, col.g, col.b, 0.22 if on else 0.1))
+			_rec_card.draw_colored_polygon(PackedVector2Array([c + Vector2(-3.5, -5.5), c + Vector2(-3.5, 5.5), c + Vector2(5.5, 0.0)]), col)
 		y += 28.0
+
+
+func _rec_has_replay(r: Dictionary) -> bool:
+	var n := str(r.get("replay", ""))
+	return n != "" and FileAccess.file_exists(Replay.dir.path_join(n))
+
+
+## 記録の行の、再生ボタンの上にあるか(あれば行の番号、なければ -1)。
+func _rec_row_at(p: Vector2) -> int:
+	var w := _rec_card.size.x
+	for i in range(_rec_rows.size()):
+		var y := 34.0 + 28.0 * float(i)
+		if Rect2(w - 164.0, y, 28.0, 26.0).has_point(p) and _rec_has_replay(_rec_rows[i]):
+			return i
+	return -1
+
+
+func _rec_input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		var i := _rec_row_at(event.position)
+		if i != _rec_hover:
+			_rec_hover = i
+			_rec_card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if i >= 0 else Control.CURSOR_ARROW
+			_rec_card.queue_redraw()
+	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		var i := _rec_row_at(event.position)
+		if i >= 0:
+			replay_requested.emit(str(_rec_rows[i].replay))
 
 
 ## 選んでいる難易度の記録を読み直す。

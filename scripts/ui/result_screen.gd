@@ -4,6 +4,7 @@ extends Control
 
 signal menu_requested
 signal retry_requested
+signal replay_requested
 
 const Mods = preload("res://scripts/mods.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
@@ -216,7 +217,10 @@ func _ready() -> void:
 	hint.add_theme_constant_override("separation", 12)
 	hint.position = Vector2(1220, 626)   # 右端をグラフの右端にそろえる(幅が増えたら左へ伸びる)
 	hint.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	for spec in ([["ロビーへ", menu_requested, true]] if stats.has("mp") else [["リトライ", retry_requested, false], ["メニューへ", menu_requested, true]]):
+	var specs: Array = [["ロビーへ", menu_requested, true]] if stats.has("mp") else [["リトライ", retry_requested, false], ["メニューへ", menu_requested, true]]
+	if not stats.has("mp") and str(stats.get("replay", "")) != "":
+		specs.insert(1, ["リプレイ", replay_requested, false])   # このプレイの記録を見返す(P キーでも)
+	for spec in specs:
 		var b := Button.new()
 		b.text = spec[0]
 		b.focus_mode = Control.FOCUS_NONE
@@ -353,6 +357,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_R:
 				if not stats.has("mp"):
 					retry_requested.emit()
+			KEY_P:
+				if not stats.has("mp") and str(stats.get("replay", "")) != "":
+					replay_requested.emit()
 
 
 func _exit_tree() -> void:

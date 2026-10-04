@@ -31,6 +31,8 @@ const STRIDE := 6
 static var dir := "user://replays"
 ## false のあいだは、保存しない(開発用の確認・スクリーンショットで、使う人のリプレイを汚さないため)
 static var enabled := true
+## true なら、開発用の自動操作(--smoke など)のプレイも記録する(--smoke-replay だけが使う)
+static var force_record := false
 
 
 ## ゲームの組み立て(弾幕・MOD・シム)。プレイ画面と、リプレイの再生が、同じ手順で同じ sim を作る。
@@ -98,6 +100,7 @@ class Player extends RefCounted:
 	var frames: PackedFloat64Array
 	var keys: Array
 	var idx := 0          # 次に進めるフレーム
+	var force_restore := false   # 外から状態を動かした(ゲームオーバー演出で弾を進めた)ので、次のシークは、必ずキーフレームから戻す
 	var t := 0.0          # 最後に進めたフレームの終わりの時刻(まだなら、記録の始め)
 	## 直前の advance で起きたこと(描画・音の側が読む。advance のたびに作り直す)
 	var hit_any := false
@@ -127,19 +130,35 @@ class Player extends RefCounted:
 		return idx >= frame_count() or sim.finished
 
 	## 時刻 target までに終わるフレームを、順に進める。collect: 音・被弾のようすを残すか(シークの再計算では false)。
-	func advance_to(target: float, collect := true) -> void:
+	## budget_ms > 0 なら、その時間を超えたところで止める(倍速で、処理が間に合わないとき。時計は t まで)。戻り値: target まで進めたら true。
+	func advance_to(target: float, collect := true, budget_ms := 0.0) -> bool:
 		if collect:
 			hit_any = false
 			hit_started = false
 			sfx = []
 			sfx_pan = []
 		var n := frame_count()
+		var t_start := Time.get_ticks_usec()
 		while idx < n:
 			var b := idx * STRIDE
 			if frames[b] + frames[b + 1] > target:
 				break
 			_apply(b, collect)
 			idx += 1
+			if budget_ms > 0.0 and float(Time.get_ticks_usec() - t_start) > budget_ms * 1000.0 and idx < n and frames[idx * STRIDE] + frames[idx * STRIDE + 1] <= target:
+				return false
+		return true
+
+	## 次のフレームの始まりの時刻(もうなければ、とても大きい値)。いまの時刻より先なら、そのあいだは記録がない(スキップしたイントロ)。
+	func next_start() -> float:
+		return frames[idx * STRIDE] if idx < frame_count() else 1.0e30
+
+	## 1 つ前のフレームの終わりの時刻(コマ戻し)。
+	func prev_frame_time() -> float:
+		if idx < 2:
+			return start_time()
+		var b := (idx - 2) * STRIDE
+		return frames[b] + frames[b + 1]
 
 	## 1 フレームだけ進める(コマ送り)。進められたら true。
 	func step_frame() -> bool:
@@ -187,9 +206,10 @@ class Player extends RefCounted:
 				best = k
 			else:
 				break
-		var from_here := idx > 0 and t <= target and t >= float(best.t)   # いまの状態のほうが、キーフレームより目標に近い(前から来ている)
+		var from_here := idx > 0 and t <= target and t >= float(best.t) and not force_restore   # いまの状態のほうが、キーフレームより目標に近い(前から来ている)
 		if not from_here:
 			restore_key(best)
+		force_restore = false
 		advance_to(target, false)
 
 	func restore_key(k: Dictionary) -> void:
@@ -215,29 +235,85 @@ static func make_data(rec: Recorder, meta: Dictionary, stats: Dictionary) -> Dic
 	}
 
 
-## ファイルへ書く。戻り値: 書いたファイルの名前(user://replays/ の中。書けなければ "")。
-static func save(data: Dictionary) -> String:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
-	var name := "%d_%s.rpl" % [int(data.time), str(data.md5).substr(0, 8)]
-	var path := dir.path_join(name)
-	var n := 1
-	while FileAccess.file_exists(path):   # 同じ秒に 2 つ(確認用の連続プレイ)でも、上書きしない
-		path = dir.path_join("%d_%s_%d.rpl" % [int(data.time), str(data.md5).substr(0, 8), n])
-		n += 1
-	var raw := var_to_bytes(data)
-	var f := FileAccess.open(path, FileAccess.WRITE)
+## 動画の書き出し(別のプロセス)が、進み具合(0..1)を書くファイル。書き出しの親が読む。
+const PROGRESS_PATH := "user://replay_export_progress.txt"
+
+
+static func write_progress(frac: float) -> void:
+	var f := FileAccess.open(PROGRESS_PATH, FileAccess.WRITE)
+	if f != null:
+		f.store_string("%.4f" % frac)
+		f.close()
+
+
+static func read_progress() -> float:
+	var f := FileAccess.open(PROGRESS_PATH, FileAccess.READ)
 	if f == null:
-		return ""
+		return 0.0
+	var v := f.get_as_text().to_float()
+	f.close()
+	return clampf(v, 0.0, 1.0)
+
+
+static var _thread: Thread
+static var _pending := ""   # 書き込み中のファイル名
+
+
+## 保存するファイル名を決める(同じ秒に 2 つ(確認用の連続プレイ)でも、上書きしない)。
+static func _unique_name(data: Dictionary) -> String:
+	var base := "%d_%s" % [int(data.time), str(data.md5).substr(0, 8)]
+	var name := base + ".rpl"
+	var n := 1
+	while FileAccess.file_exists(dir.path_join(name)) or name == _pending:
+		name = "%s_%d.rpl" % [base, n]
+		n += 1
+	return name
+
+
+static func _write(d: String, name: String, data: Dictionary) -> bool:
+	var raw := var_to_bytes(data)
+	var f := FileAccess.open(d.path_join(name), FileAccess.WRITE)
+	if f == null:
+		return false
 	f.store_buffer(MAGIC.to_utf8_buffer())
 	f.store_32(VERSION)
 	f.store_64(raw.size())
 	f.store_buffer(raw.compress(FileAccess.COMPRESSION_ZSTD))
 	f.close()
-	return path.get_file()
+	return true
+
+
+## ファイルへ書く(その場で。確認用)。戻り値: 書いたファイルの名前(dir の中。書けなければ "")。
+static func save(data: Dictionary) -> String:
+	flush()
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	var name := _unique_name(data)
+	return name if _write(dir, name, data) else ""
+
+
+## ファイルへ書く(裏のスレッドで。圧縮に数十 ms かかり、結果画面へ移るところで止まらないように)。名前はすぐ返す。
+## 読む・整理するときは、書き終わるのを待つ(flush)。
+static func save_async(data: Dictionary) -> String:
+	flush()
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	var name := _unique_name(data)
+	_pending = name
+	_thread = Thread.new()
+	_thread.start(_write.bind(dir, name, data))
+	return name
+
+
+## 裏の書き込みが終わるのを待つ。
+static func flush() -> void:
+	if _thread != null:
+		_thread.wait_to_finish()
+		_thread = null
+		_pending = ""
 
 
 ## ファイル名(save の戻り値)または path から読む。読めない・版が違うときは空の辞書。
 static func load_file(name_or_path: String) -> Dictionary:
+	flush()
 	var path := name_or_path if name_or_path.contains("/") else dir.path_join(name_or_path)
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
@@ -259,6 +335,7 @@ static func load_file(name_or_path: String) -> Dictionary:
 
 ## 古い順に消して、KEEP 件にする。keep_names: 消さないファイル名(記録に載っているもの)。
 static func prune(keep_names: Array = []) -> void:
+	flush()
 	var names: Array = []
 	for n in DirAccess.get_files_at(dir):
 		if str(n).ends_with(".rpl"):
@@ -276,6 +353,7 @@ static func prune(keep_names: Array = []) -> void:
 
 ## 消す(記録から外れたとき)。
 static func remove(name: String) -> void:
+	flush()
 	if name != "" and FileAccess.file_exists(dir.path_join(name)):
 		DirAccess.remove_absolute(dir.path_join(name))
 

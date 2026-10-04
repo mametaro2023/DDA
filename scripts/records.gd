@@ -1,9 +1,11 @@
 extends RefCounted
 ## プレイ記録(この PC の中だけ。送信しない)。譜面の難易度(識別子 = Beatmap.md5)ごとに、クリアしたプレイの上位 KEEP 件をスコア順に残す。
+## 各記録は、そのプレイのリプレイ(scripts/replay.gd)のファイル名(replay)を持つ。記録から外れたら、そのリプレイも消す。
 ## 保存先は user://records.json。選曲画面(lazer 風)が、選んだ難易度の記録と、曲ごとの最高ランクを出すのに使う。
 ## 残すのはひとりで遊んでクリアしたものだけ(ゲームオーバー・マルチプレイは残さない)。
 
 const GameSim = preload("res://scripts/game/game_sim.gd")
+const Replay = preload("res://scripts/replay.gd")
 
 const PATH := "user://records.json"
 const VERSION := 1
@@ -56,6 +58,7 @@ static func entry_from_stats(stats: Dictionary) -> Dictionary:
 		"hits": int(stats.hits), "graze": int(stats.graze), "damage": float(stats.get("damage", 0.0)),
 		"mods": (stats.get("mod_ids", []) as Array).duplicate(), "level": float(stats.get("level", 0.0)),
 		"t": int(Time.get_unix_time_from_system()),
+		"replay": str(stats.get("replay", "")),
 	}
 
 
@@ -69,6 +72,9 @@ static func add(md5: String, entry: Dictionary) -> bool:
 	list.append(entry)
 	list.sort_custom(func(a, b): return int(a.score) > int(b.score))   # 同点は、先に出たほうが上(安定ソート)
 	if list.size() > KEEP:
+		for dropped in list.slice(KEEP):   # 記録から外れたプレイのリプレイは、もう要らない(いま足したプレイは、結果画面から見られるよう残す。直近の件数の整理で消える)
+			if str(dropped.get("replay", "")) != str(entry.get("replay", "")):
+				Replay.remove(str(dropped.get("replay", "")))
 		list.resize(KEEP)
 	_data[md5] = list
 	_save()
@@ -80,6 +86,18 @@ static func record_stats(stats: Dictionary) -> bool:
 	if not enabled:
 		return false
 	return add(str(stats.get("md5", "")), entry_from_stats(stats))
+
+
+## 記録に載っているリプレイのファイル名(整理で消さない)。
+static func replay_names() -> Array:
+	_load()
+	var out: Array = []
+	for md5 in _data:
+		for e in _data[md5]:
+			var n := str(e.get("replay", ""))
+			if n != "":
+				out.append(n)
+	return out
 
 
 ## その難易度の上位 n 件(スコアの高い順)。

@@ -3,6 +3,7 @@ extends Node
 ## 使い方: SmoothScroll.attach(scroll)。scroll_to_control(card) で、そのカードが見える位置へなめらかに動く。
 ## attach(scroll, true) なら、一覧をドラッグしてもスクロールできる: 左ドラッグ = つかんだ分だけ動く(離すと少し滑る)、
 ## 右ドラッグ = 同じ向きに速く動く(一覧の高さぶんドラッグすると、だいたい全体を移動できる)。
+## wheel_anywhere = true なら、ホイールは画面のどこで回しても(一覧の外でも)この一覧が受ける(音量メーターの上・Ctrl・wheel_except の上を除く)。
 ## 揺れ・点滅はなく、目標へ一方向に近づくだけ(UiStyle.animate が false のときは、すぐ動く)。ホイール・ドラッグはすぐ反応し、
 ## プログラムからの移動(scroll_to / scroll_to_control)は、止まった状態から加速して止まる(急に跳ばない)。
 
@@ -21,6 +22,16 @@ const MAX_DT := 1.0 / 30.0   # 1 フレームで進める時間の上限(重い�
 var sc: ScrollContainer
 ## false を返すとき、ホイールを受け付けない(上にパネルが重なっているときなど)。未設定なら常に受け付ける
 var active: Callable = Callable()
+## true のとき、ホイールは一覧の外でも受ける(選曲画面の曲の一覧)。音量より先(音量は Ctrl・メーターの上だけ)
+var wheel_anywhere := false:
+	set(v):
+		wheel_anywhere = v
+		if v:
+			add_to_group("wheel_anywhere")
+		else:
+			remove_from_group("wheel_anywhere")
+## wheel_anywhere のとき、この範囲の上は受けない(別のスクロールが受ける)
+var wheel_except: Array = []
 var _pos := 0.0           # 今の位置(小数)
 var _target := 0.0
 var _last := 0           # こちらが最後に設定した scroll_vertical(ちがえば、つまみのドラッグなど外からの移動)
@@ -66,9 +77,10 @@ func _input(event: InputEvent) -> void:
 		return
 	if active.is_valid() and not active.call():
 		return
-	if HudOverlay.meter_visible or Input.is_key_pressed(KEY_CTRL):   # 音量メーターが出ているとき・Ctrl は、音量に使う
+	var mp := sc.get_global_mouse_position()
+	if Input.is_key_pressed(KEY_CTRL) or HudOverlay.over_meter(mp):   # Ctrl・音量メーターの上は、音量に使う(メーターが出ているだけでは、スクロールが先)
 		return
-	if not sc.get_global_rect().has_point(sc.get_global_mouse_position()):
+	if not (sc.get_global_rect().has_point(mp) or (wheel_anywhere and not _in_except(mp))):
 		return
 	_sync()
 	_spring = false
@@ -79,6 +91,23 @@ func _input(event: InputEvent) -> void:
 	if _target != before:
 		UiSfx.play("tick", 1.0 + 0.04 * clampf(_target / maxf(_max_scroll(), 1.0), 0.0, 1.0) * 10.0, 0.6)   # 目盛りごとのコッという音。下へ行くほど少し高い
 	sc.get_viewport().set_input_as_handled()
+
+
+## wheel_anywhere のとき、マウスが除外の範囲(wheel_except)の上か。
+func _in_except(mp: Vector2) -> bool:
+	for c in wheel_except:
+		if c is Control and is_instance_valid(c) and (c as Control).is_visible_in_tree() and (c as Control).get_global_rect().has_point(mp):
+			return true
+	return false
+
+
+## 今、ホイールを画面全体で受けているか(HudOverlay が、音量に使うかの判断に使う)。
+func claims_wheel_anywhere() -> bool:
+	if not wheel_anywhere or not sc.is_visible_in_tree():
+		return false
+	if active.is_valid() and not active.call():
+		return false
+	return not _in_except(sc.get_global_mouse_position())
 
 
 ## ドラッグでのスクロール。扱ったら true(左ボタンの押し下げ・離しは、カードにも届くように true を返さない)。

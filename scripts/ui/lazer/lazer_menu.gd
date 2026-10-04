@@ -24,6 +24,7 @@ const Mods = preload("res://scripts/mods.gd")
 const Records = preload("res://scripts/records.gd")
 const Volume = preload("res://scripts/volume.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const LazerMarquee = preload("res://scripts/ui/lazer/lazer_marquee.gd")
 const SongArt = preload("res://scripts/song_art.gd")
@@ -116,7 +117,6 @@ var _key_to_row := {}            # 曲の識別子 → 行の番号
 var _art_t := 0.0
 var _view_at := 0                # 最後に並びを行へ反映した時刻(osu! の曲を足している間に、ときどき反映する)
 var _progress_at := 0
-var _v2_btn: Button              # フッターの「弾幕 v2 で遊ぼう」(v2 を付けていないときだけ出る)
 ## 一度読み込んで測った Lv(MOD なし)。譜面の識別子 → Lv。行の色の札に使う(この起動の間だけ覚える)
 static var _lv_seen := {}
 static var _shade: Texture2D
@@ -193,6 +193,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	NowPlaying.clear(_audio)
 	browser.close()   # 画面を離れたあとに届く、曲の読み込みの結果は捨てる
 
 
@@ -830,6 +831,7 @@ func _build_carousel() -> void:
 	_scroll.add_to_group("wheel_area")   # 一覧の上のホイールは、音量ではなくスクロールに使う(曲が少なくてスクロールしないときも)
 	_smooth = SmoothScroll.attach(_scroll, true)   # ドラッグでもスクロールできる(左 = ふつう・右 = 速い)
 	_smooth.active = _lists_active
+	_smooth.wheel_anywhere = true   # ホイールは画面のどこで回しても曲の一覧がスクロールする(音量は Ctrl+ホイール・音量メーターの上)
 	_no_match = LazerStyle.label("一致する曲がありません", 18, LazerStyle.TEXT_MUTE)
 	_no_match.visible = false
 	_place(_no_match, 640, 140, 600, 30)
@@ -870,9 +872,6 @@ func _build_footer_buttons() -> void:
 	_footer_button("MOD", LazerStyle.PURPLE, "dots", 162, 150, open_mods, Color(0.1, 0.04, 0.2))
 	_footer_button("ランダム", LazerStyle.BLUE, "shuffle", 306, 170, _random_song, Color(0.03, 0.12, 0.2))
 	_footer_button("設定", Color(0.24, 0.22, 0.31), "gear", 470, 150, func(): open_options(0), LazerStyle.TEXT)
-	var v2c: Color = Mods.find("v2").color
-	_v2_btn = _footer_button("弾幕 v2 で遊ぼう", v2c, "plus", 760, 250, _enable_v2, v2c.darkened(0.75))
-	_v2_btn.tooltip_text = "MOD「弾幕 v2」を付ける: 譜面ごとに特徴の出る弾幕と、特殊エリア。いつでも MOD から外せます"
 	var play := _footer_button("決定" if pick_mode else "プレイ", LazerStyle.YELLOW, "play", 1280 - 260, 260, _start, Color(0.2, 0.13, 0.0))
 	play.disabled = true   # 曲を読み込み終わるまで押せない(_set_loading が切り替える)
 	play.font_size = 20
@@ -899,9 +898,6 @@ func _set_loading(on: bool) -> void:
 	if _play_btn != null:
 		_play_btn.disabled = on or _loader == null
 		_play_btn.queue_redraw()
-	if _v2_btn != null:
-		_v2_btn.disabled = on or _loader == null
-		_v2_btn.queue_redraw()
 
 
 ## 左の情報を薄くする・戻す。薄くするのは 0.15 秒たってもまだ読み込み中のときだけ(すぐ終わる読み込みでは、何も変わらない)。
@@ -1821,6 +1817,7 @@ func _on_song_loaded(res: Dictionary) -> void:
 		await get_tree().process_frame   # 札を作る処理と、同じフレームにしない(音の開始も、少し時間がかかる)
 		if int(res.job) == browser.job and is_inside_tree():
 			_audio.stream = res.audio
+			NowPlaying.set_track(_audio, str(_songs[_song_sel].title), str(_songs[_song_sel].artist), float(res.audio_from), _player_step.bind(-1), _player_step.bind(1))   # 上のプレイヤー: 前・次 = 一覧の前後の曲
 			_audio.play(float(res.audio_from))
 
 
@@ -1916,11 +1913,6 @@ func _refresh_mod_bar() -> void:
 	for c in _mod_bar.get_children():
 		c.queue_free()
 	var p := Mods.params(settings.mods)
-	if _v2_btn != null:   # 弾幕 v2 を付けていないときだけ、フッターに「弾幕 v2 で遊ぼう」を出す
-		var want: bool = not p.gen_v2
-		if want and not _v2_btn.visible:
-			UiStyle.pop_in(_v2_btn, 0.0, Vector2(0, 20), 0.35)
-		_v2_btn.visible = want
 	if p.ids.is_empty():
 		_mod_bar.add_child(LazerStyle.label("MOD なし", 14, LazerStyle.TEXT_MUTE))
 		return
@@ -2068,16 +2060,13 @@ func _mod_level() -> float:
 	return browser.selected_level()
 
 
-## 「弾幕 v2 で遊ぼう」を押した: MOD「弾幕 v2」を付ける(曲を読み直す)。
-func _enable_v2() -> void:
+## 上のプレイヤーの前の曲・次の曲: 表示している一覧の中で、前後の曲を選ぶ。
+func _player_step(d: int) -> void:
 	if _launching or _mod_panel != null or _options != null:
 		return
-	var ids: Array = settings.mods.duplicate()
-	if not ids.has("v2"):
-		ids.append("v2")
-	settings.mods = ids
-	Settings.save_all(settings)
-	_on_mods_changed()
+	var to := browser.step_in_view(_song_sel, d)
+	if to >= 0 and to != _song_sel:
+		_select_song(to)
 
 
 ## 曲の一覧がホイールを受け付けるか(MOD パネルや設定パネルが上に重なっているときは、受け付けない)。

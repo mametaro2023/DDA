@@ -24,6 +24,7 @@ const UiSets = preload("res://scripts/ui/ui_sets.gd")
 const Records = preload("res://scripts/records.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const Volume = preload("res://scripts/volume.gd")
+const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
 const Updater = preload("res://scripts/updater.gd")
 const UPDATE_RECHECK_SEC := 1800.0   # 起動したままの間、新しいバージョンを確かめ直す間隔(GitHub の API は、1 時間に 60 回まで)
@@ -193,6 +194,9 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-retryhold"):
 		_smoke_retryhold()
+		return
+	if args.has("--smoke-focus"):
+		_smoke_focus()
 		return
 	if args.has("--smoke-break"):
 		_smoke_break()
@@ -833,7 +837,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
-			if extra.has("toggle"):   # 読み込みのあとで MOD を付ける(弾幕 v2 の入り切りで、曲を読み直す流れ): --shot menu out.png toggle v2
+			if extra.has("toggle"):   # 読み込みのあとで MOD を付ける(弾幕 v1 の入り切りで、曲を読み直す流れ): --shot menu out.png toggle v1
 				while _current._job_pending or _current._diff_cards.is_empty():
 					await get_tree().process_frame
 				print("toggle: 読み込み後 v2=%s Lv=%.2f" % [str(_current._gens_v2), float(_current._ratings[_current._diff_sel].level)])
@@ -888,7 +892,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			for d in loader.difficulties:
 				if d.version.contains(want):
 					bm = d
-			var gs := {"offset_ms": 0, "density_mul": 1.0,
+			var gs := {"offset_ms": 0, "density_mul": 1.0, "eye_comfort": not extra.has("sharp"),   # sharp: 目に優しい表示を切る(既定は入)
 				"mods": extra.filter(func(x): return not Mods.find(x).is_empty())}   # 例: ... Extra 40 hell rush
 			var death_t := -1.0
 			if extra.size() > 2 and extra[2].begins_with("death"):
@@ -1805,18 +1809,43 @@ func _smoke_osu_menu() -> void:
 		await get_tree().process_frame
 	await get_tree().process_frame
 	chk.call(m._loader != null and m._song_sel == idx and m._diff_cards.size() >= 1, "フォルダの曲を選んで読み込める(難易度 %d 個)" % m._diff_cards.size())
-	# 弾幕 v2 の入り切り: 同じ曲を読み直し、選んでいた難易度はそのまま
-	if m.has_method("_enable_v2") and m._diff_cards.size() >= 2:
+	# 弾幕の作り方の切り替え(初期状態は v2。MOD「弾幕 v1」で v1): 同じ曲を読み直し、選んでいた難易度はそのまま
+	if m.has_method("_on_mods_changed") and m._diff_cards.size() >= 2:
+		var v2_now := func() -> bool: return bool(m.browser.gens_v2) if "browser" in m else bool(m._gens_v2)
+		chk.call(v2_now.call() and str((m._gens[m._diff_sel] as Dictionary).get("style", "")) == "v2", "初期状態の弾幕は v2 の作り方")
 		m._select_diff(1)
 		var ver: String = str(m._loader.difficulties[m._diff_sel].version)
-		m._enable_v2()
+		m.settings.mods = ["v1"]
+		m._on_mods_changed()
 		var t1 := Time.get_ticks_msec()
-		var v2_now := func() -> bool: return bool(m.browser.gens_v2) if "browser" in m else bool(m._gens_v2)
+		while (m._job_pending or v2_now.call()) and Time.get_ticks_msec() - t1 < 20000:
+			await get_tree().process_frame
+		await get_tree().process_frame
+		chk.call(not v2_now.call() and str(m._loader.difficulties[m._diff_sel].version) == ver, "MOD「弾幕 v1」を付けると読み直し、難易度はそのまま(%s)" % ver)
+		chk.call(str((m._gens[m._diff_sel] as Dictionary).get("style", "")) == "v1", "弾幕が v1 の作り方になっている")
+		m.settings.mods = []
+		m._on_mods_changed()
+		t1 = Time.get_ticks_msec()
 		while (m._job_pending or not v2_now.call()) and Time.get_ticks_msec() - t1 < 20000:
 			await get_tree().process_frame
 		await get_tree().process_frame
-		chk.call(v2_now.call() and str(m._loader.difficulties[m._diff_sel].version) == ver, "弾幕 v2 を付けると読み直し、難易度はそのまま(%s)" % ver)
-		chk.call(str((m._gens[m._diff_sel] as Dictionary).get("style", "")) == "v2", "弾幕が v2 の作り方になっている")
+		chk.call(v2_now.call() and str((m._gens[m._diff_sel] as Dictionary).get("style", "")) == "v2", "MOD を外すと v2 に戻る")
+	# 上のツールバーのプレイヤー(lazer): いま流れている曲が出て、次の曲・一時停止が効く
+	if m.has_method("_player_step"):
+		var t1 := Time.get_ticks_msec()
+		while (m._job_pending or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t1 < 20000:
+			await get_tree().process_frame
+		var title0 := NowPlaying.title
+		chk.call(NowPlaying.is_playing() and title0 != "" and title0 == str(m._songs[m._song_sel].title), "プレイヤーに、流れている曲が出る(%s)" % title0)
+		m._player_step(1)
+		t1 = Time.get_ticks_msec()
+		while (m._job_pending or NowPlaying.title == title0 or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t1 < 20000:
+			await get_tree().process_frame
+		chk.call(NowPlaying.title != title0 and NowPlaying.title == str(m._songs[m._song_sel].title), "次の曲で、プレイヤーの曲名が変わる(%s → %s)" % [title0, NowPlaying.title])
+		NowPlaying.toggle()
+		chk.call(not NowPlaying.is_playing() and NowPlaying.player.stream_paused, "一時停止できる")
+		NowPlaying.toggle()
+		chk.call(NowPlaying.is_playing(), "再生に戻せる")
 	Settings.restore(original)
 	SongLibrary.apply_osu_settings(original)
 	print("smoke-osu-menu: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
@@ -2105,7 +2134,7 @@ func _prof_ui() -> void:
 
 
 ## 開発用: プレイ中のフレームの長さを実時間で測り、長いフレームの内訳(判定の刻み・弾の数・描画の準備・描画)を出す。垂直同期は切る。
-## -- --prof-frames <osz のパス> [難易度名の一部] [秒] [MOD ...](既定: 弾幕 v2 + 練習)
+## -- --prof-frames <osz のパス> [難易度名の一部] [秒] [MOD ...](既定: 練習。弾幕は v2)
 func _prof_frames() -> void:
 	var args := OS.get_cmdline_user_args()
 	var i := args.find("--prof-frames")
@@ -2120,7 +2149,7 @@ func _prof_frames() -> void:
 	var secs: float = float(rest[2]) if rest.size() > 2 else 60.0
 	var mods: Array = rest.slice(3).filter(func(x): return not Mods.find(x).is_empty())
 	if mods.is_empty():
-		mods = ["v2", "practice"]
+		mods = ["practice"]
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Engine.max_fps = 320 if args.has("fps320") else 0   # fps320: 320Hz のモニターと同じ間隔で回す
 	var vp := get_viewport().get_viewport_rid()
@@ -2368,6 +2397,36 @@ func _smoke_retryhold() -> void:
 	key.call(false)
 	fails += (0 if ok1 else 1) + (0 if ok2 else 1) + (0 if ok3 else 1)
 	print("smoke-retryhold: ", "OK" if fails == 0 else "%d FAILED" % fails)
+	get_tree().quit()
+
+
+## 開発用: プレイ中にウィンドウのフォーカスが外れたら、自動でポーズになるか確かめる。-- --smoke-focus
+func _smoke_focus() -> void:
+	DisplayServer.window_move_to_foreground()   # 起動したウィンドウが裏にあると、本物のフォーカス外れでポーズになってしまう
+	await get_tree().create_timer(0.5).timeout
+	GameScreen.focus_pause_in_dev = true
+	var loader := OszLoader.new()
+	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
+	var bm = loader.difficulties[0]
+	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	await get_tree().create_timer(0.5).timeout
+	var g = _current
+	while not g._audio_started:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.5).timeout
+	var fails := 0
+	var ok0: bool = not g.is_paused()
+	print("[playing] not paused: %s" % ("OK" if ok0 else "FAIL"))
+	g.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
+	await get_tree().process_frame
+	var ok1: bool = g.is_paused() and g._pause_layer.visible and g._audio.stream_paused
+	print("[focus out] paused (menu shown, music paused): %s" % ("OK" if ok1 else "FAIL"))
+	g.notification(NOTIFICATION_APPLICATION_FOCUS_IN)
+	await get_tree().process_frame
+	var ok2: bool = g.is_paused()
+	print("[focus in] stays paused: %s" % ("OK" if ok2 else "FAIL"))
+	fails += (0 if ok0 else 1) + (0 if ok1 else 1) + (0 if ok2 else 1)
+	print("smoke-focus: ", "OK" if fails == 0 else "%d FAILED" % fails)
 	get_tree().quit()
 
 
@@ -3372,6 +3431,27 @@ func _smoke_volume() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	chk.call(Volume.master == before_v and not overlay._shown, "曲の一覧の上のホイールは、音量を変えない(全体 %d → %d)" % [before_v, Volume.master])
+	# 音量メーターが出ている間でも、音量の優先度は低い: 一覧の上・画面のどこでも、ホイールは曲の一覧に使う(メーターの上と Ctrl のときだけ音量)
+	var wheel_at := func(at: Vector2):
+		var e3 := InputEventMouseButton.new()
+		e3.button_index = MOUSE_BUTTON_WHEEL_DOWN
+		e3.pressed = true
+		e3.position = at
+		e3.global_position = at
+		Input.warp_mouse(at)
+		await get_tree().create_timer(0.15).timeout   # 実際のマウスの位置が、ビューポートに伝わるのを待つ
+		Input.parse_input_event(e3)
+		await get_tree().process_frame
+		await get_tree().process_frame
+	overlay._show_panel()
+	await get_tree().process_frame
+	await wheel_at.call(list_at)
+	chk.call(Volume.master == before_v and overlay._shown, "メーターが出ていても、曲の一覧の上のホイールは音量を変えない(全体 %d → %d)" % [before_v, Volume.master])
+	await wheel_at.call(Vector2(1000, 700))
+	chk.call(Volume.master == before_v, "メーターが出ていても、画面のどこで回しても音量を変えない(一覧がスクロールする。全体 %d → %d)" % [before_v, Volume.master])
+	await wheel_at.call(Vector2(640, 60))
+	chk.call(Volume.master != before_v, "メーターの上のホイールは音量を変える(全体 %d → %d。メーター %s・マウス %s)" % [before_v, Volume.master, str(HudOverlay.meter_rect), str(get_viewport().get_mouse_position())])
+	Input.warp_mouse(Vector2(1000, 700))   # マウスをメーターの上に残さない(次に動かしたとき、メーターが消えなくなる)
 	Settings.restore(original)
 	print("smoke-volume: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()

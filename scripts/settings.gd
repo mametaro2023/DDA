@@ -19,6 +19,7 @@ const DEFAULTS := {
 	"vsync": true,         # 垂直同期(画面のちらつき・ずれを抑える。切ると遅延が減る)
 	"window_size": "",    # ウィンドウの大きさ("1600x900" の形、または "fullscreen")。空なら変えない(標準は 1280x720。枠のドラッグで変えた大きさは保存しない)
 	"show_fps": false,      # 画面右下に FPS(描画・処理)を出す
+	"eye_comfort": true,  # アリーナの表示を目に優しくする(弾の色・白い芯・キアイの拍の光・予兆の点滅を抑える。当たり判定・難易度は変わらない)
 	"check_update": true, # 起動時に、新しいバージョンがないか確認する
 	"auto_update": true,  # 新しいバージョンが見つかったら、自動でダウンロードして入れ替える(check_update が入のとき。書き出した版のみ)
 	"last_auto_update": "", # 最後に自動更新を始めたバージョン(同じバージョンで繰り返し更新し続けないための印)
@@ -39,6 +40,8 @@ static func load_all() -> Dictionary:
 	if cfg.load(PATH) == OK:
 		for k in DEFAULTS:
 			out[k] = cfg.get_value("game", k, DEFAULTS[k])
+		# 弾幕 v2 は初期状態になった(旧版の MOD「弾幕 v2」は、もう無い)
+		out.mods = (out.mods as Array).filter(func(id): return str(id) != "v2")
 		# 旧版の「練習モード」の設定は、MOD「練習」に引き継ぐ
 		if bool(cfg.get_value("game", "practice", false)) and not (out.mods as Array).has("practice"):
 			var ms: Array = (out.mods as Array).duplicate()

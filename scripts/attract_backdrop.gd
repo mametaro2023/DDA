@@ -7,7 +7,7 @@ const SongLibrary = preload("res://scripts/song_library.gd")
 
 
 ## 次の曲を選んで読み込む。exclude は、避けたい曲(直前に流した曲)のパス。
-## 返す辞書: {path, stream, tex(なければ null), start(試聴の開始位置・秒)}。曲が 1 つもない・どれも読めないときは空の辞書。
+## 返す辞書: {path, stream, tex(なければ null), start(試聴の開始位置・秒), title, artist}。曲が 1 つもない・どれも読めないときは空の辞書。
 func pick(exclude := "") -> Dictionary:
 	var paths := SongLibrary.find_all()
 	if paths.is_empty():
@@ -25,7 +25,7 @@ func pick(exclude := "") -> Dictionary:
 		l.close()
 		if stream == null:
 			continue
-		return {"path": path, "stream": stream, "tex": tex, "start": maxf(bm.preview_time / 1000.0, 0.0)}
+		return {"path": path, "stream": stream, "tex": tex, "start": maxf(bm.preview_time / 1000.0, 0.0), "title": bm.title, "artist": bm.artist}
 	return {}
 
 
@@ -57,7 +57,7 @@ static func _pick_data(paths: Array, exclude: String) -> Dictionary:
 			continue
 		if img != null and img.get_width() > 1600:   # 表示は 1280×720 を覆うだけなので、縮めてから渡す(テクスチャへの転送を軽く)
 			img.resize(1600, int(round(img.get_height() * 1600.0 / img.get_width())), Image.INTERPOLATE_BILINEAR)
-		return {"path": path, "stream": stream, "img": img, "start": maxf(bm.preview_time / 1000.0, 0.0)}
+		return {"path": path, "stream": stream, "img": img, "start": maxf(bm.preview_time / 1000.0, 0.0), "title": bm.title, "artist": bm.artist}
 	return {}
 
 

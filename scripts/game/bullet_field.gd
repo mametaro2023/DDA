@@ -85,6 +85,8 @@ var vis_r0 := 0.0
 var vis_r1 := 0.0
 ## キアイ中の拍に合わせた光の強さ 0..1。0 より大きいとき、弾の周りに淡い光(加算合成のハロー)を足す。描画だけで、判定には関係しない
 var halo := 0.0
+## 目に優しい表示(設定「目に優しい表示」)。1 のとき、弾の色を少し落ち着かせ、白い芯を少し暗く透かし、キアイの光を弱める。描画だけで、判定には関係しない
+var soft := 0.0
 
 var _mm_halo: MultiMesh    # 弾の周りの淡い光(キアイの光・時の淀み/急流の光。いちばん下の層)
 var _mm_color: MultiMesh
@@ -199,6 +201,8 @@ uniform vec2 vis_center;
 uniform float vis_r0 = 0.0;
 uniform float vis_r1 = 0.0;
 uniform float halo = 0.0;   // キアイの光の強さ(0 なら光らない)
+uniform float fade = 1.0;   // 全体の不透明度(このシェーダーは COLOR を上書きするので、ノードの modulate は効かない。自前で掛ける)
+uniform float soft = 0.0;   // 目に優しい表示(0 = ふつう / 1 = 色を落ち着かせ、白い芯と光を弱める)
 varying float sz;
 varying vec4 vc;
 
@@ -216,9 +220,10 @@ void vertex() {
 	float st = clamp(abs(ts - 1.0) / 0.45, 0.0, 1.0);   // 時の淀み・急流の効き(0..1)
 	vec3 tint = ts < 1.0 ? slow_tint.rgb : fast_tint.rgb;
 	vec3 c = mix(base.rgb, tint, warp_body_tint * st);
-	float va = 1.0;   // 暗闇: 見える範囲の外ほど薄い
+	c = mix(c, vec3(dot(c, vec3(0.299, 0.587, 0.114))), 0.22 * soft) * (1.0 - 0.1 * soft);   // 目に優しい表示: 彩度と明るさを少し落とす
+	float va = fade;   // 暗闇: 見える範囲の外ほど薄い
 	if (vis_r1 > 0.0) {
-		va = 1.0 - smoothstep(vis_r0, vis_r1, distance(p, vis_center));
+		va *= 1.0 - smoothstep(vis_r0, vis_r1, distance(p, vis_center));
 	}
 	float s = 0.0;
 	if (layer == 0) {
@@ -226,13 +231,13 @@ void vertex() {
 		vc = vec4(c, va);
 	} else if (layer == 1) {
 		s = fresh ? 0.0 : r * 1.4 + 2.0;   // 白い芯の縁 = 当たり判定の縁(判定半径 = 0.7r。縁のぼかし分の 2px を足す)
-		vc = vec4(1.0, 1.0, 1.0, va);
+		vc = vec4(vec3(1.0 - 0.1 * soft), (1.0 - 0.2 * soft) * va);   // 目に優しい表示: 芯の白を少し暗く・透かす(縁 = 当たり判定の位置は同じ)
 	} else if (layer == 2) {
 		s = fresh ? r * 2.3 : 0.0;
 		vc = vec4(c, va);
 	} else {
 		// キアイの光は加算(不透明度 0 の、あらかじめ掛けた色)。時の淀み・急流の光は、重ねて塗る(白く飛ばない)
-		float ha = halo * 0.4;
+		float ha = halo * 0.4 * (1.0 - 0.6 * soft);
 		vec3 hc = base.rgb;
 		float over = 0.0;
 		s = r * 7.0;
@@ -678,6 +683,8 @@ func sync_render() -> void:
 			m.set_shader_parameter("data", tex)
 	var halo_v := halo if halo > 0.01 else 0.0
 	_send("halo", halo_v)
+	_send("fade", modulate.a)   # ゲームオーバーで弾が消える・再開で弾が現れる(modulate:a)をシェーダーへ
+	_send("soft", soft)
 	_send("vis_r1", vis_r1)
 	if vis_r1 > 0.0:
 		_send("vis_r0", vis_r0)

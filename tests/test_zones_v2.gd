@@ -10,6 +10,7 @@ const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const ZoneArea = preload("res://scripts/game/zone_area.gd")
+const ZoneGen = preload("res://scripts/game/zone_gen_v2.gd")
 const Mods = preload("res://scripts/mods.gd")
 
 const DIR := "C:/Desktop/my_apps/DDA/"
@@ -63,6 +64,18 @@ func _test_shapes() -> void:
 	var small := Rect2(240, 180, 480, 360)
 	_check(ZoneArea.contains(half, Vector2(300, 300), small, 0.0) and not ZoneArea.contains(half, Vector2(500, 300), small, 0.0) and ZoneArea.bounds(half, small, 0.0).size.is_equal_approx(Vector2(240, 360)),
 		"小型化: 動ける範囲に対する割合で拡縮する")
+	# 毒の流れる帯は、盤面の半分までしか動かない(端から端まで動くと、どこへ逃げても必ず毒を受ける)
+	var reach_ok := true
+	for fl in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+		for kk in [0.0, 0.5, 1.0]:
+			var ps: Dictionary = ZoneGen._shape("sweep", kk, 0.3, fl, true)
+			var ext: float = (ps.r as Rect2).size.x + absf((ps.mv as Vector2).x) if absf(fl.x) >= absf(fl.y) else (ps.r as Rect2).size.y + absf((ps.mv as Vector2).y)
+			if ext > ZoneGen.SWEEP_POISON_REACH + 1e-6 or (ps.mv as Vector2) == Vector2.ZERO:
+				reach_ok = false
+			var wide: Dictionary = ZoneGen._shape("sweep", kk, 0.3, fl, false)
+			if absf((wide.mv as Vector2).x) + absf((wide.mv as Vector2).y) < 0.5:
+				reach_ok = false
+	_check(reach_ok, "毒の流れる帯は、幅を含めて盤面の半分以内を動く(毒でない帯は、端から端まで動く)")
 	_check(absf(ZoneArea.area_fraction(half) - 0.5) < 1e-6 and absf(ZoneArea.area_fraction(disc) - PI * 0.09 * 0.75) < 1e-6, "面積の割合")
 	_check(ZoneArea.family_of("slow") == "trial" and ZoneArea.family_of("heal") == "boon" and ZoneArea.family_of("warp") == "warp" and ZoneArea.family_of("haste") == "trial" and ZoneArea.family_of("flow") == "trial" and ZoneArea.family_of("x") == "", "系統(試練・恩恵・変質。時の急流・流れは試練)")
 
@@ -205,7 +218,7 @@ func _test_generation() -> void:
 			safe_ok = false
 	_check(safe_ok, "試練に入るエリアの面積は、動ける範囲の半分以下(安全な場所が残る)")
 	# MOD(加速)で時刻が詰まる。形式も保たれる
-	var v2p := Mods.params(["v2", "rush"])
+	var v2p := Mods.params(["rush"])
 	var rush := Mods.apply(gh, v2p)
 	_check(rush.zones.size() == gh.zones.size() and absf(float(rush.zones[3].t) - float(gh.zones[3].t) / v2p.rate) < 1e-6 and rush.zones[3].has("areas"), "MOD(加速)で、エリアの時刻も 1/%.2f になる" % v2p.rate)
 	# 難易度(Lv)・弾幕は、エリアの有無で変わらない

@@ -4,6 +4,7 @@ extends RefCounted
 const LazerStyle = preload("res://scripts/ui/lazer/lazer_style.gd")
 const LazerIcons = preload("res://scripts/ui/lazer/lazer_icons.gd")
 const LazerButton = preload("res://scripts/ui/lazer/lazer_button.gd")
+const LazerPlayer = preload("res://scripts/ui/lazer/lazer_player.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 
 const TOOLBAR_H := 40.0
@@ -46,7 +47,7 @@ static func build_backdrop(host: Control) -> Dictionary:
 	return {"holder": holder, "layers": layers, "drift": drift}
 
 
-## 上のツールバー: 左に設定の歯車と、いまの場所(パンくず。最後が現在地)、右に時計とプレイヤー名。返す辞書: {node, clock(時計の Label)}
+## 上のツールバー: 左に設定の歯車と、いまの場所(パンくず。最後が現在地)、右に流れている曲のプレイヤー・時計・プレイヤー名。返す辞書: {node, clock(時計の Label)}
 static func build_toolbar(host: Control, crumbs: Array, settings: Dictionary, on_gear: Callable) -> Dictionary:
 	var tb := Control.new()
 	tb.position = Vector2.ZERO
@@ -108,6 +109,9 @@ static func build_toolbar(host: Control, crumbs: Array, settings: Dictionary, on
 	clock.position = Vector2(nl.position.x - 14 - 44, 10)
 	tb.add_child(clock)
 	update_clock(clock)
+	var music := LazerPlayer.new()   # 時計の左: いま流れている曲
+	music.position = Vector2(clock.position.x - 6.0 - LazerPlayer.W, 0)
+	tb.add_child(music)
 	return {"node": tb, "clock": clock}
 
 

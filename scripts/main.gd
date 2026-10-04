@@ -99,7 +99,8 @@ func _ready() -> void:
 		Records.enabled = false
 		Replay.enabled = false
 		_replay_export_child(str(args[ri + 1]), int(args[ri + 2]) if args.size() > ri + 2 else 1, float(args[ri + 3]) if args.size() > ri + 3 else 3.0,
-			float(args[ri + 4]) if args.size() > ri + 4 else -1.0, float(args[ri + 5]) if args.size() > ri + 5 else -1.0)
+			float(args[ri + 4]) if args.size() > ri + 4 else -1.0, float(args[ri + 5]) if args.size() > ri + 5 else -1.0,
+			str(args[args.find("--chart") + 1]) if args.has("--chart") and args.size() > args.find("--chart") + 1 else "")
 		return
 	var i := args.find("--shot")
 	if i >= 0 and args.size() > i + 2:
@@ -756,7 +757,7 @@ func show_replay(name: String, on_close: Callable) -> void:
 	g.quit_requested.connect(func():
 		_export_forget(g)
 		on_close.call())
-	g.replay_export_requested.connect(func(d: Dictionary, opts: Dictionary): _replay_export(name, d, opts, g))
+	g.replay_export_requested.connect(func(d: Dictionary, opts: Dictionary): _replay_export(name, d, opts, g, str(found.get("path", ""))))
 	_stop_music()
 	_swap(g)
 
@@ -767,9 +768,13 @@ var _export_timer: Timer
 
 
 ## 動画の書き出しの子プロセス: 操作パネルなしで、リプレイを(区間があればその区間だけ)1 倍の速さで流す。流し終わると、自分で終了する。
-func _replay_export_child(path: String, trail_mode: int, trail_sec: float, range_a: float, range_b: float) -> void:
+func _replay_export_child(path: String, trail_mode: int, trail_sec: float, range_a: float, range_b: float, chart_path := "") -> void:
 	var data := Replay.load_file(path)
-	var found := Replay.find_chart(str(data.get("md5", ""))) if not data.is_empty() else {}
+	var found := {}
+	if not data.is_empty():
+		found = Replay.open_chart(chart_path, str(data.get("md5", ""))) if chart_path != "" else {}
+		if found.is_empty():
+			found = Replay.find_chart(str(data.get("md5", "")))
 	if data.is_empty() or found.is_empty():
 		printerr("replay-export: リプレイまたは曲を読めません: ", path)
 		get_tree().quit(1)
@@ -796,7 +801,7 @@ func _ffmpeg_exe() -> String:
 ## 動画の書き出し: 別のプロセスの Godot が、Movie Maker(--write-movie)で、リプレイを固定のフレーム時間で再生しながら、画面と音を AVI に書く。
 ## opts: {w, h, fps, trail_mode, trail_sec, a, b}(a, b = 区間。なければ -1)。空なら、書き出し中の中止。
 ## ffmpeg が PC にあれば、そのあと mp4 にも変換する(変換できたら、AVI は消す)。
-func _replay_export(name: String, data: Dictionary, opts: Dictionary, screen) -> void:
+func _replay_export(name: String, data: Dictionary, opts: Dictionary, screen, chart_path := "") -> void:
 	if opts.is_empty() or not _export.is_empty():
 		if not _export.is_empty():
 			_export_cancel()
@@ -811,7 +816,7 @@ func _replay_export(name: String, data: Dictionary, opts: Dictionary, screen) ->
 		args.append_array(["--path", ProjectSettings.globalize_path("res://")])
 	args.append_array(["--write-movie", avi, "--fixed-fps", str(int(opts.get("fps", 60))), "--resolution", "%dx%d" % [int(opts.get("w", 1280)), int(opts.get("h", 720))], "--windowed", "--",
 		"--replay-export", ProjectSettings.globalize_path(Replay.dir.path_join(name)), str(int(opts.get("trail_mode", 1))), str(float(opts.get("trail_sec", 3.0))),
-		str(float(opts.get("a", -1.0))), str(float(opts.get("b", -1.0)))])
+		str(float(opts.get("a", -1.0))), str(float(opts.get("b", -1.0))), "--chart", chart_path])
 	Replay.write_progress(0.0)
 	var pid := OS.create_process(OS.get_executable_path(), args)
 	if pid <= 0:
@@ -2760,13 +2765,13 @@ func _smoke_replay() -> void:
 	var base: float = first_fire - 1.5   # スキップで飛ばした先(記録のある区間の始まり)
 	for target in [base + 1.5, base + 0.5, base + 7.0]:
 		var a: float = Time.get_ticks_msec()
-		r._replay_seek(target)
+		r._replay_seek_now(target)
 		var took: float = Time.get_ticks_msec() - a
 		seek_ok = seek_ok and absf(r._rt - target) < 0.05
 		print("   seek %.1f → %.3f (%d ms), bullets=%d gauge=%.3f" % [target, r._rt, int(took), r.field.count, r.sim.gauge])
 	chk.call(seek_ok, "任意の秒へ飛べる")
 	# 6) 軌道(T で 切 → 過去 → 過去+未来)
-	r._replay_seek(base + 3.0)
+	r._replay_seek_now(base + 3.0)
 	var m0: int = r.replay_trail_mode
 	await key.call(KEY_T)
 	await key.call(KEY_T)
@@ -2779,6 +2784,7 @@ func _smoke_replay() -> void:
 	r._replay_apply_trail()
 	await get_tree().process_frame
 	shot.call("trail")
+	get_viewport().warp_mouse(Vector2(640, 200))   # マウスが画面の下の端にあると、パネルが重ねて出るので、離しておく
 	await key.call(KEY_H)
 	await get_tree().create_timer(0.8).timeout
 	chk.call(not r._rp_bar._panel.visible and r._rp_bar.pinned_hidden and is_equal_approx(r.scale.x, 1.0), "H キーで操作パネルが隠れ、プレイ画面が元の大きさに戻る")
@@ -2796,13 +2802,13 @@ func _smoke_replay() -> void:
 	# 7b) 画面の構成・区間・OSD・操作の一覧・書き出しの選択・ドラッグ中の移動
 	chk.call(r._rp_dense != null and r._rp_dense.count() > 10 and r._rp_dense.done, "飛ぶ前に、裏で追加のキーフレームが作られている(%d 個)" % r._rp_dense.count())
 	chk.call(is_equal_approx(r.scale.x, r.ReplayBar.DOCK_SCALE) and r._view_l < 0.0 and r._rp_state_l != null, "パネルのぶん、プレイ画面が縮んでいる(%.3f)。左のパネルに状態が出る(%s)" % [r.scale.x, r._rp_state_l.text if r._rp_state_l != null else ""])
-	r._replay_seek(base + 2.0)
+	r._replay_seek_now(base + 2.0)
 	await key.call(KEY_I)
-	r._replay_seek(base + 4.0)
+	r._replay_seek_now(base + 4.0)
 	await key.call(KEY_O)
 	chk.call(is_equal_approx(r.replay_range_a, base + 2.0) and r._rp_range_ok(), "I / O で区間を決める(%.2f–%.2f)" % [r.replay_range_a, r.replay_range_b])
 	chk.call(r._rp_bar._osd.modulate.a > 0.5, "操作の反応(OSD)が出る('%s')" % r._rp_bar._osd.text)
-	r._replay_seek(base + 3.0)
+	r._replay_seek_now(base + 3.0)
 	r._replay_set_playing(true)
 	await get_tree().create_timer(3.6).timeout
 	chk.call(r._rt >= base + 2.0 - 0.05 and r._rt <= base + 4.0 + 0.3 and r._rp_playing, "区間は繰り返される(3.6 秒後 %.2f)" % r._rt)
@@ -2823,13 +2829,23 @@ func _smoke_replay() -> void:
 	chk.call(r._rp_bar.help_visible(), "F1 で操作の一覧が出る")
 	await key.call(KEY_ESCAPE)
 	chk.call(not r._rp_bar.help_visible() and not closed[0], "Esc は、まず一覧を閉じる(リプレイは閉じない)")
+	r._rp_bar._open_menu(r._rp_bar._trail_btn, r._rp_bar._trail_items())
+	await get_tree().process_frame
+	await get_tree().process_frame
+	chk.call(r._rp_bar._menu.visible and r._rp_bar._menu_box.get_child_count() >= 8, "「軌道」を押すと、選択肢のメニューが開く")
+	shot.call("menu")
+	r._rp_bar._menu_box.find_children("*", "Button", true, false)[2].pressed.emit()
+	chk.call(r.replay_trail_mode == 2 and not r._rp_bar._menu.visible, "メニューから「過去+未来」を選べる")
+	r.replay_trail_mode = 1
+	r._replay_apply_trail()
 	# 書き出しの大きさの選択
 	var got_opts := [{}]
 	r._rp_bar.export_requested.connect(func(o: Dictionary): got_opts[0] = o)
 	r._rp_bar._on_export_pressed()
-	chk.call(r._rp_bar._exp_pop.visible, "「動画出力」で、大きさの選択が出る")
-	r._rp_bar._exp_pop.find_children("*", "Button", true, false)[1].pressed.emit()
-	chk.call(int(got_opts[0].get("w", 0)) == 1920 and int(got_opts[0].get("fps", 0)) == 60 and not r._rp_bar._exp_pop.visible, "1920×1080 を選ぶと、その指定で書き出しを頼む")
+	await get_tree().process_frame
+	chk.call(r._rp_bar._menu.visible, "「動画出力」で、大きさの選択が出る")
+	r._rp_bar._menu_box.find_children("*", "Button", true, false)[1].pressed.emit()
+	chk.call(int(got_opts[0].get("w", 0)) == 1920 and int(got_opts[0].get("fps", 0)) == 60 and not r._rp_bar._menu.visible, "1920×1080 を選ぶと、その指定で書き出しを頼む")
 	# 画面のクリックで 再生 / 停止
 	var was: bool = r._rp_playing
 	var click := InputEventMouseButton.new()
@@ -2840,7 +2856,7 @@ func _smoke_replay() -> void:
 	chk.call(r._rp_playing != was, "画面をクリックすると、再生 / 停止が切り替わる")
 	r._replay_set_playing(false)
 	# 8) 最後まで再生して止まる
-	r._replay_seek(r._rp.end_time() - 0.5)
+	r._replay_seek_now(r._rp.end_time() - 0.5)
 	r._replay_set_playing(true)
 	await get_tree().create_timer(1.2).timeout
 	chk.call(r._rp.at_end() and not r._rp_playing, "最後に着くと止まる")
@@ -2884,11 +2900,11 @@ func _smoke_replay() -> void:
 	var r2 = _current
 	chk.call(r2 != res and r2.get("_rp") != null and r2.sim.failed == false, "リザルトの「リプレイ」でリプレイが開く")
 	chk.call(r2._rp_hits.size() > 0 and r2._rp_state_l != null, "被弾の記録が読める(%d 回)。ゲームオーバーのリプレイにも REPLAY の表示" % r2._rp_hits.size())
-	r2._replay_seek(r2._rp.start_time())
+	r2._replay_seek_now(r2._rp.start_time())
 	r2._replay_jump_hit(1)
 	var h0: float = float(r2._rp_hits[0])
 	chk.call(absf(r2._rt - maxf(h0 - 1.5, r2._rp.start_time())) < 0.05, "「次の被弾」で、最初の被弾の少し前へ飛ぶ(%.2f / 被弾 %.2f)" % [r2._rt, h0])
-	r2._replay_seek(r2._rp.end_time() - 0.2)
+	r2._replay_seek_now(r2._rp.end_time() - 0.2)
 	var rt_before: float = r2._rt
 	r2._replay_jump_hit(-1)
 	chk.call(r2._rt < rt_before - 0.3 and r2._rt <= float(r2._rp_hits[r2._rp_hits.size() - 1]) - 1.5 + 0.05, "「前の被弾」で、最後の被弾の少し前へ飛ぶ(%.2f)" % r2._rt)
@@ -2896,19 +2912,19 @@ func _smoke_replay() -> void:
 	r2.replay_trail_mode = 2
 	r2.replay_trail_sec = 5.0
 	r2._replay_apply_trail()
-	r2._replay_seek(maxf(h0 - 0.5, r2._rp.start_time()))
+	r2._replay_seek_now(maxf(h0 - 0.5, r2._rp.start_time()))
 	await get_tree().process_frame
 	await get_tree().process_frame
 	shot.call("hit")
 	r2.replay_trail_mode = 1
 	r2.replay_trail_sec = 3.0
 	r2._replay_apply_trail()
-	r2._replay_seek(r2._rp.end_time())
+	r2._replay_seek_now(r2._rp.end_time())
 	await get_tree().create_timer(1.6).timeout
 	chk.call(r2.sim.failed and r2._dead, "最後まで飛ぶと、ゲームオーバーの演出になる")
 	shot.call("dead")
 	var tdead: float = r2._rp.end_time()
-	r2._replay_seek(tdead - 6.0)
+	r2._replay_seek_now(tdead - 6.0)
 	await get_tree().create_timer(0.3).timeout
 	chk.call(not r2._dead and not r2.sim.failed and r2.field.modulate.a == 1.0 and not r2._view_over.dead, "前へ飛ぶと、ゲームオーバーの演出が元に戻る")
 	r2._replay_set_playing(true)
@@ -2938,10 +2954,36 @@ func _smoke_replay() -> void:
 	chk.call(r3.get("_rp") != null and r3.sim.boss != null, "撃破 MOD のリプレイが開く")
 	var hp_marks := []
 	for tm in [0.4, 0.8]:
-		r3._replay_seek(r3._rp.start_time() + (r3._rp.end_time() - r3._rp.start_time()) * tm)
+		r3._replay_seek_now(r3._rp.start_time() + (r3._rp.end_time() - r3._rp.start_time()) * tm)
 		hp_marks.append(r3.sim.boss.hp)
-	r3._replay_seek(r3._rp.start_time() + (r3._rp.end_time() - r3._rp.start_time()) * 0.4)
+	r3._replay_seek_now(r3._rp.start_time() + (r3._rp.end_time() - r3._rp.start_time()) * 0.4)
 	chk.call(is_equal_approx(r3.sim.boss.hp, hp_marks[0]), "撃破: 同じ時刻へ戻すと、ボスの状態も同じ(HP %.1f)" % r3.sim.boss.hp)
+	# 飛ぶ計算は、数フレームに分けて進む(画面は止まらず、時間がかかれば「読み込み中」が出る)
+	r3._rp.cache = null   # 追加のキーフレームがない(裏がまだ作り終えていない)ときと同じにする
+	var tgt3: float = r3._rp.start_time() + (r3._rp.end_time() - r3._rp.start_time()) * 0.8
+	r3._replay_seek_now(tgt3)
+	var ref_hp: float = r3.sim.boss.hp
+	var ref_score: float = r3.sim.score
+	r3._replay_seek_now(r3._rp.start_time() + 1.0)
+	r3.replay_seek_budget_ms = 0.4
+	var tstart := Time.get_ticks_msec()
+	r3._replay_seek(tgt3)
+	var seek_frames := 0
+	var saw_loading := false
+	var worst_frame := 0.0
+	var tlast := Time.get_ticks_usec()
+	while r3._rp_seek_to >= 0.0 and seek_frames < 1500:
+		await get_tree().process_frame
+		var tn := Time.get_ticks_usec()
+		worst_frame = maxf(worst_frame, float(tn - tlast) / 1000.0)
+		tlast = tn
+		saw_loading = saw_loading or r3._rp_bar._load_box.visible
+		seek_frames += 1
+	print("   async seek: %d フレーム, %d ms, 最長のフレーム %.1f ms" % [seek_frames, Time.get_ticks_msec() - tstart, worst_frame])
+	chk.call(seek_frames >= 3 and r3._rp_seek_to < 0.0 and not r3._rp_bar._load_box.visible, "飛ぶ計算が数フレームに分かれ、終わると「読み込み中」が消える(%d フレーム)" % seek_frames)
+	chk.call(saw_loading, "時間がかかる間は「読み込み中」が出る")
+	chk.call(is_equal_approx(r3.sim.boss.hp, ref_hp) and is_equal_approx(r3.sim.score, ref_score), "分けて計算しても、その場で計算した状態と同じ(HP %.1f)" % r3.sim.boss.hp)
+	r3.replay_seek_budget_ms = 10.0
 	shot.call("boss")
 	r3._replay_close()
 	await get_tree().create_timer(0.3).timeout

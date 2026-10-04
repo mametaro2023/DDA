@@ -1,6 +1,8 @@
 extends CanvasLayer
 ## リプレイの操作パネル(画面の下に固定。プレイ画面は、そのぶん縮めて見せる)。
-## 上: 体力の推移のグラフ(クリック・ドラッグで、その秒へ飛ぶ。Shift を押しながらドラッグで、繰り返し・書き出しの区間を選ぶ)/ 下: 再生・停止・被弾へ・速さ・区間・軌道・動画出力・閉じる。
+## 上: 体力の推移のグラフ(クリック・ドラッグで、その秒へ飛ぶ。Shift を押しながらドラッグで、繰り返し・書き出しの区間を選ぶ)。
+## 下: 左に「再生 / 停止」・±5 秒・ジャンプ・時刻、右に「速度」「軌道」「区間」(押すと、選択肢が上に開く)・動画出力・操作の一覧・閉じる。
+## 数の多い選択肢(速さ・軌道・区間・ジャンプ・動画の大きさ)は、1 つの小さなメニューにまとめて、ボタンを増やさない。
 ## H で隠すと、プレイ画面が元の大きさに戻る(画面の下の端へマウスを寄せると、重ねて出る)。
 ## 状態は GameScreen が持つ(set_state で受け取って見せるだけ)。押されたことを、シグナルで知らせる。
 
@@ -10,14 +12,17 @@ const GameSim = preload("res://scripts/game/game_sim.gd")
 
 signal play_pressed
 signal restart_pressed
+signal end_pressed
 signal seek_requested(t: float)     # 飛び先(ドラッグの間は、間隔を空けて何度も来る)
 signal scrub_started                # 体力グラフのドラッグを始めた(再生は止めて、離したら続ける)
 signal scrub_ended
 signal skip_requested(dt: float)
 signal hit_jump_requested(dir: int) # -1 = 前の被弾 / +1 = 次の被弾
 signal speed_selected(s: float)
-signal trail_mode_pressed
-signal trail_len_pressed
+signal trail_mode_pressed           # T キー(切 → 過去 → 過去+未来)。メニューからは trail_mode_set
+signal trail_len_pressed            # Y キー
+signal trail_mode_set(mode: int)
+signal trail_len_set(sec: float)
 signal mark_in_pressed
 signal mark_out_pressed
 signal range_clear_pressed
@@ -26,6 +31,7 @@ signal export_requested(opts: Dictionary)   # 空の辞書 = 書き出し中の�
 signal close_pressed
 
 const SPEEDS := [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+const TRAIL_LENS := [1.0, 3.0, 5.0, 10.0]
 const DOCK_H := 104.0
 const DOCK_SCALE := (720.0 - DOCK_H) / 720.0    # パネルを出しているときの、プレイ画面の縮み
 const GRAPH_RECT := Rect2(24.0, 2.0, 1232.0, 66.0)
@@ -59,11 +65,13 @@ var _pts := PackedVector2Array()
 var _t := 0.0
 var _playing := true
 var _speed := 1.0
+var _trail_mode := 1
+var _trail_sec := 3.0
 var _drag := false
 var _drag_t := 0.0
 var _drag_sent_t := -1.0
 var _drag_last := 0.0        # 最後に飛んだ時刻(実時間)
-var _scrub_gap := 0.05       # ドラッグ中、飛ぶ間隔の下限(秒。飛ぶのに時間がかかる曲では、広げる)
+var _scrub_gap := 0.05       # ドラッグ中、飛ぶ間隔の下限(秒)
 var _range_drag := false
 var _range_a := -1.0
 var _range_b := -1.0
@@ -75,20 +83,23 @@ var _peek := false
 var _font: Font = UiStyle.bold()
 var _play_btn: Button
 var _time_l: Label
+var _speed_btn: Button
 var _trail_btn: Button
-var _len_btn: Button
-var _speed_btns: Array = []
-var _in_btn: Button
-var _out_btn: Button
-var _clear_btn: Button
+var _range_btn: Button
+var _jump_btn: Button
 var _status_l: Label
 var _folder_btn: Button
 var _export_btn: Button
-var _exp_pop: PanelContainer
+var _menu: PanelContainer    # 選択肢のメニュー(1 つを使い回す)
+var _menu_box: VBoxContainer
+var _menu_owner: Button
 var _osd: Label
 var _osd_tween: Tween
 var _help: PanelContainer
 var _warn_l: Label
+var _load_box: PanelContainer   # 「読み込み中」(飛ぶのに時間がかかるとき)
+var _load_l: Label
+var _load_fill: ColorRect
 var _key := ""
 var _export_dir := ""        # 書き出した動画の入っているフォルダ(あれば「出力先を開く」)
 var _hit_times := PackedFloat32Array()
@@ -147,48 +158,39 @@ func setup(data: Dictionary, end_time: float) -> void:
 		_scrub.queue_redraw())
 	_panel.add_child(_scrub)
 
+	# 下の段: 左 = 動かす(再生・±5 秒・ジャンプ・時刻)/ 右 = 見せ方(速度・軌道・区間)と、書き出し・一覧・閉じる
 	var row := HBoxContainer.new()
 	row.position = Vector2(24.0, 70.0)
-	row.size = Vector2(1232.0, 30.0)
-	row.add_theme_constant_override("separation", 4)
+	row.size = Vector2(1232.0, 32.0)
+	row.add_theme_constant_override("separation", 6)
 	_panel.add_child(row)
-	row.add_child(_button("最初へ", "最初へ戻る(Home)", func(): restart_pressed.emit(), 56))
-	_play_btn = _button("停止", "再生 / 停止(Space)", func(): play_pressed.emit(), 52)
+	_play_btn = _button("停止", "再生 / 停止(Space)", func(): play_pressed.emit(), 84)
+	UiStyle.style_primary(_play_btn, false, 12, 3)
+	_play_btn.add_theme_font_size_override("font_size", 15)
 	row.add_child(_play_btn)
-	row.add_child(_button("-5秒", "5 秒戻る(←)", func(): skip_requested.emit(-5.0), 46))
-	row.add_child(_button("+5秒", "5 秒進む(→)", func(): skip_requested.emit(5.0), 46))
-	row.add_child(_button("←被弾", "前の被弾の少し前へ(PgUp)", func(): hit_jump_requested.emit(-1), 60))
-	row.add_child(_button("被弾→", "次の被弾の少し前へ(PgDn)", func(): hit_jump_requested.emit(1), 60))
-	row.add_child(_gap(6))
-	for s in SPEEDS:
-		var b := _button("%sx" % str(s), "再生の速さ([ ] でも変えられます)", func(): speed_selected.emit(s), 42)
-		row.add_child(b)
-		_speed_btns.append(b)
-	row.add_child(_gap(6))
-	_in_btn = _button("始点", "ここを区間の始まりにする(I)。区間は繰り返され、動画もその区間だけ書き出せます", func(): mark_in_pressed.emit(), 42)
-	row.add_child(_in_btn)
-	_out_btn = _button("終点", "ここを区間の終わりにする(O)", func(): mark_out_pressed.emit(), 42)
-	row.add_child(_out_btn)
-	_clear_btn = _button("解除", "区間をやめる(X)", func(): range_clear_pressed.emit(), 42)
-	_clear_btn.visible = false
-	row.add_child(_clear_btn)
-	row.add_child(_gap(6))
-	_time_l = UiStyle.label("0:00.0 / 0:00", 14, UiStyle.TEXT, true)
-	_time_l.custom_minimum_size = Vector2(112, 0)
+	row.add_child(_button("-5秒", "5 秒戻る(←)", func(): skip_requested.emit(-5.0), 56))
+	row.add_child(_button("+5秒", "5 秒進む(→)", func(): skip_requested.emit(5.0), 56))
+	_jump_btn = _button("ジャンプ", "最初・最後・被弾の前後へ飛ぶ", func(): _open_menu(_jump_btn, _jump_items()), 88)
+	row.add_child(_jump_btn)
+	row.add_child(_gap(8))
+	_time_l = UiStyle.label("0:00.0 / 0:00", 15, UiStyle.TEXT, true)
+	_time_l.custom_minimum_size = Vector2(120, 0)
 	_time_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(_time_l)
 	var fill := Control.new()
 	fill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(fill)
-	_trail_btn = _button(TRAIL_NAMES[1], "自機の軌道の表示を切り替える(T)", func(): trail_mode_pressed.emit(), 120)
+	_speed_btn = _button("速度 1.0x", "再生の速さ([ ] でも変えられます)", func(): _open_menu(_speed_btn, _speed_items()), 108)
+	row.add_child(_speed_btn)
+	_trail_btn = _button("軌道: 過去", "自機の軌道の表示(T / Y)", func(): _open_menu(_trail_btn, _trail_items()), 136)
 	row.add_child(_trail_btn)
-	_len_btn = _button("3秒", "軌道の長さ(Y)", func(): trail_len_pressed.emit(), 44)
-	row.add_child(_len_btn)
-	row.add_child(_gap(4))
-	_export_btn = _button("動画出力", "動画に書き出す(区間があれば、その区間だけ)", _on_export_pressed, 86)
+	_range_btn = _button("区間", "繰り返し再生・動画に書き出す範囲(I / O / X)", func(): _open_menu(_range_btn, _range_items()), 88)
+	row.add_child(_range_btn)
+	row.add_child(_gap(6))
+	_export_btn = _button("動画出力", "動画に書き出す(区間があれば、その区間だけ)", _on_export_pressed, 92)
 	row.add_child(_export_btn)
-	row.add_child(_button("?", "操作の一覧(?)", toggle_help, 30))
-	row.add_child(_button("閉じる", "閉じる(Esc)", func(): close_pressed.emit(), 54))
+	row.add_child(_button("?", "操作の一覧(?)", toggle_help, 32))
+	row.add_child(_button("閉じる", "閉じる(Esc)", func(): close_pressed.emit(), 64))
 
 	# 書き出しの状態(パネルの上に、右寄せ)と、出力先を開くボタン
 	_status_l = UiStyle.label("", 14, UiStyle.ACCENT, true)
@@ -199,12 +201,12 @@ func setup(data: Dictionary, end_time: float) -> void:
 	_status_l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	_status_l.add_theme_constant_override("outline_size", 5)
 	_panel.add_child(_status_l)
-	_folder_btn = _button("出力先を開く", "書き出した動画のフォルダを開く", _open_export_dir, 100)
-	_folder_btn.position = Vector2(1256.0 - 100.0, -64.0)
+	_folder_btn = _button("出力先を開く", "書き出した動画のフォルダを開く", _open_export_dir, 110)
+	_folder_btn.position = Vector2(1256.0 - 110.0, -64.0)
 	_folder_btn.visible = false
 	_panel.add_child(_folder_btn)
 
-	_build_export_popup()
+	_build_menu()
 	_build_overlays()
 	set_state(true, 1.0, 0.0, 1, 3.0, -1.0, -1.0)
 	_apply_slide()
@@ -213,11 +215,11 @@ func setup(data: Dictionary, end_time: float) -> void:
 func _make_theme() -> Theme:
 	var t := UiStyle.make_theme()
 	var accent := UiStyle.ACCENT
-	t.set_stylebox("normal", "Button", UiStyle.box(Color(1, 1, 1, 0.07), UiStyle.LINE, 1, 4, 7, 3))
-	t.set_stylebox("hover", "Button", UiStyle.box(Color(1, 1, 1, 0.14), Color(1, 1, 1, 0.3), 1, 4, 7, 3))
-	t.set_stylebox("pressed", "Button", UiStyle.box(Color(accent.r, accent.g, accent.b, 0.2), accent, 1, 4, 7, 3))
-	t.set_stylebox("hover_pressed", "Button", UiStyle.box(Color(accent.r, accent.g, accent.b, 0.26), accent, 1, 4, 7, 3))
-	t.set_stylebox("disabled", "Button", UiStyle.box(Color(1, 1, 1, 0.03), UiStyle.LINE, 1, 4, 7, 3))
+	t.set_stylebox("normal", "Button", UiStyle.box(Color(1, 1, 1, 0.07), UiStyle.LINE, 1, 4, 8, 3))
+	t.set_stylebox("hover", "Button", UiStyle.box(Color(1, 1, 1, 0.14), Color(1, 1, 1, 0.3), 1, 4, 8, 3))
+	t.set_stylebox("pressed", "Button", UiStyle.box(Color(accent.r, accent.g, accent.b, 0.2), accent, 1, 4, 8, 3))
+	t.set_stylebox("hover_pressed", "Button", UiStyle.box(Color(accent.r, accent.g, accent.b, 0.26), accent, 1, 4, 8, 3))
+	t.set_stylebox("disabled", "Button", UiStyle.box(Color(1, 1, 1, 0.03), UiStyle.LINE, 1, 4, 8, 3))
 	return t
 
 
@@ -226,8 +228,8 @@ func _button(text: String, tip: String, on_press: Callable, w: float) -> Button:
 	b.text = text
 	b.tooltip_text = tip
 	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(w, 30)
-	b.add_theme_font_size_override("font_size", 13)
+	b.custom_minimum_size = Vector2(w, 32)
+	b.add_theme_font_size_override("font_size", 14)
 	b.pressed.connect(on_press)
 	return b
 
@@ -238,7 +240,7 @@ func _gap(w: float) -> Control:
 	return c
 
 
-## 画面の上に重ねる表示: 操作の反応(OSD)・操作の一覧。
+## 画面の上に重ねる表示: 操作の反応(OSD)・読み込み中・操作の一覧。
 func _build_overlays() -> void:
 	_osd = UiStyle.label("", 34, Color.WHITE, true)
 	_osd.position = Vector2(240.0, 250.0)
@@ -248,6 +250,30 @@ func _build_overlays() -> void:
 	_osd.add_theme_constant_override("outline_size", 8)
 	_osd.modulate.a = 0.0
 	add_child(_osd)
+
+	_load_box = PanelContainer.new()
+	_load_box.add_theme_stylebox_override("panel", UiStyle.box(Color(0.02, 0.02, 0.06, 0.82), Color(1, 1, 1, 0.22), 1, 10, 22, 12))
+	_load_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var lv := VBoxContainer.new()
+	lv.add_theme_constant_override("separation", 8)
+	_load_box.add_child(lv)
+	_load_l = UiStyle.label("読み込み中…", 20, Color.WHITE, true)
+	_load_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_load_l.custom_minimum_size = Vector2(220, 0)
+	lv.add_child(_load_l)
+	var track := ColorRect.new()
+	track.color = Color(1, 1, 1, 0.16)
+	track.custom_minimum_size = Vector2(220, 4)
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lv.add_child(track)
+	_load_fill = ColorRect.new()
+	_load_fill.color = UiStyle.ACCENT
+	_load_fill.size = Vector2(0, 4)
+	_load_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(_load_fill)
+	_load_box.position = Vector2(640.0 - 132.0, 300.0)
+	_load_box.visible = false
+	add_child(_load_box)
 
 	_help = PanelContainer.new()
 	_help.add_theme_stylebox_override("panel", UiStyle.box(Color(0.02, 0.02, 0.06, 0.94), Color(1, 1, 1, 0.25), 1, 8, 22, 16))
@@ -270,39 +296,150 @@ func _build_overlays() -> void:
 	add_child(_help)
 
 
-func _build_export_popup() -> void:
-	_exp_pop = PanelContainer.new()
-	_exp_pop.add_theme_stylebox_override("panel", UiStyle.box(Color(0.03, 0.03, 0.07, 0.97), Color(1, 1, 1, 0.28), 1, 6, 8, 8))
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 4)
-	_exp_pop.add_child(v)
-	v.add_child(UiStyle.label("動画の大きさ", 12, UiStyle.TEXT_FAINT))
-	for c in EXPORT_CHOICES:
-		var b := Button.new()
-		b.text = c.label
-		b.focus_mode = Control.FOCUS_NONE
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.custom_minimum_size = Vector2(210, 28)
-		b.add_theme_font_size_override("font_size", 13)
-		b.pressed.connect(func():
-			_exp_pop.visible = false
-			export_requested.emit({"w": c.w, "h": c.h, "fps": c.fps}))
-		v.add_child(b)
-	_exp_pop.visible = false
-	_exp_pop.position = Vector2(1256.0 - 240.0, -150.0)
-	_panel.add_child(_exp_pop)
+## 「読み込み中」を出す・消す(飛ぶのに時間がかかっているあいだ)。frac: 進み具合 0..1。
+func set_loading(on: bool, frac: float) -> void:
+	if _load_box == null:
+		return
+	_load_box.visible = on
+	if on:
+		_load_l.text = "読み込み中…  %d%%" % int(round(frac * 100.0))
+		_load_fill.size.x = 220.0 * clampf(frac, 0.0, 1.0)
+
+
+# --- 選択肢のメニュー ---
+
+func _build_menu() -> void:
+	_menu = PanelContainer.new()
+	_menu.add_theme_stylebox_override("panel", UiStyle.box(Color(0.03, 0.03, 0.07, 0.98), Color(1, 1, 1, 0.28), 1, 6, 6, 6))
+	_menu.theme = _panel.theme
+	_menu_box = VBoxContainer.new()
+	_menu_box.add_theme_constant_override("separation", 2)
+	_menu.add_child(_menu_box)
+	_menu.visible = false
+	add_child(_menu)
+
+
+## 項目の作り方: {label, cb(押したときの処理), on(いま選んでいる)、off(押せない)} / {head: "見出し"} / {sep: true}
+func _open_menu(owner_btn: Button, items: Array) -> void:
+	if _menu.visible and _menu_owner == owner_btn:   # 開いているボタンをもう一度押したら、閉じる
+		_close_menu()
+		return
+	_close_menu()
+	_help.visible = false
+	for c in _menu_box.get_children():
+		_menu_box.remove_child(c)
+		c.queue_free()
+	for it in items:
+		if it.has("sep"):
+			var line := ColorRect.new()
+			line.color = Color(1, 1, 1, 0.14)
+			line.custom_minimum_size = Vector2(0, 1)
+			_menu_box.add_child(line)
+		elif it.has("head"):
+			var h := UiStyle.label(str(it.head), 12, UiStyle.TEXT_FAINT)
+			h.custom_minimum_size = Vector2(210, 0)
+			h.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_menu_box.add_child(h)
+		else:
+			var b := Button.new()
+			b.text = str(it.label)
+			b.focus_mode = Control.FOCUS_NONE
+			b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			b.custom_minimum_size = Vector2(210, 30)
+			b.add_theme_font_size_override("font_size", 14)
+			b.disabled = bool(it.get("off", false))
+			if bool(it.get("on", false)):
+				b.add_theme_color_override("font_color", UiStyle.ACCENT)
+				b.add_theme_color_override("font_hover_color", UiStyle.ACCENT)
+				b.add_theme_font_override("font", UiStyle.bold())
+			var cb: Callable = it.cb
+			b.pressed.connect(func():
+				_close_menu()
+				cb.call())
+			_menu_box.add_child(b)
+	_menu.reset_size()
+	_menu_owner = owner_btn
+	_menu.visible = true
+	await get_tree().process_frame   # 大きさが決まってから、ボタンの真上へ置く
+	if _menu.visible and _menu_owner == owner_btn:
+		var at := owner_btn.get_global_rect()
+		var x := at.position.x if at.position.x + _menu.size.x <= 1272.0 else at.end.x - _menu.size.x   # はみ出すときは、右端をそろえる
+		_menu.position = Vector2(maxf(x, 8.0), at.position.y - _menu.size.y - 6.0)
+
+
+func _close_menu() -> void:
+	_menu.visible = false
+	_menu_owner = null
+
+
+func _jump_items() -> Array:
+	return [
+		{"label": "最初へ  (Home)", "cb": func(): restart_pressed.emit()},
+		{"label": "前の被弾  (PgUp)", "cb": func(): hit_jump_requested.emit(-1)},
+		{"label": "次の被弾  (PgDn)", "cb": func(): hit_jump_requested.emit(1)},
+		{"label": "最後へ  (End)", "cb": func(): end_pressed.emit()},
+		{"sep": true},
+		{"head": "被弾の 1.5 秒前へ飛びます。グラフの赤い線が被弾した時刻です"},
+	]
+
+
+func _speed_items() -> Array:
+	var items: Array = []
+	for s in SPEEDS:
+		var sp: float = s
+		items.append({"label": "%sx%s" % [str(sp), "  (ふつう)" if is_equal_approx(sp, 1.0) else ""], "on": is_equal_approx(sp, _speed), "cb": func(): speed_selected.emit(sp)})
+	items.append({"sep": true})
+	items.append({"head": "[ ] キーでも変えられます。曲が鳴るのは 0.5x・1x・2x"})
+	return items
+
+
+func _trail_items() -> Array:
+	var items: Array = [{"head": "自機の軌道"}]
+	var names := ["切", "過去の軌跡", "過去の軌跡 + 未来の予定線"]
+	for m in range(3):
+		var mm := m
+		items.append({"label": names[m], "on": _trail_mode == m, "cb": func(): trail_mode_set.emit(mm)})
+	items.append({"sep": true})
+	items.append({"head": "長さ"})
+	for s in TRAIL_LENS:
+		var sec: float = s
+		items.append({"label": "%d 秒" % int(sec), "on": is_equal_approx(_trail_sec, sec), "off": _trail_mode == 0, "cb": func(): trail_len_set.emit(sec)})
+	return items
+
+
+func _range_items() -> Array:
+	var has_range := _range_a >= 0.0 and _range_b > _range_a
+	var items: Array = [
+		{"label": "ここを始点にする  (I)", "cb": func(): mark_in_pressed.emit()},
+		{"label": "ここを終点にする  (O)", "cb": func(): mark_out_pressed.emit()},
+		{"label": "区間を解除  (X)", "off": _range_a < 0.0, "cb": func(): range_clear_pressed.emit()},
+		{"sep": true},
+	]
+	if has_range:
+		items.append({"head": "区間  %s – %s\n繰り返し再生し、動画もこの区間だけ書き出します" % [_fmt(_range_a, true), _fmt(_range_b, true)]})
+	elif _range_a >= 0.0:
+		items.append({"head": "始点 %s。あとは、終点を決めてください" % _fmt(_range_a, true)})
+	else:
+		items.append({"head": "繰り返し再生・動画に書き出す範囲を決めます。グラフを Shift を押しながらドラッグしても選べます"})
+	return items
 
 
 func _on_export_pressed() -> void:
 	if _export_btn.text == "書き出し中止":
 		export_requested.emit({})
 		return
-	_exp_pop.visible = not _exp_pop.visible
 	_folder_btn.visible = false
+	var has_range := _range_a >= 0.0 and _range_b > _range_a
+	var items: Array = [{"head": "動画に書き出す大きさ" + ("\n(区間だけ書き出します)" if has_range else "(全体)")}]
+	for c in EXPORT_CHOICES:
+		var cc: Dictionary = c
+		items.append({"label": cc.label, "cb": func(): export_requested.emit({"w": cc.w, "h": cc.h, "fps": cc.fps})})
+	_open_menu(_export_btn, items)
 
 
 ## 操作の一覧を、出す・消す。
 func toggle_help() -> void:
+	_close_menu()
 	_help.visible = not _help.visible
 
 
@@ -315,6 +452,8 @@ func set_state(playing: bool, speed: float, t: float, trail_mode: int, trail_sec
 	_playing = playing
 	_speed = speed
 	_t = t
+	_trail_mode = trail_mode
+	_trail_sec = trail_sec
 	_range_a = range_a
 	_range_b = range_b
 	var has_range := range_a >= 0.0 and range_b > range_a
@@ -323,19 +462,15 @@ func set_state(playing: bool, speed: float, t: float, trail_mode: int, trail_sec
 	if key != _key:   # ボタンの見た目は、変わったときだけ作り直す(毎フレームだと、テーマの変更が続いて重い)
 		_key = key
 		_play_btn.text = "停止" if playing else "再生"
-		for i in range(_speed_btns.size()):
-			var on: bool = is_equal_approx(float(SPEEDS[i]), speed)
-			_speed_btns[i].add_theme_color_override("font_color", UiStyle.ACCENT if on else UiStyle.TEXT)
-			_speed_btns[i].add_theme_color_override("font_hover_color", UiStyle.ACCENT if on else UiStyle.TEXT)
-		_trail_btn.text = TRAIL_NAMES[clampi(trail_mode, 0, 2)]
-		_len_btn.text = "%d秒" % int(trail_sec)
-		_len_btn.disabled = trail_mode == 0
-		_clear_btn.visible = range_a >= 0.0
-		_in_btn.add_theme_color_override("font_color", UiStyle.ACCENT if range_a >= 0.0 else UiStyle.TEXT)
-		_out_btn.add_theme_color_override("font_color", UiStyle.ACCENT if has_range else UiStyle.TEXT)
+		_speed_btn.text = "速度 %sx" % str(speed)
+		_speed_btn.add_theme_color_override("font_color", UiStyle.ACCENT if not is_equal_approx(speed, 1.0) else UiStyle.TEXT)
+		_trail_btn.text = TRAIL_NAMES[clampi(trail_mode, 0, 2)] + (("  %d秒" % int(trail_sec)) if trail_mode > 0 else "")
+		_range_btn.text = "区間: 設定中" if range_a >= 0.0 else "区間"
+		_range_btn.custom_minimum_size.x = 112.0 if range_a >= 0.0 else 88.0
+		_range_btn.add_theme_color_override("font_color", UiStyle.ACCENT if range_a >= 0.0 else UiStyle.TEXT)
 		if not exporting:
 			_export_btn.text = "区間を動画出力" if has_range else "動画出力"
-			_export_btn.custom_minimum_size.x = 112.0 if has_range else 86.0
+			_export_btn.custom_minimum_size.x = 124.0 if has_range else 92.0
 	var tl := "%s / %s" % [_fmt(maxf(t, 0.0), true), _fmt(_total, false)]
 	if tl != _time_l.text:
 		_time_l.text = tl
@@ -360,12 +495,12 @@ func set_export_status(text: String) -> void:
 	_status_l.text = text
 	if text != "":
 		_export_btn.text = "書き出し中止"
-		_export_btn.custom_minimum_size.x = 100.0
+		_export_btn.custom_minimum_size.x = 112.0
 		_folder_btn.visible = false
-		_exp_pop.visible = false
+		_close_menu()
 	else:
 		_export_btn.text = "動画出力"
-		_export_btn.custom_minimum_size.x = 86.0
+		_export_btn.custom_minimum_size.x = 92.0
 	_key = ""   # 「区間を動画出力」の表示を、次の set_state で整え直す
 
 
@@ -426,6 +561,7 @@ func _scrub_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		var t := _time_at(event.position.x)
 		if event.pressed:
+			_close_menu()
 			if event.shift_pressed:   # 区間を選ぶ
 				_range_drag = true
 				_range_a = t
@@ -496,7 +632,7 @@ func _process(delta: float) -> void:
 		_send_scrub()
 	var mp := get_viewport().get_mouse_position()
 	if pinned_hidden:   # 隠しているとき: 画面の下の端へ寄せたら重ねて出す。パネルの上にいるあいだは出したまま
-		_peek = mp.y >= 720.0 - (DOCK_H if _peek else PEEK_EDGE) or _drag or _range_drag
+		_peek = mp.y >= 720.0 - (DOCK_H if _peek else PEEK_EDGE) or _drag or _range_drag or _menu.visible
 	else:
 		_peek = false
 	stage_k = move_toward(stage_k, 0.0 if pinned_hidden else 1.0, delta * 4.5)
@@ -509,6 +645,8 @@ func _apply_slide() -> void:
 	var e := _slide * _slide * (3.0 - 2.0 * _slide)
 	_panel.position.y = 720.0 - DOCK_H * e
 	_panel.visible = _slide > 0.001
+	if not _panel.visible and _menu.visible:
+		_close_menu()
 
 
 ## プレイ画面の縮み(0..1 をなめらかにしたもの)。1 = パネルのぶん縮める。
@@ -516,11 +654,11 @@ func stage_ease() -> float:
 	return stage_k * stage_k * (3.0 - 2.0 * stage_k)
 
 
-## 操作の一覧・書き出しの選択が開いていたら閉じる。閉じたものがあれば true(Esc・画面のクリックが、それで済んだか)。
+## 操作の一覧・選択肢のメニューが開いていたら閉じる。閉じたものがあれば true(Esc・画面のクリックが、それで済んだか)。
 func dismiss_popups() -> bool:
-	var any := _help.visible or _exp_pop.visible
+	var any := _help.visible or _menu.visible
 	_help.visible = false
-	_exp_pop.visible = false
+	_close_menu()
 	return any
 
 

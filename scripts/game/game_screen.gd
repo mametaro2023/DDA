@@ -142,6 +142,10 @@ var _view_l := 0.0             # 画面の左右の端(この画面の座標。�
 var _view_r := 1280.0
 var _view_b := 720.0
 var _rp_stage_k := -1.0
+var replay_seek_budget_ms := 10.0   # 飛ぶときの計算を、1 フレームに使ってよい時間(これを超えるぶんは、次のフレームへ)
+var _rp_seek_to := -1.0          # 飛んでいる途中の目標(-1 = 飛んでいない)
+var _rp_seek_from := 0.0
+var _rp_seek_t0 := 0
 var _mods: Dictionary   # 付けた MOD の効果(Mods.params)
 var _rate := 1.0        # 譜面の再生速度(MOD)
 
@@ -2285,6 +2289,17 @@ func _init_replay() -> void:
 	_rp_bar.hit_jump_requested.connect(_replay_jump_hit)
 	_rp_bar.speed_selected.connect(_replay_set_speed)
 	_rp_bar.trail_mode_pressed.connect(_replay_cycle_trail_mode)
+	_rp_bar.end_pressed.connect(func():
+		_replay_seek(_rp.end_time())
+		_osd("最後へ"))
+	_rp_bar.trail_mode_set.connect(func(m: int):
+		replay_trail_mode = m
+		_replay_apply_trail()
+		_osd(ReplayBar.TRAIL_NAMES[m] + (("  %d秒" % int(replay_trail_sec)) if m > 0 else "")))
+	_rp_bar.trail_len_set.connect(func(s: float):
+		replay_trail_sec = s
+		_replay_apply_trail()
+		_osd("軌道の長さ  %d秒" % int(s)))
 	_rp_bar.trail_len_pressed.connect(_replay_cycle_trail_len)
 	_rp_bar.mark_in_pressed.connect(_replay_mark_in)
 	_rp_bar.mark_out_pressed.connect(_replay_mark_out)
@@ -2338,6 +2353,9 @@ func _replay_tick(delta: float) -> void:
 		var k: float = _rp_bar.stage_ease()
 		if not is_equal_approx(k, _rp_stage_k):
 			_replay_layout(k)
+	if _rp_seek_to >= 0.0:   # 飛んでいる最中: 続きを計算するだけ(再生は、終わってから)
+		_replay_seek_tick()
+		return
 	if _dead:   # ゲームオーバーの演出(曲のテープストップと同じ割合で、弾の時間も遅くなって止まる)
 		var dt_game := delta * _tape_speed()
 		_now += dt_game
@@ -2492,29 +2510,63 @@ func _replay_jump_hit(dir: int) -> void:
 	_osd("被弾 %d / %d" % [idx + 1, _rp_hits.size()])
 
 
-## 時刻 t へ飛ぶ(前へも後ろへも)。直前のキーフレームから再計算するので、少し(長くても 1 秒ほど)かかることがある。
+## 時刻 t へ飛ぶ(前へも後ろへも)。直前のキーフレームへ戻して、そこから目標までを、数フレームに分けて計算する(1 フレームに replay_seek_budget_ms ミリ秒まで。
+## 画面は止まらず、時間がかかるときは「読み込み中」を出す)。新しく飛ぶように頼まれたら、そちらに切り替える。
 func _replay_seek(t: float) -> void:
 	if _rp == null:
 		return
-	var t0 := Time.get_ticks_usec()
 	if _dead:
 		_replay_undo_death()
-	_rp.seek(t)
+	if _rp_seek_to < 0.0:
+		_rp_seek_t0 = Time.get_ticks_usec()
+		_rp_seek_from = _rp.t
+	_rp.seek_begin(t)
 	_rt = clampf(t, _rp.start_time(), _rp.end_time())   # 記録のない区間(スキップしたイントロ)へ飛んだときは、その手前の状態のまま、時計だけ進む
 	_now = _rt
+	_rp_seek_to = _rt
+	_rp_seek_from = minf(_rp_seek_from, _rp.t)
 	_hit_any = false
 	_hit_started = false
 	if _audio.playing:
 		_audio.stop()
+	_replay_seek_step(3.0)   # 近いときは、ここで終わる(待ちは出ない)
+	_replay_sync_bar()
+
+
+## 飛ぶ途中の計算を、budget_ms ミリ秒ぶん進める(0 なら最後まで)。終わったら true。
+func _replay_seek_step(budget_ms: float) -> bool:
+	if _rp_seek_to < 0.0:
+		return true
+	if not _rp.advance_to(_rp_seek_to, false, budget_ms):
+		return false
+	_rp_seek_to = -1.0
 	_replay_snap_hud()
 	if sim.failed:
 		_begin_death(false)   # 最後まで飛んだ: ゲームオーバーの演出をもう一度
 	if _rp.at_end():
 		_replay_verify()
 	_refresh()
-	_replay_sync_bar()
 	if _rp_bar != null:
-		_rp_bar.set_seek_cost(float(Time.get_ticks_usec() - t0) / 1000.0)
+		_rp_bar.set_loading(false, 1.0)
+		_rp_bar.set_seek_cost(float(Time.get_ticks_usec() - _rp_seek_t0) / 1000.0)
+	return true
+
+
+## 飛ぶのを、その場で最後まで済ませる(確認用)。
+func _replay_seek_now(t: float) -> void:
+	_replay_seek(t)
+	_replay_seek_step(0.0)
+	_replay_sync_bar()
+
+
+## 飛んでいる最中の 1 フレーム: 計算を進めて、途中の状態を見せ、時間がかかっていれば「読み込み中」を出す。
+func _replay_seek_tick() -> void:
+	if not _replay_seek_step(replay_seek_budget_ms):
+		var span := maxf(_rp_seek_to - _rp_seek_from, 0.001)
+		if _rp_bar != null and float(Time.get_ticks_usec() - _rp_seek_t0) > 70000.0:   # 70 ms を超えたら出す(一瞬で済む飛びでは、出さない)
+			_rp_bar.set_loading(true, clampf((_rp.t - _rp_seek_from) / span, 0.0, 1.0))
+		_refresh()
+	_replay_sync_bar()
 
 
 ## 飛んだあとに、なめらかに追従する表示(体力バーの残像・スコア・赤み・休憩・ボス)を、その場で合わせる。
@@ -2684,7 +2736,7 @@ func _replay_key(event: InputEventKey) -> void:
 			_replay_seek(_rp.prev_frame_time())
 		KEY_PERIOD:
 			_replay_set_playing(false)
-			if _rp.step_frame():
+			if _rp_seek_to < 0.0 and _rp.step_frame():
 				_rt = _rp.t
 				_now = _rt
 				_hit_any = _rp.hit_any

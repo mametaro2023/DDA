@@ -225,6 +225,11 @@ class Player extends RefCounted:
 
 	## 時刻 target の状態にする(前へも後ろへも)。直前のキーフレームから、再計算で追いつく。
 	func seek(target: float) -> void:
+		seek_begin(target)
+		advance_to(target, false)
+
+	## 飛ぶ準備だけ: いまの状態のほうが近くなければ、直前のキーフレームへ戻す(再計算は、呼んだ側が advance_to で、何回かに分けて進めてよい)。
+	func seek_begin(target: float) -> void:
 		target = clampf(target, start_time(), end_time())
 		var best: Dictionary = keys[0]
 		for k in keys:
@@ -238,7 +243,6 @@ class Player extends RefCounted:
 		if not from_here:
 			restore_key(best)
 		force_restore = false
-		advance_to(target, false)
 
 	func restore_key(k: Dictionary) -> void:
 		State.restore(sim, field, k.s)
@@ -507,9 +511,15 @@ static func find_chart(md5: String) -> Dictionary:
 	var found := SongLibrary.find_by_md5(md5)
 	if found.is_empty():
 		return {}
+	return open_chart(str(found.path), md5)
+
+
+## 曲の場所(path)から、その難易度(md5)を開く。戻り値: {loader, bm, path}。なければ空の辞書。
+## 動画の書き出しの子プロセスは、曲の索引(osu! の Songs の曲は、親が裏で作る)を持たないので、親が見つけた path をもらって、これで開く。
+static func open_chart(path: String, md5: String) -> Dictionary:
 	var loader := OszLoader.new()
-	loader.open(found.path)
+	loader.open(path)
 	for d in loader.difficulties:
 		if d.md5 == md5:
-			return {"loader": loader, "bm": d}
+			return {"loader": loader, "bm": d, "path": path}
 	return {}

@@ -163,8 +163,9 @@ func _draw() -> void:
 	draw_string(_font, Vector2(X + SL + W - 200.0, y - 8), pct, HORIZONTAL_ALIGNMENT_RIGHT, 200.0, 17, Color(col.r, col.g, col.b, a).lerp(Color.WHITE, 0.35))
 	# 下の光(残りが少ないと、ゆっくり脈打つ)
 	var glow_a := (0.16 + 0.22 * low * (0.5 + 0.5 * sin(now * 3.2))) * a
-	draw_polygon(PackedVector2Array([Vector2(X, y + H), Vector2(X + W * f, y + H), Vector2(X + W * f, y + H + 14), Vector2(X, y + H + 14)]),
-		PackedColorArray([Color(col.r, col.g, col.b, glow_a), Color(col.r, col.g, col.b, glow_a), Color(col.r, col.g, col.b, 0.0), Color(col.r, col.g, col.b, 0.0)]))
+	if f > 0.001:   # 幅が 0 の四角は、描けない(三角形に分けられず、エラーが出る)
+		draw_polygon(PackedVector2Array([Vector2(X, y + H), Vector2(X + W * f, y + H), Vector2(X + W * f, y + H + 14), Vector2(X, y + H + 14)]),
+			PackedColorArray([Color(col.r, col.g, col.b, glow_a), Color(col.r, col.g, col.b, glow_a), Color(col.r, col.g, col.b, 0.0), Color(col.r, col.g, col.b, 0.0)]))
 	# ケースと溝(5% ごとの細い目盛り)
 	draw_colored_polygon(_slant(X - 4, y - 4, W + 8, H + 8), Color(0.03, 0.01, 0.03, 0.8 * a))
 	draw_colored_polygon(_slant(X, y, W, H), Color(0, 0, 0, 0.55 * a))
@@ -252,7 +253,15 @@ func _draw_banner() -> void:
 			var xa := maxf(x, ARENA_X0)
 			var xb := minf(x + 14.0, ARENA_X0 + ARENA_W)
 			if xb - xa > 1.0:
-				draw_colored_polygon(PackedVector2Array([Vector2(xa + 6, sy), Vector2(minf(xb + 6, ARENA_X0 + ARENA_W), sy), Vector2(xb, sy + 12), Vector2(xa, sy + 12)]), Color(1.0, 0.22, 0.26, 0.85 * env))
+				# 右端では、斜めの上辺が枠の外へ出るので切る。上辺の幅がなくなったら三角形にする(幅 0 の辺が重なると、描けない)
+				var ta := minf(xa + 6, ARENA_X0 + ARENA_W)
+				var tb2 := minf(xb + 6, ARENA_X0 + ARENA_W)
+				var stripe := PackedVector2Array([Vector2(ta, sy)])
+				if tb2 - ta > 0.5:
+					stripe.append(Vector2(tb2, sy))
+				stripe.append(Vector2(xb, sy + 12))
+				stripe.append(Vector2(xa, sy + 12))
+				draw_colored_polygon(stripe, Color(1.0, 0.22, 0.26, 0.85 * env))
 			x += 28.0
 	# 文字(少し大きいところから収まる。にじみの影を重ねる)
 	var s := lerpf(1.18, 1.0, 1.0 - pow(1.0 - clampf(tb / 0.5, 0.0, 1.0), 3.0))

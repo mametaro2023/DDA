@@ -31,6 +31,11 @@ var remotes: Array = []
 ## 再開の待ち(ポーズから戻る前): 自機と、その周りの輪だけを描く(弾・予兆・軌道・危険エリアは見せない)。wait_t は輪を動かす時間(秒)
 var ship_only := false
 var wait_t := 0.0
+## リプレイ: 自機の軌道(記録した全フレームの位置と時刻)。trail_mode 0 = 出さない / 1 = 過去 trail_sec 秒の尾 / 2 = 過去の尾 + 未来 trail_sec 秒の予定線
+var trail_pts := PackedVector2Array()
+var trail_ts := PackedFloat64Array()
+var trail_mode := 0
+var trail_sec := 3.0
 
 
 func _draw() -> void:
@@ -92,9 +97,60 @@ func _draw_under() -> void:
 		_draw_boss_under()
 	# 自機の機体は予兆・軌道の上、弾の下に描く(弾が機体の上に見える)
 	if not dead:
+		_draw_replay_trail()
 		for r in remotes:
 			_draw_remote_ship(r)
 		_draw_player_body()
+
+
+## リプレイ: 自機の軌道。過去は、新しいほど濃く太い線(尾)。未来(モード 2)は、細い点線。
+func _draw_replay_trail() -> void:
+	if trail_mode == 0 or trail_pts.size() < 2:
+		return
+	var i_now := _upper(now)
+	var i_past := _upper(now - trail_sec)
+	if i_now - i_past >= 1:
+		var span := float(i_now - i_past)
+		var line := PackedVector2Array()
+		var cols := PackedColorArray()
+		var glow := PackedColorArray()
+		for k in range(i_past, i_now + 1):
+			var q: Vector2 = trail_pts[k]
+			if not line.is_empty() and q.distance_squared_to(line[line.size() - 1]) < 1.0:
+				continue   # ほぼ同じ位置の点は、重ねない(長さ 0 の線分は、太い線の描画を壊す)
+			var u := float(k - i_past) / span   # 0(古い)→ 1(いま)
+			line.append(q)
+			cols.append(Color(0.55, 0.9, 1.0, 0.1 + 0.8 * u * u))
+			glow.append(Color(0.4, 0.8, 1.0, 0.04 + 0.2 * u * u))
+		if line.size() >= 2:
+			draw_polyline_colors(line, glow, 7.0, true)
+			draw_polyline_colors(line, cols, 2.5, true)
+	if trail_mode >= 2:
+		var i_fut := _upper(now + trail_sec)
+		var k := i_now
+		var total := float(maxi(i_fut - i_now, 1))
+		while k + 1 <= i_fut:   # 点線(3 点ごとに 1 本。遠いほど薄い)
+			var u := float(k - i_now) / total
+			var p0: Vector2 = trail_pts[k]
+			var p1: Vector2 = trail_pts[k + 1]
+			if p0.distance_squared_to(p1) >= 1.0:
+				draw_line(p0, p1, Color(1.0, 0.82, 0.4, 0.75 * (1.0 - 0.7 * u)), 1.6, true)
+			k += 3
+
+
+## trail_ts の中で、時刻 t 以前の最後の点の番号(なければ 0)。
+func _upper(t: float) -> int:
+	var lo := 0
+	var hi := trail_ts.size() - 1
+	if hi < 0 or t < trail_ts[0]:
+		return 0
+	while lo < hi:
+		var mid := (lo + hi + 1) / 2
+		if trail_ts[mid] <= t:
+			lo = mid
+		else:
+			hi = mid - 1
+	return lo
 
 
 ## 危険エリア(文字は出さない。種類は色とマークで分かる):

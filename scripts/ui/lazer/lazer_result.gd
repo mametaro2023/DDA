@@ -6,6 +6,7 @@ extends "res://scripts/ui/lazer/lazer_screen.gd"
 
 signal menu_requested
 signal retry_requested
+signal replay_requested
 
 const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
@@ -362,6 +363,8 @@ func _build_footer_buttons() -> void:
 		back.set_meta("juice_sound", "back")
 		_buttons.append(back)
 		_buttons.append(_footer_button("リトライ", LazerStyle.PURPLE, "retry", 204, 190, func(): retry_requested.emit(), Color(0.1, 0.04, 0.2)))
+		if str(stats.get("replay", "")) != "":   # このプレイの記録を見返す(P キーでも)
+			_buttons.append(_footer_button("リプレイ", LazerStyle.BLUE, "play", 402, 190, func(): replay_requested.emit(), Color(0.03, 0.12, 0.2)))
 	if UiStyle.animate:
 		for b in _buttons:
 			b.mouse_filter = Control.MOUSE_FILTER_IGNORE   # 現れるまでは押せない(見えないのにクリックが通らないように)
@@ -434,3 +437,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_R:
 				if not stats.has("mp"):
 					retry_requested.emit()
+			KEY_P:
+				if not stats.has("mp") and str(stats.get("replay", "")) != "":
+					replay_requested.emit()

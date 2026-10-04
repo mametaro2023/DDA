@@ -3,6 +3,7 @@ extends SceneTree
 ## godot --headless --path . --script tests/test_records.gd
 
 const Records = preload("res://scripts/records.gd")
+const Replay = preload("res://scripts/replay.gd")
 
 var _fail := 0
 
@@ -49,6 +50,27 @@ func _init() -> void:
 	_check(int(Records.best_of_song(["zzz", "abc"]).score) == 900000, "曲全体では、難易度のうち最高のもの")
 	Records.add("def", Records.entry_from_stats(_stats(500000.0, 1, false, {"md5": "def"})))
 	_check(int(Records.best_of_song(["abc", "def"]).score) == 900000 and Records.best_of_song(["x"]).is_empty(), "曲全体の最高・記録がなければ空")
+
+	# リプレイとの紐付け: 記録はファイル名を持ち、記録から外れたものは、ファイルも消える(いま足したものは残す)
+	Replay.dir = "user://test_records_replays"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(Replay.dir))
+	var touch := func(n: String):
+		var f := FileAccess.open(Replay.dir.path_join(n), FileAccess.WRITE)
+		f.store_string("x")
+		f.close()
+	for i in range(Records.KEEP):
+		touch.call("r%d.rpl" % i)
+		Records.add("rp", Records.entry_from_stats(_stats(500000.0 + i * 1000.0, 1, false, {"md5": "rp", "replay": "r%d.rpl" % i})))
+	_check(Records.replay_names().size() >= Records.KEEP and Records.best("rp").replay == "r%d.rpl" % (Records.KEEP - 1), "記録がリプレイのファイル名を持つ")
+	touch.call("high.rpl")
+	Records.add("rp", Records.entry_from_stats(_stats(900000.0, 1, false, {"md5": "rp", "replay": "high.rpl"})))
+	_check(not FileAccess.file_exists(Replay.dir.path_join("r0.rpl")) and FileAccess.file_exists(Replay.dir.path_join("r1.rpl")), "上位から外れた記録のリプレイは、消える")
+	touch.call("low.rpl")
+	Records.add("rp", Records.entry_from_stats(_stats(1000.0, 1, false, {"md5": "rp", "replay": "low.rpl"})))
+	_check(FileAccess.file_exists(Replay.dir.path_join("low.rpl")) and not Records.replay_names().has("low.rpl"), "いま足したプレイは、記録に入らなくても、リプレイは残る(結果画面から見られる)")
+	for n in DirAccess.get_files_at(Replay.dir):
+		DirAccess.remove_absolute(Replay.dir.path_join(n))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(Replay.dir))
 
 	Records.reload()   # 保存したものを読み込み直しても同じ
 	_check(Records.top("abc", 99).size() == Records.KEEP and int(Records.best("def").score) == 500000, "保存して読み込み直しても、同じ")

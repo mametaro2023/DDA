@@ -521,6 +521,8 @@ func _build_other() -> Control:
 		bool(settings.check_update), "", func(on: bool): settings.check_update = on))
 	v.add_child(_toggle_card("見つけたら自動で更新する", "新しいバージョンが見つかったら、起動したタイトル画面で、ダウンロードして入れ替え、再起動します(書き出した版のみ。曲や設定はそのまま)", UiStyle.ACCENT,
 		bool(settings.auto_update), "", func(on: bool): settings.auto_update = on))
+	v.add_child(_toggle_card("リプレイを自動で保存する", "ひとりで遊んだプレイ(クリア・ゲームオーバーとも)を、リザルトの「リプレイ」で見返せるよう、直近 30 件まで保存します(user://replays/。外には送りません)。記録に載ったプレイのリプレイは、残ります", UiStyle.ACCENT,
+		bool(settings.get("replay_save", true)), "", func(on: bool): settings.replay_save = on))
 	# 弾速の実験(開発用のデータ集め。scripts/speed_study.gd)
 	v.add_child(_toggle_card("弾速の実験に参加する", "ひとりで遊ぶとき、弾の速さなどを少し変えた弾幕になることがあります(どれになったかはプレイ中は出ません)。結果は、難易度の計算を確かめるために記録します(user://speed_study.csv。外には送りません)。弾幕に効く MOD を付けているときは、ふだんどおりです", UiStyle.ACCENT,
 		bool(settings.get("speed_study", false)), "", func(on: bool): settings.speed_study = on))

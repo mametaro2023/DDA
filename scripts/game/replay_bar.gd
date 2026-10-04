@@ -182,7 +182,8 @@ static func _fmt(t: float, tenth: bool) -> String:
 	var m := int(t) / 60
 	if tenth:
 		return "%d:%04.1f" % [m, t - float(m * 60)]
-	return "%d:%02d" % [m, int(t) % 60]
+	var whole := ceili(t)   # 全体の長さは、切り上げる(いまの位置より短く見えないように)
+	return "%d:%02d" % [whole / 60, whole % 60]
 
 
 func _plot() -> Rect2:

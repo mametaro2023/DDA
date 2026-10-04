@@ -35,7 +35,7 @@ func _init() -> void:
 			hard = bm
 	Replay.dir = "user://replays_test"
 	for cfg in [["入門(練習)", easy, ["practice"], 0], ["Chimera(通常。途中で死ぬ)", hard, [], 1], ["Chimera(小型化 + 撃破)", hard, ["boss", "shrink", "practice"], 2],
-			["Chimera(弾幕 v1)", hard, ["gen_v1", "practice"], 3]]:
+			["Chimera(弾幕 v1)", hard, ["v1", "practice"], 3]]:
 		_test_roundtrip(cfg[0], cfg[1], cfg[2], cfg[3])
 	_test_loops(easy)
 	_test_files(easy)
@@ -104,6 +104,10 @@ func _test_roundtrip(label: String, bm, mods: Array, seed_n: int) -> void:
 	var rec: Replay.Recorder = played.rec
 	var sim = played.sim
 	print("-- %s: %d フレーム, キーフレーム %d 個, 被弾 %d, 終了 %s%s" % [label, rec.frames.size() / Replay.STRIDE, rec.keys.size(), sim.hits, str(sim.finished), "(失敗)" if sim.failed else ""])
+	var ts0 := Time.get_ticks_usec()
+	for _i in range(10):
+		Replay.State.snapshot(sim, played.field)
+	print("      スナップショット 1 回: %.2f ms(弾 %d 発)" % [float(Time.get_ticks_usec() - ts0) / 10000.0, played.field.count])
 	# 1) 先頭から通しで再生 → 最後の状態が同じ
 	var p := _player_for(bm, mods, rec)
 	p.advance_to(1.0e9)

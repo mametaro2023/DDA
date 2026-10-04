@@ -520,6 +520,7 @@ func _update_settings_button() -> void:
 ## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=曲 4=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
 func _exit_tree() -> void:
 	SongLibrary.stop_warmup()   # 裏で索引を作っているスレッドを、閉じる前に止める
+	Replay.flush()   # リプレイを書いている途中なら、書き終わるのを待つ
 
 
 func open_settings(section := 0) -> void:
@@ -731,11 +732,13 @@ func show_result(stats: Dictionary, music: AudioStreamPlayer = null) -> void:
 func show_replay(name: String, on_close: Callable) -> void:
 	var data := Replay.load_file(name)
 	if data.is_empty():
-		overlay.toast("リプレイを読めません(消えたか、別のバージョンで作られたものです)")
+		if overlay != null:
+			overlay.toast("リプレイを読めません(消えたか、別のバージョンで作られたものです)")
 		return
 	var found := Replay.find_chart(str(data.md5))
 	if found.is_empty():
-		overlay.toast("このリプレイの曲が見つかりません: %s" % str(data.get("title", "")))
+		if overlay != null:
+			overlay.toast("このリプレイの曲が見つかりません: %s" % str(data.get("title", "")))
 		return
 	var g = UiSets.current().make_game()
 	g.setup_replay(found.loader, found.bm, Settings.load_all(), data)
@@ -747,6 +750,7 @@ func show_replay(name: String, on_close: Callable) -> void:
 	_swap(g)
 
 
+var _export_last := ""          # 最後の書き出しの結果の文(確認用)
 var _export := {}              # 動画の書き出し中: {pid, avi, mp4, dir, screen, phase, ffmpeg_pid}
 var _export_timer: Timer
 
@@ -787,7 +791,8 @@ func _replay_export(name: String, data: Dictionary, trail_mode: int, trail_sec: 
 	Replay.write_progress(0.0)
 	var pid := OS.create_process(OS.get_executable_path(), args)
 	if pid <= 0:
-		overlay.toast("動画の書き出しを始められませんでした")
+		if overlay != null:
+			overlay.toast("動画の書き出しを始められませんでした")
 		return
 	_export = {"pid": pid, "avi": avi, "mp4": out_dir.path_join(base + ".mp4"), "dir": out_dir, "screen": screen, "phase": "movie", "ffmpeg_pid": 0}
 	if _export_timer == null:
@@ -820,7 +825,8 @@ func _export_cancel() -> void:
 		_export_status("")
 		_export = {}
 		_export_timer.stop()
-		overlay.toast("動画の書き出しを中止しました")
+		if overlay != null:
+			overlay.toast("動画の書き出しを中止しました")
 
 
 func _export_poll() -> void:
@@ -861,7 +867,9 @@ func _export_finish(msg: String) -> void:
 	_export_status("")
 	_export = {}
 	_export_timer.stop()
-	overlay.toast(msg, 9.0)
+	if overlay != null:
+		overlay.toast(msg, 9.0)
+	_export_last = msg
 
 
 # --- songs フォルダの見張り(.osz を置いたら、アプリの中で知らせる) ---
@@ -2743,6 +2751,100 @@ func _smoke_replay() -> void:
 	await key.call(KEY_ESCAPE)
 	await get_tree().create_timer(0.3).timeout
 	chk.call(closed[0], "Esc で閉じて、元の画面へ戻る")
+	# 10) ゲームオーバーしたプレイ: 自動で保存 → リザルトにリプレイのボタン → 再生(終わりでゲームオーバー演出・前へ飛ぶと元に戻る)
+	var hard = loader.difficulties[loader.difficulties.size() - 1]
+	start_game(loader, hard, {"mods": ["hell", "storm"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	var g2 = _current
+	var tk2 := [0.0]
+	g2.debug_move = func() -> Vector2:
+		tk2[0] += 1.0
+		return Vector2.from_angle(sin(tk2[0] * 0.013) * 3.0 + tk2[0] * 0.007)
+	await get_tree().create_timer(0.8).timeout
+	g2._skip_intro()
+	var waited := 0.0
+	while _kind != "result" and waited < 45.0:
+		await get_tree().create_timer(0.5).timeout
+		waited += 0.5
+	chk.call(_kind == "result", "ゲームオーバーでリザルトへ移る(%.1f 秒)" % waited)
+	await get_tree().create_timer(3.0).timeout
+	shot.call("result")
+	var res = _current
+	var rname := ""
+	var files: Array = Array(DirAccess.get_files_at(Replay.dir))
+	files.sort()
+	rname = str(files[files.size() - 1]) if not files.is_empty() else ""
+	Replay.flush()
+	var d2 := Replay.load_file(rname)
+	chk.call(not d2.is_empty() and bool(d2.stats.failed), "失敗したプレイも保存される(%s)" % rname)
+	chk.call(res.has_signal("replay_requested") and str(res.stats.get("replay", "")) == rname, "リザルトの stats にリプレイのファイル名が入り、ボタンが出る")
+	var closed2 := [false]
+	res.replay_requested.emit()
+	await get_tree().create_timer(1.0).timeout
+	var r2 = _current
+	chk.call(r2 != res and r2.get("_rp") != null and r2.sim.failed == false, "リザルトの「リプレイ」でリプレイが開く")
+	r2._replay_seek(r2._rp.end_time())
+	await get_tree().create_timer(1.6).timeout
+	chk.call(r2.sim.failed and r2._dead, "最後まで飛ぶと、ゲームオーバーの演出になる")
+	shot.call("dead")
+	var tdead: float = r2._rp.end_time()
+	r2._replay_seek(tdead - 6.0)
+	await get_tree().create_timer(0.3).timeout
+	chk.call(not r2._dead and not r2.sim.failed and r2.field.modulate.a == 1.0 and not r2._view_over.dead, "前へ飛ぶと、ゲームオーバーの演出が元に戻る")
+	r2._replay_set_playing(true)
+	await get_tree().create_timer(7.0).timeout
+	chk.call(r2.sim.failed and r2._dead, "続きを再生すると、また最後でゲームオーバーになる")
+	r2._replay_close()
+	await get_tree().create_timer(0.3).timeout
+	chk.call(_kind == "result", "閉じるとリザルトへ戻る")
+	# 11) 撃破 MOD(弾幕が周回で伸びる・ボスの状態も戻る)
+	start_game(loader, bm, {"mods": ["boss", "practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	var g3 = _current
+	var tk3 := [0.0]
+	g3.debug_move = func() -> Vector2:
+		tk3[0] += 1.0
+		return Vector2.from_angle(sin(tk3[0] * 0.02) * 3.0 + tk3[0] * 0.01)
+	var ff3: float = g3.sim.first_fire_time
+	await get_tree().create_timer(0.8).timeout
+	g3._skip_intro()
+	await get_tree().create_timer(10.0).timeout
+	var st3: Dictionary = g3._stats()
+	g3._save_replay(st3)
+	Replay.flush()
+	var closed3 := [false]
+	show_replay(str(st3.get("replay", "")), func(): closed3[0] = true)
+	await get_tree().create_timer(0.8).timeout
+	var r3 = _current
+	chk.call(r3.get("_rp") != null and r3.sim.boss != null, "撃破 MOD のリプレイが開く")
+	var hp_marks := []
+	for tm in [0.4, 0.8]:
+		r3._replay_seek(r3._rp.start_time() + (r3._rp.end_time() - r3._rp.start_time()) * tm)
+		hp_marks.append(r3.sim.boss.hp)
+	r3._replay_seek(r3._rp.start_time() + (r3._rp.end_time() - r3._rp.start_time()) * 0.4)
+	chk.call(is_equal_approx(r3.sim.boss.hp, hp_marks[0]), "撃破: 同じ時刻へ戻すと、ボスの状態も同じ(HP %.1f)" % r3.sim.boss.hp)
+	shot.call("boss")
+	r3._replay_close()
+	await get_tree().create_timer(0.3).timeout
+	# 12) 動画出力(別のプロセスが、Movie Maker で書き出す。ffmpeg があれば mp4 へ変換する)
+	if args.has("--export"):
+		show_replay(name, func(): pass)
+		await get_tree().create_timer(0.8).timeout
+		var r4 = _current
+		_replay_export(name, r4.replay_data, 1, 3.0, r4)
+		chk.call(not _export.is_empty() and OS.is_process_running(int(_export.pid)), "動画出力を押すと、子プロセスが始まる")
+		await get_tree().create_timer(1.5).timeout
+		var shown: String = r4._rp_bar._status_l.text
+		chk.call(shown.contains("書き出し中") and r4._rp_bar._export_btn.text == "書き出し中止", "操作パネルに、進み具合と「書き出し中止」が出る('%s')" % shown)
+		var wait_s := 0.0
+		while not _export.is_empty() and wait_s < 120.0:
+			await get_tree().create_timer(1.0).timeout
+			wait_s += 1.0
+		print("   export: ", _export_last, " (", int(wait_s), " 秒)")
+		chk.call(_export.is_empty() and _export_last.begins_with("動画を書き出しました"), "書き出しが終わる")
+		var out_path := _export_last.substr(_export_last.find(": ") + 2).get_slice("(", 0)
+		chk.call(FileAccess.file_exists(out_path), "ファイルができている: %s" % out_path)
+		if FileAccess.file_exists(out_path):
+			DirAccess.remove_absolute(out_path)
+		chk.call(r4._rp_bar._status_l.text == "" and r4._rp_bar._export_btn.text == "動画出力", "終わると、パネルの表示が戻る")
 	print("smoke-replay: ", "OK" if fails[0] == 0 else "%d FAILED" % fails[0])
 	get_tree().quit(fails[0])
 

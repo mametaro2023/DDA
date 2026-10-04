@@ -199,6 +199,7 @@ uniform vec2 vis_center;
 uniform float vis_r0 = 0.0;
 uniform float vis_r1 = 0.0;
 uniform float halo = 0.0;   // キアイの光の強さ(0 なら光らない)
+uniform float fade = 1.0;   // 全体の不透明度(このシェーダーは COLOR を上書きするので、ノードの modulate は効かない。自前で掛ける)
 varying float sz;
 varying vec4 vc;
 
@@ -216,9 +217,9 @@ void vertex() {
 	float st = clamp(abs(ts - 1.0) / 0.45, 0.0, 1.0);   // 時の淀み・急流の効き(0..1)
 	vec3 tint = ts < 1.0 ? slow_tint.rgb : fast_tint.rgb;
 	vec3 c = mix(base.rgb, tint, warp_body_tint * st);
-	float va = 1.0;   // 暗闇: 見える範囲の外ほど薄い
+	float va = fade;   // 暗闇: 見える範囲の外ほど薄い
 	if (vis_r1 > 0.0) {
-		va = 1.0 - smoothstep(vis_r0, vis_r1, distance(p, vis_center));
+		va *= 1.0 - smoothstep(vis_r0, vis_r1, distance(p, vis_center));
 	}
 	float s = 0.0;
 	if (layer == 0) {
@@ -678,6 +679,7 @@ func sync_render() -> void:
 			m.set_shader_parameter("data", tex)
 	var halo_v := halo if halo > 0.01 else 0.0
 	_send("halo", halo_v)
+	_send("fade", modulate.a)   # ゲームオーバーで弾が消える・再開で弾が現れる(modulate:a)をシェーダーへ
 	_send("vis_r1", vis_r1)
 	if vis_r1 > 0.0:
 		_send("vis_r0", vis_r0)

@@ -15,6 +15,7 @@ const QuitPanel = preload("res://scripts/ui/lazer/lazer_quit.gd")
 const LazerLogo = preload("res://scripts/ui/lazer/lazer_logo.gd")
 const Volume = preload("res://scripts/volume.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const Settings = preload("res://scripts/settings.gd")
 
@@ -176,8 +177,14 @@ func _on_picked(pick: Dictionary) -> void:
 	set_background(pick.tex)
 	_audio.stream = pick.stream
 	_audio.volume_db = -40.0
-	_audio.play(pick.start)
+	var start: float = pick.start
+	NowPlaying.set_track(_audio, str(pick.get("title", "")), str(pick.get("artist", "")), start, func(): _audio.seek(start), _play_random)   # 上のプレイヤー: 前 = 頭から聴き直す・次 = 別のランダムな曲
+	_audio.play(start)
 	UiStyle.tween(_audio, "volume_db", -40.0, MUSIC_DB, 1.6)   # 曲は、ふわっと入る
+
+
+func _exit_tree() -> void:
+	NowPlaying.clear(_audio)
 
 
 ## 曲を小さくして止める。

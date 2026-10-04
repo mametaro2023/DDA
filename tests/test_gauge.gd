@@ -332,11 +332,11 @@ func _init() -> void:
 	_check(sim.score < s_before_hit and s_before_hit > 0.0, "被弾すると表示点数も下がる (%.0f → %.0f)" % [s_before_hit, sim.score])
 
 	# --- MOD ---
-	# 16) 合成: MOD なしは既定値のまま。地獄は 弾サイズ 1.35 倍 / 体力 150ms / 半減なし / ベース +8%
-	var none: Dictionary = Mods.params([])
+	# 16) 合成: 弾幕 v1 だけなら既定値のまま(v2 が初期状態のときの体力 300ms は test_pattern_v2 で確かめる)。地獄は 弾サイズ 1.35 倍 / 体力 150ms / 半減なし / ベース +8%
+	var none: Dictionary = Mods.params(["v1"])
 	_check(none.size_mul == 1.0 and none.drain_time == GameSim.GAUGE_DRAIN_TIME and none.low_protect and none.score_mul == 1.0,
 		"MOD なしは既定の設定")
-	var hell: Dictionary = Mods.params(["hell"])
+	var hell: Dictionary = Mods.params(["hell", "v1"])
 	_check(hell.size_mul == 1.35 and absf(hell.drain_time - 0.15) < 1e-9 and not hell.low_protect and absf(hell.score_mul - 1.08) < 1e-9,
 		"地獄: 弾サイズ ×1.35 / 体力 150ms / 低体力の半減なし / ベーススコア ×1.08")
 	_check(Mods.params(["hell", "hell", "nope"]).ids == ["hell"], "重複・未知の MOD id は無視する")

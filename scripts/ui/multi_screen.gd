@@ -21,6 +21,7 @@ const SongLibrary = preload("res://scripts/song_library.gd")
 const MpGame = preload("res://scripts/net/mp_game.gd")
 const SongDownload = preload("res://scripts/song_download.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const QuitPanel = preload("res://scripts/ui/quit_panel.gd")
 
@@ -116,6 +117,7 @@ func _build_backdrop() -> void:
 
 
 func _exit_tree() -> void:
+	NowPlaying.clear(_audio)
 	if net == null:
 		return
 	for pair in [[net.joined, _on_joined], [net.join_failed, _on_join_failed], [net.left, _on_left],
@@ -683,6 +685,7 @@ func _update_bg() -> void:
 		var s: AudioStream = net.song_loader.load_audio(bm.audio_filename)
 		if s != null:
 			_audio.stream = s
+			NowPlaying.set_track(_audio, bm.title, bm.artist, maxf(bm.preview_time / 1000.0, 0.0))   # 上のプレイヤー(前・次はなし)
 			_audio.play(maxf(bm.preview_time / 1000.0, 0.0))
 	_bg.texture = tex
 	UiStyle.tween(_bg, "modulate:a", 0.0, 1.0 if tex != null else 0.0, 0.7)

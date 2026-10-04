@@ -39,6 +39,8 @@ static func load_all() -> Dictionary:
 	if cfg.load(PATH) == OK:
 		for k in DEFAULTS:
 			out[k] = cfg.get_value("game", k, DEFAULTS[k])
+		# 弾幕 v2 は初期状態になった(旧版の MOD「弾幕 v2」は、もう無い)
+		out.mods = (out.mods as Array).filter(func(id): return str(id) != "v2")
 		# 旧版の「練習モード」の設定は、MOD「練習」に引き継ぐ
 		if bool(cfg.get_value("game", "practice", false)) and not (out.mods as Array).has("practice"):
 			var ms: Array = (out.mods as Array).duplicate()

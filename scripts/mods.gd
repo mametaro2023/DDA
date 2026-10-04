@@ -9,13 +9,14 @@ extends RefCounted
 ##   rate         … 譜面の再生速度(曲と弾幕の発射が rate 倍で進む。弾速は変わらない)
 ##   score_mul    … ベーススコア 1,000,000 にかかる倍率(グレイズボーナスにはかからない)。6%2 つなら 1.06 × 1.06
 ##   drain_time   … ゲージ満タンぶんの被弾時間(秒)。複数なら短いほう
-##   drain_mul    … その被弾時間にかかる倍率(複数なら乗算)。弾幕 v2 は ×1.2(250ms → 300ms。回復は割合なので、絶対値でも自動で増える)。地獄(150ms)と併用なら 180ms
+##   drain_mul    … その被弾時間にかかる倍率(複数なら乗算)。弾幕 v2(MOD「弾幕 v1」を付けていないとき)は ×1.2 が自動で掛かる(250ms → 300ms。回復は割合なので、絶対値でも自動で増える)。地獄(150ms)と併用なら 180ms
 ##   low_protect  … ゲージ 20% 以下で被ダメージ半減するか。1 つでも false なら false
 ##   practice     … ゲージが 0 になってもゲームオーバーにならない(練習)。1 つでも true なら true
 ##   dark         … 自機の周囲しか弾が見えない(描画だけ。判定・難易度は変わらない)。1 つでも true なら true
 ##   field_scale  … 自機が動ける範囲(盤面の中央の長方形)の縦横の倍率。発射位置は変わらない。複数なら小さいほう
 ##   boss         … 発射位置へ動くボスを、自機の自動の連射で倒す(scripts/game/boss.gd)。倒すまで曲が繰り返し、危険エリアは出ない。ひとり用。1 つでも true なら true
-##   gen_v2       … 弾幕の作り方を v2(scripts/game/pattern_gen_v2.gd)に切り替える。生成の段階で効くので、apply() は何もしない。1 つでも true なら true
+##   gen_v1       … 弾幕の作り方を、旧い v1(scripts/game/pattern_gen.gd)に切り替える MOD「弾幕 v1」。生成の段階で効くので、apply() は何もしない。1 つでも true なら true
+##   gen_v2       … 弾幕の作り方が v2(scripts/game/pattern_gen_v2.gd。初期状態)か。gen_v1 でなければ true(MOD の効果ではなく、gen_v1 から決まる)
 ## MOD を足すときは ALL に 1 件足すだけ(メニュー・HUD・リザルトは ALL を見て表示する)。
 ##
 ## ## 難易度は MOD を適用した弾幕で計算し直す
@@ -28,6 +29,9 @@ const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 ## ベーススコアの加算(score_mul)の決め方: その MOD で上がる Lv(手元の 46 譜面の平均で、暴風雨 +56% / 巨人 +34% / 加速 +30% / 地獄 +16% / 暗闇 0%)の
 ## およそ 0.2 倍を基準にし(緩やかな加算)、Lv に出ない厳しさがあるもの(地獄: 体力 250→150ms・低体力の半減なし / 暗闇: 見えにくさ)は +5% ずつ上乗せした。
 ## MOD や譜面の仕様を変えたら、測り直して見直す。
+## 弾幕 v2(初期状態)の被弾時間の倍率(250ms → 300ms)
+const V2_DRAIN_MUL := 1.2
+
 const ALL := [
 	{
 		"id": "hell", "name": "地獄", "tag": "HELL", "color": Color(1.0, 0.32, 0.3),
@@ -65,11 +69,11 @@ const ALL := [
 		"desc": "発射位置を追って動くボスを連射で倒す / 倒すまで曲が繰り返す・当てると回復・危険エリアなし(ひとり用) / ベーススコア +5%",
 		"boss": true, "score_mul": 1.05, "solo": true,
 	},
-	# 弾幕 v2: 難しくする MOD ではなく、弾幕の作り方の切り替え(スコア倍率 ×1.0)。難易度(Lv)は v2 の弾幕で測る
+	# 弾幕 v1: 難しくする MOD ではなく、旧い弾幕の作り方への切り替え(スコア倍率 ×1.0)。初期状態は弾幕 v2。難易度(Lv)は v1 の弾幕で測る
 	{
-		"id": "v2", "name": "弾幕 v2", "tag": "V2", "color": Color(0.45, 0.85, 1.0),
-		"desc": "譜面ごとに特徴の出る別の弾幕(連打は渦・ジャンプは交差・スライダーは幕など。止まって再発進する弾・分裂する弾もある) / 危険エリアが「特殊エリア」に(試練・恩恵・弾に効くものがある) / 体力 300ms(+20%) / ベーススコアは変わらない",
-		"gen_v2": true, "drain_mul": 1.2, "score_mul": 1.0,
+		"id": "v1", "name": "弾幕 v1", "tag": "V1", "color": Color(0.45, 0.85, 1.0),
+		"desc": "旧い弾幕の作り方(ノーツの位置から均等に撃つ、どの譜面も似た形の弾幕) / 危険エリアが旧来の 3×3 のマスに(デバフを受ける) / 体力 250ms(弾幕 v2 は 300ms) / ベーススコアは変わらない",
+		"gen_v1": true, "score_mul": 1.0,
 	},
 	{
 		"id": "practice", "name": "練習", "tag": "PRACTICE", "color": Color(1.0, 0.82, 0.35),
@@ -109,7 +113,8 @@ static func params(ids: Array) -> Dictionary:
 		"dark": false,
 		"field_scale": 1.0,
 		"boss": false,
-		"gen_v2": false,
+		"gen_v1": false,
+		"gen_v2": true,
 	}
 	for id in ids:
 		var m := find(str(id))
@@ -125,7 +130,10 @@ static func params(ids: Array) -> Dictionary:
 		p.dark = p.dark or bool(m.get("dark", false))
 		p.field_scale = minf(p.field_scale, float(m.get("field_scale", 1.0)))
 		p.boss = p.boss or bool(m.get("boss", false))
-		p.gen_v2 = p.gen_v2 or bool(m.get("gen_v2", false))
+		p.gen_v1 = p.gen_v1 or bool(m.get("gen_v1", false))
+	p.gen_v2 = not p.gen_v1   # 弾幕の作り方は v2 が初期状態。MOD「弾幕 v1」を付けたときだけ v1
+	if p.gen_v2:
+		p.drain_mul *= V2_DRAIN_MUL   # 弾幕 v2 は体力 +20%(MOD の地獄などと併用なら、その被弾時間に掛かる)
 	p.drain_time *= p.drain_mul   # 最終の被弾時間(min の結果に、倍率をかける)
 	return p
 

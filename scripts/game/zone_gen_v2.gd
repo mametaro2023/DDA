@@ -8,6 +8,7 @@ extends RefCounted
 ##   系統   … 試練(自機が不利)/ 恩恵(自機が有利)/ 対(半面を 2 つに割って、片方が試練・片方が恩恵)。★が低いほど恩恵が多く、高いほど対・試練が多い。キアイは対が増え、疎な区間は恩恵(癒し)が増える。
 ##   種類   … モチーフごとに、試練・恩恵の種類が決まる(PREF)。鈍足・脆弱・毒・流れ・時の急流(試練)/ 癒し・精密・稼ぎ・時の淀み(恩恵)。
 ##              流れは ★ 度合い 0.15 以上、毒は 0.3 以上、時の急流は 0.4 以上、精密は 0.2 以上。流れの向きは、フレーズのノーツの流れる向き(45° 刻み)。
+## 毒の帯が流れる(sweep)ときは、動く範囲を盤面の半分までにする(SWEEP_POISON_REACH)。盤面の端から端まで動くと、どこへ逃げても最後は帯に追いつかれる(必ず毒を受ける)ため。反対の半分は、いつも安全。
 ## 盤面の中央に居続けるのが有利にならないよう、形は中央の円・半面・帯・角(中央を通る帯もある)から選ぶ。安全な場所は常にある(試練のエリアは、動ける範囲の半分以下)。
 ##
 ## zones の要素: {t(発動), end(終わり), lead(予告の長さ), cells: [](v1 の形式との互換のために空), areas: [{shape, type}], fam: "trial"/"boon"/"pair", motif: 名前}
@@ -25,6 +26,7 @@ const POISON_K := 0.3        # 毒が出る★の度合い
 const PRECISE_K := 0.2       # 精密が出る★の度合い
 const FLOW_K := 0.15         # 流れが出る★の度合い
 const HASTE_K := 0.4         # 時の急流が出る★の度合い
+const SWEEP_POISON_REACH := 0.5   # 流れる毒の帯が通る範囲(帯の幅を含む。動ける範囲の、発動した側の端からの割合)。反対の半分には届かない
 
 ## モチーフごとの好み: trial / boon = 試練・恩恵の種類、shapes = 形(disc 中央の円 / half 半面 / corner 角 / band 帯 / sweep 流れる帯)
 const PREF := {
@@ -211,7 +213,8 @@ static func _make_zone(pl: Dictionary, start: float, end: float, secs: Array, ob
 			areas.append(_area(halves[1], boon, push))
 			sig = "pair/%d" % int(halves[2])
 		else:
-			areas.append(_area(_shape(shape_name, kk, r_pos, flow), trial if fam == "trial" else boon, push))
+			var typ: String = trial if fam == "trial" else boon
+			areas.append(_area(_shape(shape_name, kk, r_pos, flow, typ == "poison"), typ, push))
 			sig = "%s/%s/%d" % [fam, shape_name, int(r_pos * 4.0)]
 		if sig != str(prev.sig):
 			break
@@ -240,8 +243,8 @@ static func _area(shape: Dictionary, type: String, push: Vector2) -> Dictionary:
 	return a
 
 
-## 形を作る。r = 位置の選び方(0..1)、flow = ノーツの流れる向き(帯が流れる向き)。
-static func _shape(kind: String, kk: float, r: float, flow: Vector2) -> Dictionary:
+## 形を作る。r = 位置の選び方(0..1)、flow = ノーツの流れる向き(帯が流れる向き)。poison = 毒のエリア(流れる帯は、盤面の半分までしか動かない)。
+static func _shape(kind: String, kk: float, r: float, flow: Vector2, poison := false) -> Dictionary:
 	var side := int(r * 4.0) % 4
 	match kind:
 		"disc":
@@ -269,7 +272,7 @@ static func _shape(kind: String, kk: float, r: float, flow: Vector2) -> Dictiona
 			return ZoneArea.rect(pos, 0.0, pos + bw, 1.0)
 	# sweep: 流れる向きへ、帯が盤面を横切る(発動から終わりまでで、端から端へ)
 	var wd := lerpf(0.26, 0.34, kk)
-	var span := 1.0 - wd
+	var span := (SWEEP_POISON_REACH - wd) if poison else 1.0 - wd   # 毒は、逃げ場の残る半分までで止まる
 	if absf(flow.x) >= absf(flow.y):
 		if flow.x >= 0.0:
 			return ZoneArea.rect(0.0, 0.0, wd, 1.0, Vector2(span, 0.0))

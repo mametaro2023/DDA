@@ -85,9 +85,7 @@ var _artist_l: Label
 var _meta_l: Label
 var _detail_l: Label
 var _mod_bar: HBoxContainer
-var _v2_btn: Button                # 下部バーの「弾幕 v2 で遊ぼう」(v2 を付けていないときだけ出る)
-const V2_BAR_WIDE := 496.0         # MOD のチップの欄の幅(v2 のボタンが出ていないとき)
-const V2_BAR_NARROW := 284.0       # 同(v2 のボタンが出ているとき)
+const MOD_BAR_W := 496.0           # 下部バーの、MOD のチップの欄の幅
 var _status: Label
 var _empty_box: Control           # 曲が 1 つもないときだけ、右側に出す案内
 var _loading_tween: Tween         # 読み込みが長引いたときに、一覧を薄くする
@@ -139,6 +137,7 @@ func _ready() -> void:
 	_place(_song_scroll, 32, 118, 404, 494)
 	_song_smooth = SmoothScroll.attach(_song_scroll, true)   # ドラッグでもスクロールできる(左 = ふつう・右 = 速い)
 	_song_smooth.active = _lists_active
+	_song_smooth.wheel_anywhere = true   # ホイールは画面のどこで回しても曲の一覧(難易度の一覧の上だけは、そちらが受ける)
 	_song_box = VBoxContainer.new()
 	_song_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_song_box.add_theme_constant_override("separation", 6)
@@ -165,6 +164,7 @@ func _ready() -> void:
 	_place(_diff_scroll, 468, 168, 780, 384)
 	_diff_smooth = SmoothScroll.attach(_diff_scroll, true)
 	_diff_smooth.active = _lists_active
+	_song_smooth.wheel_except = [_diff_scroll]
 	_diff_box = VBoxContainer.new()
 	_diff_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_diff_box.add_theme_constant_override("separation", 6)
@@ -194,8 +194,7 @@ func _ready() -> void:
 	_mod_bar = HBoxContainer.new()
 	_mod_bar.add_theme_constant_override("separation", 8)
 	_mod_bar.clip_contents = true
-	_intro_nodes.append(_place(_mod_bar, 576, 626, V2_BAR_WIDE, 40))
-	_build_v2_button()
+	_intro_nodes.append(_place(_mod_bar, 576, 626, MOD_BAR_W, 40))
 	var play := Button.new()
 	play.text = "決定" if pick_mode else "PLAY"
 	play.focus_mode = Control.FOCUS_NONE
@@ -310,8 +309,6 @@ func _set_loading(on: bool) -> void:
 			_diff_scroll.modulate.a = 1.0
 	if _play_btn != null:
 		_play_btn.disabled = on or _loader == null
-	if _v2_btn != null:
-		_v2_btn.disabled = on or _loader == null
 
 
 ## 画面の下のほうに、メッセージを出す(失敗したときなど。赤い文字で、読み落としにくくする)。
@@ -1017,13 +1014,6 @@ func _refresh_mod_bar() -> void:
 	for c in _mod_bar.get_children():
 		c.queue_free()
 	var p := Mods.params(settings.mods)
-	if _v2_btn != null:   # 弾幕 v2 を付けていないときだけ、右に「弾幕 v2 で遊ぼう」のボタンを出す。出ている間は、チップの幅を狭める
-		var want: bool = not p.gen_v2
-		if want and not _v2_btn.visible:
-			_v2_btn.visible = true
-			UiStyle.pop_scale(_v2_btn, 0.9, 0.3)
-		_v2_btn.visible = want
-		_mod_bar.size.x = V2_BAR_NARROW if want else V2_BAR_WIDE
 	if p.ids.is_empty():
 		var none := UiStyle.label("MOD なし", 13, UiStyle.TEXT_FAINT)
 		none.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -1065,41 +1055,6 @@ func open_mods() -> void:
 	p.closed.connect(_close_mods)
 	_mod_panel = p
 	add_child(p)
-
-
-## 下部バーの「弾幕 v2 で遊ぼう」: MOD「弾幕 v2」の色の枠のボタン(右の PLAY の隣。付けるまで出る)。押すと v2 を付けて、曲を読み直す。
-func _build_v2_button() -> void:
-	var c: Color = Mods.find("v2").color
-	var b := Button.new()
-	b.text = "弾幕 v2 で遊ぼう   ＋"
-	b.focus_mode = Control.FOCUS_NONE
-	b.tooltip_text = "MOD「弾幕 v2」を付ける: 譜面ごとに特徴の出る弾幕と、特殊エリア(体力 300ms)。いつでも MOD から外せます"
-	b.add_theme_font_size_override("font_size", 15)
-	b.add_theme_font_override("font", UiStyle.bold())
-	b.add_theme_stylebox_override("normal", UiStyle.box(Color(c.r, c.g, c.b, 0.14), Color(c.r, c.g, c.b, 0.85), 2, 6, 14, 8))
-	b.add_theme_stylebox_override("hover", UiStyle.box(Color(c.r, c.g, c.b, 0.30), c, 2, 6, 14, 8))
-	b.add_theme_stylebox_override("pressed", UiStyle.box(Color(c.r, c.g, c.b, 0.45), c, 2, 6, 14, 8))
-	b.add_theme_stylebox_override("disabled", UiStyle.box(Color(1, 1, 1, 0.05), Color(1, 1, 1, 0.15), 2, 6, 14, 8))
-	for k in ["font_color", "font_hover_color", "font_pressed_color"]:
-		b.add_theme_color_override(k, c)
-	b.add_theme_color_override("font_disabled_color", UiStyle.TEXT_FAINT)
-	b.pressed.connect(_enable_v2)
-	_v2_btn = b
-	_intro_nodes.append(_place(b, 868, 626, 216, 40))
-	_buttons.append(b)
-
-
-## 「弾幕 v2 で遊ぼう」を押した: MOD「弾幕 v2」を付ける。
-func _enable_v2() -> void:
-	if _launching or _mod_panel != null or _options != null:
-		return
-	var ids: Array = settings.mods.duplicate()
-	if not ids.has("v2"):
-		ids.append("v2")
-	settings.mods = ids
-	Settings.save_all(settings)
-	_refresh_mod_bar()
-	_on_mods_changed()
 
 
 ## MOD が変わった: 難易度を測り直す。

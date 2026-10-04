@@ -230,6 +230,30 @@ func is_paused() -> bool:
 	return _paused
 
 
+## ウィンドウのフォーカスが外れたら(別のウィンドウへ切り替えた・最小化した)、自動でポーズにする。
+## ひとり用だけ(マルチプレイは止められない)。終わりの演出・ゲームオーバー・すでにポーズ中は何もしない。開発用の自動操作(--smoke / --prof / --shot)も対象外。
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_APPLICATION_FOCUS_OUT:
+		return
+	if _mp != null or _menu_open() or _dead or _end_timer >= 0.0 or _outro_t >= 0.0 or not is_inside_tree():
+		return
+	if prof_on or debug_move.is_valid() or debug_seek >= 0.0 or (_dev_run() and not focus_pause_in_dev):
+		return
+	_set_paused(true)
+
+
+## 開発用の起動引数(--smoke… / --prof… / --shot)で動いているか。自動操作の最中は、フォーカスが外れてもポーズにしない。
+## 開発用の起動引数で動いていても、フォーカス外れのポーズを試す(--smoke-focus だけが true にする)
+static var focus_pause_in_dev := false
+
+
+static func _dev_run() -> bool:
+	for a in OS.get_cmdline_user_args():
+		if str(a).begins_with("--smoke") or str(a).begins_with("--prof") or str(a).begins_with("--shot"):
+			return true
+	return false
+
+
 func setup(p_loader, p_bm, p_settings: Dictionary) -> void:
 	loader = p_loader
 	bm = p_bm

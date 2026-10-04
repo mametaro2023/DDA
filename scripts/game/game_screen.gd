@@ -176,6 +176,9 @@ var _outro_t := -1.0      # クリアのフェードアウトの経過秒(始ま
 var _bg_nodes: Array = [] # 背景(フェードアウトしない)
 var _bg_tex: Texture2D    # 背景の画像(リザルトへ渡して、同じ背景を続ける)
 var _sim_t := -LEAD_IN    # 判定側(GameSim)の時刻。_now に追いつくまで SIM_STEP 刻みで進める
+var prof_on := false       # 開発用(--prof-frames): このフレームの処理時間の内訳を prof に残す
+var prof := {}
+var _prof_steps := 0
 var _hit_any := false     # このフレームのどこかのステップで、弾に当たっていたか
 var _hit_started := false # このフレームのどこかで、新しい被弾が始まったか
 var _study_cond := ""   # 弾速の実験の条件(scripts/speed_study.gd)。実験しないときは空
@@ -357,9 +360,21 @@ func _ready() -> void:
 		_refresh()
 	else:
 		_begin_arrival()
+	_prewarm_text()
 	if net != null:
 		# 全員が同じ弾幕を作れたかの確認用の要約(ホストと違う人は外される)。開始の合図(go)は、全員の準備が済んでから届く
 		net.report_loaded(sim.events.size() * 100003 + sim.bullets_total)
+
+
+## プレイの途中で初めて出る文字(エリアの名前)の字形を、始まる前に作っておく。
+## 日本語の字形は、初めて使うときに作られ、1 回で数 ms かかる(エリアに入った瞬間に、フレームが落ちていた)。
+func _prewarm_text() -> void:
+	if _debuff_l == null:
+		return
+	var font := _debuff_l.get_theme_font("font")
+	var size := _debuff_l.get_theme_font_size("font_size")
+	for type in ["slow", "fragile", "poison", "big", "heal", "precise", "bonus", "warp", "haste", "flow"]:
+		font.get_string_size("%s  %s" % [GameSim.zone_family_name(type), GameSim.zone_name(type)], HORIZONTAL_ALIGNMENT_LEFT, -1, size)
 
 
 ## 自機の現れ具合(ArenaView の ship_in)を、2 つの描画層にそろえて設定する。
@@ -681,7 +696,10 @@ func _process(delta: float) -> void:
 	var slow := Input.is_physical_key_pressed(KEY_SHIFT)
 	if _mouse_mode:
 		slow = slow or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+	var p0 := Time.get_ticks_usec() if prof_on else 0
 	_step_sim(slow)
+	if prof_on:
+		prof = {"sim": Time.get_ticks_usec() - p0, "steps": _prof_steps, "n": field.count, "now": _now, "warp": field.warp.size(), "ts": field._ts_active, "halo": field.halo, "zone": sim.zone_area_type}
 	if _mp != null:
 		_mp.tick(delta, _now)
 
@@ -709,7 +727,11 @@ func _process(delta: float) -> void:
 	if _dead:
 		_death_t += delta
 		_apply_death_fx()
+	var p1 := Time.get_ticks_usec() if prof_on else 0
 	_refresh()
+	if prof_on:
+		prof["refresh"] = Time.get_ticks_usec() - p1
+		prof["proc"] = Time.get_ticks_usec() - p0
 
 	if sim.finished and not sim.failed and not _done:
 		# クリア: 背景以外をフェードアウト(画面も曲も止めない。弾は sim が消してある)→ リザルトへ。曲は呼び出し側が引き継ぐ
@@ -778,6 +800,7 @@ func _step_sim(slow: bool) -> void:
 		return   # 曲クロックが進んでいない(マウスの移動量は次のフレームへ持ち越す)
 	var step := clampf(float(field.count) * 0.000002, SIM_STEP, SIM_STEP_MAX)
 	var n := clampi(ceili(span / step), 1, SIM_MAX_STEPS)
+	_prof_steps = n
 	var dt := span / float(n)
 	var move := Vector2.ZERO
 	var d := Vector2.ZERO

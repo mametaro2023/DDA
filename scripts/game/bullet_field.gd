@@ -92,7 +92,8 @@ var _mm_core: MultiMesh
 var _mm_ring: MultiMesh   # 当たり判定がまだ無い弾(発射直後)は中抜きのリングで描く
 var _mats: Array[ShaderMaterial] = []
 var _data_img: Image       # 弾の配列を並べた画像(1 チャンネルの小数。並びは下の説明)
-var _data_tex: ImageTexture
+var _data_texs: Array[ImageTexture] = []   # 順番に使い回す(DATA_TEX_N 枚)
+var _data_k := 0
 var _sent := {}            # シェーダーに最後に渡した値(変わったときだけ渡し直す)
 
 ## 描画は、弾ごとの計算を GPU で行う: 毎フレーム、弾の配列をそのまま 1 枚の画像にして送り、各層のシェーダーが
@@ -101,6 +102,9 @@ var _sent := {}            # シェーダーに最後に渡した値(変わっ�
 const DATA_TEX_W := 64
 const CAP := 4032          # 送る配列の長さ(DATA_TEX_W の倍数で、MAX_BULLETS 以上)
 const DATA_TEX_H := CAP * 6 / DATA_TEX_W
+## 送る画像は、毎フレーム別の 1 枚に書く(DATA_TEX_N 枚を順番に)。GPU がまだ前のフレームで使っている画像に書き込むと、
+## 描き終わるのを待つことがあり、まれに 20ms ほど止まっていた。
+const DATA_TEX_N := 3
 const LAYER_BODY := 0
 const LAYER_CORE := 1
 const LAYER_RING := 2
@@ -128,7 +132,8 @@ func _init() -> void:
 ## 描画用ノードを作る(テストなど描画不要なときは呼ばない)。
 func setup_render() -> void:
 	_data_img = Image.create_empty(DATA_TEX_W, DATA_TEX_H, false, Image.FORMAT_RF)
-	_data_tex = ImageTexture.create_from_image(_data_img)
+	for k in range(DATA_TEX_N):
+		_data_texs.append(ImageTexture.create_from_image(_data_img))
 	_mm_halo = _make_layer(_make_halo_texture(), LAYER_GLOW)
 	_mm_color = _make_layer(null, LAYER_BODY)
 	_mm_core = _make_layer(null, LAYER_CORE)
@@ -158,7 +163,7 @@ func _make_layer(tex: Texture2D, layer: int) -> MultiMesh:
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("layer", layer)
-	mat.set_shader_parameter("data", _data_tex)
+	mat.set_shader_parameter("data", _data_texs[0])
 	mat.set_shader_parameter("cap", CAP)
 	var pal := PackedColorArray()
 	for c in PALETTE:
@@ -666,7 +671,11 @@ func sync_render() -> void:
 		bytes.append_array(grace.to_byte_array())
 		bytes.append_array(tscale.to_byte_array())
 		_data_img.set_data(DATA_TEX_W, DATA_TEX_H, false, Image.FORMAT_RF, bytes)
-		_data_tex.update(_data_img)
+		_data_k = (_data_k + 1) % DATA_TEX_N
+		var tex := _data_texs[_data_k]
+		tex.update(_data_img)
+		for m in _mats:
+			m.set_shader_parameter("data", tex)
 	var halo_v := halo if halo > 0.01 else 0.0
 	_send("halo", halo_v)
 	_send("vis_r1", vis_r1)

@@ -161,6 +161,9 @@ func _ready() -> void:
 	if args.has("--smoke-modscroll"):
 		_smoke_modscroll()
 		return
+	if args.has("--prof-frames"):
+		_prof_frames()
+		return
 	if args.has("--prof-play"):
 		_prof_play()
 		return
@@ -1846,6 +1849,79 @@ func _prof_ui() -> void:
 	await measure.call("menu -> title 2nd", func(): show_title())
 	for r in rows:
 		print(r)
+	get_tree().quit()
+
+
+## 開発用: プレイ中のフレームの長さを実時間で測り、長いフレームの内訳(判定の刻み・弾の数・描画の準備・描画)を出す。垂直同期は切る。
+## -- --prof-frames <osz のパス> [難易度名の一部] [秒] [MOD ...](既定: 弾幕 v2 + 練習)
+func _prof_frames() -> void:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--prof-frames")
+	var rest := Array(args.slice(i + 1))
+	var loader := OszLoader.new()
+	loader.open(rest[0])
+	var bm = loader.difficulties[loader.difficulties.size() - 1]
+	if rest.size() > 1:
+		for d in loader.difficulties:
+			if d.version.contains(rest[1]):
+				bm = d
+	var secs: float = float(rest[2]) if rest.size() > 2 else 60.0
+	var mods: Array = rest.slice(3).filter(func(x): return not Mods.find(x).is_empty())
+	if mods.is_empty():
+		mods = ["v2", "practice"]
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	Engine.max_fps = 320 if args.has("fps320") else 0   # fps320: 320Hz のモニターと同じ間隔で回す
+	var vp := get_viewport().get_viewport_rid()
+	RenderingServer.viewport_set_measure_render_time(vp, true)
+	start_game(loader, bm, {"mods": mods, "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
+	var g = _current
+	g.prof_on = true
+	while not g._audio_started:
+		await get_tree().process_frame
+	for a in rest:   # from=秒: 曲の途中から(判定が追いつくまで待ってから測る) / hide=名前,...: 画面の部品を隠す(どれが重いかの切り分け)
+		if str(a).begins_with("from="):
+			g._audio.seek(float(str(a).trim_prefix("from=")) * g._rate)
+			while g._now - g._sim_t > 0.05 or g._now < float(str(a).trim_prefix("from=")):
+				await get_tree().process_frame
+		elif str(a) == "noglow":   # 弾の光の層だけ隠す
+			g.field.get_child(0).visible = false
+		elif str(a).begins_with("hide="):
+			for nm in str(a).trim_prefix("hide=").split(","):
+				var nd = g.get(nm)
+				if nd is CanvasItem:
+					nd.visible = false
+				else:
+					print("hide: no CanvasItem ", nm)
+	print("prof-frames: %s [%s] mods=%s" % [bm.title, bm.version, str(mods)])
+	var frames: Array = []   # [間隔 ms, 前のフレームの prof, 描画(CPU) ms, GPU ms, 全ノードの処理 ms, 区切り]
+	var marks := {"pre": 0, "post": 0}   # 描画の前後の時刻(処理 → 描画 → 表示待ち の区切り)
+	RenderingServer.frame_pre_draw.connect(func(): marks.pre = Time.get_ticks_usec())
+	RenderingServer.frame_post_draw.connect(func(): marks.post = Time.get_ticks_usec())
+	var last := Time.get_ticks_usec()
+	var t0 := last
+	while (Time.get_ticks_usec() - t0) / 1000000.0 < secs and is_instance_valid(g) and _current == g and not g.sim.finished:
+		await get_tree().process_frame
+		var now := Time.get_ticks_usec()
+		frames.append([(now - last) / 1000.0, g.prof.duplicate(), RenderingServer.viewport_get_measured_render_time_cpu(vp), RenderingServer.viewport_get_measured_render_time_gpu(vp), Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+			[(marks.pre - last) / 1000.0, (marks.post - marks.pre) / 1000.0, (now - marks.post) / 1000.0]])
+		last = now
+		if frames[frames.size() - 1][0] > 15.0 and args.has("spike-shots"):   # 長いフレームの直後の画面(何が初めて出たかを見る)
+			get_viewport().get_texture().get_image().save_png("user://spike_%.2f.png" % float(g.prof.get("now", 0.0)))
+			last = Time.get_ticks_usec()
+	var ms: Array = frames.map(func(f): return f[0])
+	ms.sort()
+	var med: float = ms[ms.size() / 2]
+	print("frames=%d  median %.2f ms  p99 %.2f  p99.9 %.2f  max %.2f" % [ms.size(), med, ms[int(ms.size() * 0.99)], ms[int(ms.size() * 0.999)], ms[ms.size() - 1]])
+	var lim := 4.7 if args.has("fps320") else maxf(med * 2.5, 6.0)
+	print("frames over %.1f ms: %d" % [lim, ms.filter(func(x): return x > lim).size()])
+	var shown := 0
+	for k in range(frames.size()):
+		var f: Array = frames[k]
+		if f[0] > lim and shown < 60:
+			shown += 1
+			var p: Dictionary = f[1]
+			print(("  %6.2f ms  t=%6.2f  bullets=%4d  steps=%3d  sim=%5.2f  refresh=%5.2f  proc=%5.2f  render_cpu=%5.2f" % [f[0], float(p.get("now", 0.0)), int(p.get("n", 0)), int(p.get("steps", 0)),
+				p.get("sim", 0) / 1000.0, p.get("refresh", 0) / 1000.0, p.get("proc", 0) / 1000.0, float(f[2])]) + ("  gpu=%5.2f  all_process=%5.2f  warp=%d ts=%s halo=%.2f zone=%s" % [float(f[3]), float(f[4]), int(p.get("warp", 0)), str(p.get("ts", false)), float(p.get("halo", 0.0)), str(p.get("zone", ""))]) + ("  | to_draw=%.2f draw=%.2f after=%.2f" % f[5]))
 	get_tree().quit()
 
 

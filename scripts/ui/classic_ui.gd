@@ -11,6 +11,7 @@ const UpdatePanel = preload("res://scripts/ui/update_panel.gd")
 const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
 const ModPanel = preload("res://scripts/ui/mod_panel.gd")
 const QuitPanel = preload("res://scripts/ui/quit_panel.gd")
+const ReplayList = preload("res://scripts/ui/replay_list.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 
 
@@ -70,3 +71,8 @@ func make_mods() -> Control:
 
 func make_quit() -> Control:
 	return QuitPanel.new()
+
+
+## リプレイの一覧パネル(classic と lazer 風で共通。UiStyle の配色が、その UI セットの色になる)
+func make_replays() -> Control:
+	return ReplayList.new()

@@ -22,6 +22,11 @@ var _breaks: Array = []        # [[開始秒, 終了秒], ...]
 var _hits := PackedFloat32Array()
 var _low := 0.2
 var _font: Font = UiStyle.bold()
+## 余白(既定は上の定数。小さく置くとき(リプレイの操作パネル)だけ変える)
+var left := LEFT
+var right := RIGHT
+var top := TOP
+var bottom := BOTTOM
 
 
 ## series: 系列の配列。t0/t1: 横軸の範囲(秒)。breaks: 休憩地帯。hits: 自分が被弾した時刻。low: 低体力のライン。
@@ -91,7 +96,7 @@ static func downsample(pts: PackedVector2Array, n: int) -> Array:
 
 
 func _plot() -> Rect2:
-	return Rect2(LEFT, TOP, maxf(size.x - LEFT - RIGHT, 1.0), maxf(size.y - TOP - BOTTOM, 1.0))
+	return Rect2(left, top, maxf(size.x - left - right, 1.0), maxf(size.y - top - bottom, 1.0))
 
 
 func _x(p: Rect2, t: float) -> float:
@@ -114,7 +119,7 @@ func _draw() -> void:
 	for v in [0.0, 0.5, 1.0]:
 		var y := _y(p, v)
 		draw_line(Vector2(p.position.x, y), Vector2(p.end.x, y), Color(1, 1, 1, 0.1 if v > 0.0 else 0.22), 1.0)
-		draw_string(_font, Vector2(2.0, y + 5.0), "%d%%" % int(v * 100.0), HORIZONTAL_ALIGNMENT_RIGHT, LEFT - 8.0, 12, Color(1, 1, 1, 0.45))
+		draw_string(_font, Vector2(2.0, y + 5.0), "%d%%" % int(v * 100.0), HORIZONTAL_ALIGNMENT_RIGHT, left - 8.0, 12, Color(1, 1, 1, 0.45))
 	var ly := _y(p, _low)
 	var x := p.position.x
 	while x < p.end.x:   # 低体力のライン(点線)
@@ -127,7 +132,8 @@ func _draw() -> void:
 	while t <= _t1:
 		var tx := _x(p, t)
 		draw_line(Vector2(tx, p.end.y), Vector2(tx, p.end.y + 4.0), Color(1, 1, 1, 0.3), 1.0)
-		draw_string(_font, Vector2(tx - 24.0, p.end.y + 17.0), "%d:%02d" % [int(t) / 60, int(t) % 60], HORIZONTAL_ALIGNMENT_CENTER, 48.0, 11, Color(1, 1, 1, 0.45))
+		if bottom >= 20.0 or tx > p.position.x + 16.0:   # 余白が狭いときは、左端の「0:00」を出さない(縦軸の「0%」と重なる)
+			draw_string(_font, Vector2(tx - 24.0, p.end.y + bottom - 7.0), "%d:%02d" % [int(t) / 60, int(t) % 60], HORIZONTAL_ALIGNMENT_CENTER, 48.0, 11, Color(1, 1, 1, 0.45))
 		t += step
 	# 描き進みの位置までに切る
 	var clip_x := p.position.x + p.size.x * clampf(reveal, 0.0, 1.0)

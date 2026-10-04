@@ -1,5 +1,5 @@
 extends Control
-## タイトル画面。「プレイ / マルチプレイ / 遊び方 / 設定 / 終了」の 5 項目。背景は、ランダムに選んだ曲の画像で、その曲を流しておく
+## タイトル画面。「プレイ / マルチプレイ / リプレイ / 遊び方 / 設定 / 終了」の 6 項目。背景は、ランダムに選んだ曲の画像で、その曲を流しておく
 ## (曲が終わったら、別のランダムな曲へ)。遊び方と設定は、この画面の上に重ねるパネル(曲は流れ続ける)。
 ## 曲が 1 つもないときは、無音で暗い背景のまま。
 ##
@@ -7,6 +7,8 @@ extends Control
 
 signal play_requested
 signal multi_requested
+## リプレイの一覧を開く(パネルは main が作って、この画面の上に重ねる)
+signal replays_requested
 signal update_requested
 signal settings_requested(section: int)
 ## 「新しい UI で遊ぼう」から、別の UI セットを試す(main が設定を書き換えて、タイトルを作り直す)
@@ -27,14 +29,14 @@ const LazerButton = preload("res://scripts/ui/lazer/lazer_button.gd")
 const LazerLogo = preload("res://scripts/ui/lazer/lazer_logo.gd")
 
 const BG_TINT := Color(0.4, 0.4, 0.46)
-const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"], ["終了", "QUIT"]]
+const ITEMS := [["プレイ", "PLAY"], ["マルチプレイ", "MULTIPLAYER"], ["リプレイ", "REPLAYS"], ["遊び方", "HOW TO PLAY"], ["設定", "SETTINGS"], ["終了", "QUIT"]]
 const MUSIC_DB := -4.0
 const ITEM_X := 104.0
-const ITEM_Y := 340.0
+const ITEM_Y := 316.0
 const ITEM_W := 360.0
-const ITEM_H := 54.0
-const ITEM_GAP := 10.0
-const PITCHES := [1.0, 1.122, 1.26, 1.5, 1.68]   # 項目ごとの選択音の高さ(↑↓ で音階のように聞こえる)
+const ITEM_H := 50.0
+const ITEM_GAP := 8.0
+const PITCHES := [1.0, 1.122, 1.26, 1.335, 1.5, 1.68]   # 項目ごとの選択音の高さ(↑↓ で音階のように聞こえる)
 
 ## 画面の種類(main が、いま何の画面かを知るのに使う。ui_set.gd の契約)
 var kind := "title"
@@ -381,11 +383,14 @@ func _activate(i: int) -> void:
 			(play_requested if i == 0 else multi_requested).emit()
 		2:
 			UiSfx.play("open")
-			_open(HowToPanel.new())
+			replays_requested.emit()   # 一覧のパネルは main が作る(再生は、タイトルから離れて始まる)
 		3:
 			UiSfx.play("open")
-			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
+			_open(HowToPanel.new())
 		4:
+			UiSfx.play("open")
+			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
+		5:
 			var q := QuitPanel.new()
 			q.confirmed.connect(func(): get_tree().quit())
 			_open(q)

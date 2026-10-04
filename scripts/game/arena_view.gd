@@ -36,6 +36,7 @@ var trail_pts := PackedVector2Array()
 var trail_ts := PackedFloat64Array()
 var trail_mode := 0
 var trail_sec := 3.0
+var hit_ts := PackedFloat32Array()   # 被弾した時刻(軌道の上に、当たった位置の印を出す)
 
 
 func _draw() -> void:
@@ -136,6 +137,32 @@ func _draw_replay_trail() -> void:
 			if p0.distance_squared_to(p1) >= 1.0:
 				draw_line(p0, p1, Color(1.0, 0.82, 0.4, 0.75 * (1.0 - 0.7 * u)), 1.6, true)
 			k += 3
+	# 被弾した位置の印(軌道が出ている範囲だけ。過去は薄れていき、未来は「ここで当たる」と分かる)
+	var h0 := _lower_hit(now - trail_sec)
+	for h in range(h0, hit_ts.size()):
+		var ht: float = hit_ts[h]
+		if ht > now + (trail_sec if trail_mode >= 2 else 0.0):
+			break
+		var q: Vector2 = trail_pts[_upper(ht)]
+		var u := clampf((now - ht) / maxf(trail_sec, 0.1), -1.0, 1.0)   # 過去 0..1(古いほど大きい) / 未来 -1..0
+		var a := 0.95 - 0.55 * maxf(u, 0.0) - 0.25 * maxf(-u, 0.0)
+		var c := Color(1.0, 0.36, 0.42, a)
+		draw_arc(q, 11.0, 0.0, TAU, 24, Color(c.r, c.g, c.b, a * 0.6), 1.6, true)
+		draw_line(q + Vector2(-6, -6), q + Vector2(6, 6), c, 2.4, true)
+		draw_line(q + Vector2(-6, 6), q + Vector2(6, -6), c, 2.4, true)
+
+
+## hit_ts の中で、時刻 t 以降の最初の番号(なければ hit_ts.size())。
+func _lower_hit(t: float) -> int:
+	var lo := 0
+	var hi := hit_ts.size()
+	while lo < hi:
+		var mid := (lo + hi) / 2
+		if hit_ts[mid] < t:
+			lo = mid + 1
+		else:
+			hi = mid
+	return lo
 
 
 ## trail_ts の中で、時刻 t 以前の最後の点の番号(なければ 0)。

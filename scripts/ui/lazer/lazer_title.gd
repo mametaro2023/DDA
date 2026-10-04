@@ -1,12 +1,13 @@
 extends "res://scripts/ui/lazer/lazer_screen.gd"
-## lazer 風のタイトル画面。左に DDA のロゴ、右に横に並ぶ 5 つのボタン(プレイ / マルチプレイ / 遊び方 / 設定 / 終了)。
+## lazer 風のタイトル画面。左に DDA のロゴ、右に横に並ぶ 6 つのボタン(プレイ / マルチプレイ / リプレイ / 遊び方 / 設定 / 終了)。
 ## 背景は、ランダムに選んだ曲の画像(暗く)で、その曲を流しておく(曲が終わったら、別のランダムな曲へ)。遊び方と設定は、この画面の上に重ねるパネル(曲は流れ続ける)。
-## 契約は classic のタイトル(title_screen.gd)と同じ: signal play_requested / multi_requested / update_requested / settings_requested、
+## 契約は classic のタイトル(title_screen.gd)と同じ: signal play_requested / multi_requested / replays_requested / update_requested / settings_requested、
 ## update_info / show_update() / can_accept_auto_update() / open_panel()。
 ## 操作: ← → ↑ ↓ で選び、Enter で決める。Esc で終了の確認(キーの案内は画面に出さない。「遊び方」にある)。
 
 signal play_requested
 signal multi_requested
+signal replays_requested
 signal update_requested
 
 const AttractBackdrop = preload("res://scripts/attract_backdrop.gd")
@@ -24,17 +25,18 @@ const MUSIC_DB := -4.0
 const ITEMS := [
 	["プレイ", "play", LazerStyle.PINK, Color(0.2, 0.04, 0.11)],
 	["マルチプレイ", "users", LazerStyle.PURPLE, Color(0.1, 0.04, 0.22)],
+	["リプレイ", "clock", LazerStyle.YELLOW, Color(0.18, 0.12, 0.0)],
 	["遊び方", "search", LazerStyle.BLUE, Color(0.03, 0.12, 0.2)],
 	["設定", "gear", Color(0.3, 0.28, 0.38), LazerStyle.TEXT],
 	["終了", "power", LazerStyle.RED, Color(0.2, 0.03, 0.06)],
 ]
-const PITCHES := [1.0, 1.122, 1.26, 1.5, 1.68]   # 項目ごとの選択音の高さ(選ぶたびに音階のように聞こえる)
+const PITCHES := [1.0, 1.122, 1.26, 1.335, 1.5, 1.68]   # 項目ごとの選択音の高さ(選ぶたびに音階のように聞こえる)
 const LOGO_C := Vector2(310, 360)
 const STRIP_Y := 300.0
 const STRIP_H := 120.0
-const BTN_X := 480.0
-const BTN_W := 156.0
-const BTN_STEP := 142.0
+const BTN_X := 470.0
+const BTN_W := 140.0
+const BTN_STEP := 126.0
 
 var kind := "title"
 var update_info: Dictionary = {}   # 新しいバージョンがあるとき、main が渡す(あとから見つかった場合は show_update)
@@ -72,7 +74,7 @@ func _ready() -> void:
 		b.size = Vector2(BTN_W, STRIP_H - 16.0)
 		b.mouse_entered.connect(func(): _select(i))
 		b.pressed.connect(func(): _activate(i))
-		if i == 4:
+		if i == ITEMS.size() - 1:
 			b.set_meta("juice_sound", "back")
 		add_child(b)
 		_cards.append(b)
@@ -247,11 +249,14 @@ func _activate(i: int) -> void:
 			(play_requested if i == 0 else multi_requested).emit()
 		2:
 			UiSfx.play("open")
-			_open(HowToPanel.new())
+			replays_requested.emit()   # 一覧のパネルは main が作る(再生は、タイトルから離れて始まる)
 		3:
 			UiSfx.play("open")
-			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
+			_open(HowToPanel.new())
 		4:
+			UiSfx.play("open")
+			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
+		5:
 			var q := QuitPanel.new()
 			q.confirmed.connect(func(): get_tree().quit())
 			_open(q)

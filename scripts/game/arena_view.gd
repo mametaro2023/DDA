@@ -8,6 +8,8 @@ const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const ZoneArea = preload("res://scripts/game/zone_area.gd")
 
 var sim
+## 目に優しい表示(設定)。予兆・エリアの点滅と光を抑え、色を落ち着かせる
+var soft := false
 var layer := 0
 var now := 0.0
 ## ゲームオーバー演出(dead=true の間、自機の代わりに爆散エフェクトを描く)
@@ -41,7 +43,11 @@ func _draw() -> void:
 
 
 func _color(idx: int) -> Color:
-	return BulletField.PALETTE[idx % BulletField.PALETTE.size()]
+	var c: Color = BulletField.PALETTE[idx % BulletField.PALETTE.size()]
+	if soft:   # 弾の本体と同じ落ち着かせ方(bullet_field.gd のシェーダー)
+		var l := c.r * 0.299 + c.g * 0.587 + c.b * 0.114
+		c = Color(lerpf(c.r, l, 0.22) * 0.9, lerpf(c.g, l, 0.22) * 0.9, lerpf(c.b, l, 0.22) * 0.9)
+	return c
 
 
 func _draw_under() -> void:
@@ -52,6 +58,7 @@ func _draw_under() -> void:
 		return
 	_draw_zones()
 	var lead: float = sim.warn_lead
+	var ek := 0.6 if soft else 1.0   # 目に優しい表示: 予兆・発射の印の濃さ
 	for g in sim.active_gizmos:
 		var c := _color(g.color)
 		var fade_in := clampf((now - (g.t - lead)) / lead, 0.0, 1.0)
@@ -60,18 +67,18 @@ func _draw_under() -> void:
 		if g.kind == "slider":
 			if now >= g.t - lead:
 				var ep := GameSim.slider_emitter(g, now)
-				draw_circle(ep, 9.0, Color(c.r, c.g, c.b, 0.9 * a))
-				draw_arc(ep, 13.0, 0.0, TAU, 24, Color(1, 1, 1, 0.8 * a), 2.0, true)
+				draw_circle(ep, 9.0, Color(c.r, c.g, c.b, 0.9 * a * ek))
+				draw_arc(ep, 13.0, 0.0, TAU, 24, Color(1, 1, 1, 0.8 * a * ek), 2.0, true)
 		else:
-			draw_arc(g.pos, 42.0, 0.0, TAU, 48, Color(c.r, c.g, c.b, 0.8 * a), 3.0, true)
-			draw_circle(g.pos, 8.0, Color(1, 1, 1, 0.7 * a))
+			draw_arc(g.pos, 42.0, 0.0, TAU, 48, Color(c.r, c.g, c.b, 0.8 * a * ek), 3.0, true)
+			draw_circle(g.pos, 8.0, Color(1, 1, 1, 0.7 * a * ek))
 	# 発射地点の印(暗闇 MOD: 弾が見えなくても、どこから撃ったかが分かる。撃った瞬間に立ち上がり、ゆっくり広がって消える)
 	for f in sim.recent_fires:
 		var k := clampf((now - f.t) / GameSim.FIRE_MARK_TIME, 0.0, 1.0)
 		var fc := _color(f.color)
 		var a := pow(1.0 - k, 1.6)
-		draw_arc(f.pos, 10.0 + 34.0 * (1.0 - pow(1.0 - k, 2.0)), 0.0, TAU, 40, Color(fc.r, fc.g, fc.b, 0.8 * a), 2.5, true)
-		draw_circle(f.pos, 6.0 * (1.0 - 0.5 * k), Color(1, 1, 1, 0.75 * a))
+		draw_arc(f.pos, 10.0 + 34.0 * (1.0 - pow(1.0 - k, 2.0)), 0.0, TAU, 40, Color(fc.r, fc.g, fc.b, 0.8 * a * ek), 2.5, true)
+		draw_circle(f.pos, 6.0 * (1.0 - 0.5 * k), Color(1, 1, 1, 0.75 * a * ek))
 	for e in sim.active_warns:
 		var p: float = clampf((e.t - now) / lead, 0.0, 1.0)  # 1→0
 		var c := Color.WHITE
@@ -79,8 +86,8 @@ func _draw_under() -> void:
 			c = _color(e.shots[0].color)
 		var r := 12.0 + 56.0 * p
 		var a := 0.25 + 0.6 * (1.0 - p)
-		draw_arc(e.pos, r, 0.0, TAU, 40, Color(c.r, c.g, c.b, a), 2.5, true)
-		draw_circle(e.pos, 5.0, Color(1, 1, 1, a))
+		draw_arc(e.pos, r, 0.0, TAU, 40, Color(c.r, c.g, c.b, a * ek), 2.5, true)
+		draw_circle(e.pos, 5.0, Color(1, 1, 1, a * ek))
 	if sim.boss != null and not dead:
 		_draw_boss_under()
 	# 自機の機体は予兆・軌道の上、弾の下に描く(弾が機体の上に見える)
@@ -109,6 +116,8 @@ func _draw_zones() -> void:
 		if warn:   # 点滅は、発動に近づくほど速い(1.5 Hz → 5 Hz)。なめらかに明暗を行き来する
 			var phase := TAU * (1.5 * tau + (5.0 - 1.5) * tau * tau / (2.0 * lead))
 			blink = 0.5 + 0.5 * sin(phase)
+			if soft:   # 目に優しい表示: 速くしない(1.5 Hz のまま)・暗くなりすぎない
+				blink = 0.7 + 0.3 * sin(TAU * 1.5 * tau)
 		var since := now - t0                      # 発動してからの秒
 		if z.has("areas"):   # 特殊エリア(弾幕 v2): 長方形・円
 			var u := ZoneArea.progress(z, now)
@@ -136,7 +145,7 @@ func _draw_zones() -> void:
 				if since < 0.4:   # 発動の合図: 白い枠が、外へ広がりながら消える
 					var k := since / 0.4
 					draw_rect(r.grow(18.0 * k), Color(1, 1, 1, 0.9 * (1.0 - k) * a), false, 3.0)
-					draw_rect(r, Color(1, 1, 1, 0.35 * (1.0 - k) * a), true)
+					draw_rect(r, Color(1, 1, 1, (0.1 if soft else 0.35) * (1.0 - k) * a), true)
 
 
 ## 特殊エリアの形(いまの位置)を、描く多角形にする(自機が動ける範囲の外へはみ出す分は切る。枠が隣と重ならないよう、少し縮める)。
@@ -192,7 +201,7 @@ func _draw_zone_piece(poly: PackedVector2Array, center: Vector2, type: String, c
 			big.append(p + (d.normalized() * 18.0 * k if d.length() > 1.0 else Vector2.ZERO))
 		big.append(big[0])
 		draw_polyline(big, Color(1, 1, 1, 0.9 * (1.0 - k) * a2), 3.0, true)
-		draw_colored_polygon(poly, Color(1, 1, 1, 0.35 * (1.0 - k) * a2))
+		draw_colored_polygon(poly, Color(1, 1, 1, (0.1 if soft else 0.35) * (1.0 - k) * a2))   # 目に優しい表示: 合図の閃光は弱く
 
 
 ## 流れのエリアの面に、押す向きへ進む矢印を敷き詰める(格子の点を、向きへ流して、形の中のものだけ描く)。

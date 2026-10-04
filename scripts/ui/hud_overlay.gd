@@ -4,8 +4,8 @@ extends CanvasLayer
 ##     メーターをクリックして選んでからホイールを回すと、その音量(音楽 / 効果音)が変わる。表示が消えると選択は戻り、
 ##     次に回したときは、また全体音量が変わる。バーはマウスでも動かせる(クリックでその位置へ、押したまま左右へ)。
 ##     マウスがメーターの上にある間・ドラッグ中は、消えない。
-##     スクロールできる一覧(選曲の曲リストなど)やスライダーの上では、ホイールは本来の動き(スクロール・値の変更)に使う
-##     (メーターが出ている間と、Ctrl を押しながらのときは、どこでも音量)。
+##     スクロールできる一覧(選曲の曲リストなど)やスライダーの上では、ホイールは本来の動き(スクロール・値の変更)に使う。
+##     音量の優先度は低い: メーターが出ている間でも、一覧の上ではスクロールが先(音量に使うのは、メーターの上にマウスがあるとき・Ctrl を押しながらのとき)。
 ##   ・トースト … 「曲を取り込みました」などの短い通知。
 
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
@@ -23,6 +23,8 @@ var _panel: PanelContainer
 var _rows: Array = []
 ## 音量メーターが出ているか(出ている間は、ホイールは、どこでも音量に使う)
 static var meter_visible := false
+## 音量メーターの範囲(出ている間だけ。出ていないときは空)。この上のホイールは、スクロールより音量が先
+static var meter_rect := Rect2()
 
 var _sel := 0
 var _drag := -1            # バーをドラッグ中の行(なければ -1)
@@ -145,12 +147,14 @@ func _show_panel() -> void:
 	else:
 		_panel.position.y = 14.0
 	meter_visible = true
+	meter_rect = Rect2(_panel.position.x, 14.0, 300.0, maxf(_panel.size.y, 110.0))
 	_redraw()
 
 
 func _hide_panel() -> void:
 	_shown = false
 	meter_visible = false
+	meter_rect = Rect2()
 	_drag = -1
 	_sel = 0   # 消えたら選択は戻る(次に回したときは、全体音量)
 	Settings.save_all(Settings.load_all())   # 音量を保存
@@ -192,12 +196,21 @@ func _input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 
 
-## このホイール操作を、音量に使うか。スクロールできる一覧・スライダー・文字入力・グループ wheel_area の範囲の上では、本来の動きに譲る
-## (メーターが出ている間と、Ctrl を押しているときは、どこでも音量)。
+## マウスが音量メーターの上にあるか(出ていないときは false)。
+static func over_meter(mp: Vector2) -> bool:
+	return meter_visible and meter_rect.has_point(mp)
+
+
+## このホイール操作を、音量に使うか。スクロールできる一覧・スライダー・文字入力・グループ wheel_area の範囲・
+## ホイールを画面のどこでも受ける一覧(グループ wheel_anywhere。選曲の曲の一覧)の上では、本来の動きに譲る
+## (メーターが出ている間でも同じ。例外は、メーターの上にマウスがあるときと、Ctrl を押しているとき: どこでも音量)。
 func _takes_wheel() -> bool:
-	if _shown or Input.is_key_pressed(KEY_CTRL):
-		return true
 	var mp := get_viewport().get_mouse_position()
+	if Input.is_key_pressed(KEY_CTRL) or over_meter(mp):
+		return true
+	for sm in get_tree().get_nodes_in_group("wheel_anywhere"):   # 画面全体でホイールを受ける一覧(開いている間だけ)
+		if sm.has_method("claims_wheel_anywhere") and sm.claims_wheel_anywhere():
+			return false
 	for area in get_tree().get_nodes_in_group("wheel_area"):   # 画面が「ホイールはここで使う」と決めた範囲(曲の一覧など。スクロールできる量に関係なく)
 		if area is Control and area.is_visible_in_tree() and (area as Control).get_global_rect().has_point(mp):
 			return false

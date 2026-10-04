@@ -295,17 +295,20 @@ func _test_star_scaling() -> void:
 
 
 func _test_mods() -> void:
-	var m := Mods.find("v2")
-	_check(not m.is_empty(), "MOD v2 が登録されている")
-	var p := Mods.params(["v2"])
-	_check(bool(p.gen_v2) and is_equal_approx(p.score_mul, 1.0), "v2: gen_v2 = true / スコア倍率 ×1.0")
-	_check(not bool(Mods.params(["hell", "rush"]).gen_v2), "v2 を付けていなければ gen_v2 = false")
-	_check(Mods.multi_ok(["v2", "boss"]) == ["v2"], "v2 はマルチでも使える(撃破だけ外れる)")
-	_check(bool(Mods.params(["hell", "v2"]).gen_v2) and is_equal_approx(Mods.params(["hell", "v2"]).size_mul, 1.35), "v2 は他の MOD と併用できる")
-	# 体力: v2 は 250ms → 300ms(+20%)。地獄(150ms)と併用なら 180ms。v2 なしは変わらない
+	# 弾幕 v2 は初期状態。旧い弾幕は MOD「弾幕 v1」
+	_check(Mods.find("v2").is_empty() and not Mods.find("v1").is_empty(), "MOD「弾幕 v2」は無く、MOD「弾幕 v1」が登録されている")
+	var p := Mods.params([])
+	_check(bool(p.gen_v2) and not bool(p.gen_v1) and is_equal_approx(p.score_mul, 1.0), "MOD なし: gen_v2 = true(初期状態) / スコア倍率 ×1.0")
+	var p1 := Mods.params(["v1"])
+	_check(not bool(p1.gen_v2) and bool(p1.gen_v1) and is_equal_approx(p1.score_mul, 1.0), "v1: gen_v2 = false / スコア倍率 ×1.0")
+	_check(bool(Mods.params(["hell", "rush"]).gen_v2), "v1 を付けていなければ gen_v2 = true")
+	_check(bool(Mods.params(["v2"]).gen_v2) and Mods.params(["v2"]).ids.is_empty(), "古い設定の \"v2\" は無視される(v2 のまま)")
+	_check(Mods.multi_ok(["v1", "boss"]) == ["v1"], "v1 はマルチでも使える(撃破だけ外れる)")
+	_check(not bool(Mods.params(["hell", "v1"]).gen_v2) and is_equal_approx(Mods.params(["hell", "v1"]).size_mul, 1.35), "v1 は他の MOD と併用できる")
+	# 体力: v2(初期状態)は 250ms → 300ms(+20%)。地獄(150ms)と併用なら 180ms。v1 は 250ms
 	_check(is_equal_approx(float(p.drain_time), 0.30), "v2: 体力(ゲージ満タンぶんの被弾時間)が 300ms (%.3f)" % float(p.drain_time))
-	_check(is_equal_approx(float(Mods.params(["hell", "v2"]).drain_time), 0.18), "地獄 + v2: 150ms × 1.2 = 180ms")
-	_check(is_equal_approx(float(Mods.params(["hell"]).drain_time), 0.15) and is_equal_approx(float(Mods.params([]).drain_time), GameSim.GAUGE_DRAIN_TIME), "v2 なしの体力は変わらない")
+	_check(is_equal_approx(float(Mods.params(["hell"]).drain_time), 0.18), "地獄(v2): 150ms × 1.2 = 180ms")
+	_check(is_equal_approx(float(p1.drain_time), GameSim.GAUGE_DRAIN_TIME) and is_equal_approx(float(Mods.params(["hell", "v1"]).drain_time), 0.15), "v1 の体力は変わらない(250ms・地獄 150ms)")
 	# ゲームの中でも、同じ接触時間のダメージが 1/1.2 になり、回復(割合)は絶対値で 1.2 倍の体力に効く
 	var gauge_after := func(ids: Array) -> float:
 		var f := BulletField.new()
@@ -315,8 +318,8 @@ func _test_mods() -> void:
 		for i in range(12):   # 0.2 秒触れる(自機は動かさない)
 			s.step(float(i) / 60.0, 1.0 / 60.0, Vector2.ZERO, false)
 		return s.gauge
-	var g_v1: float = gauge_after.call([])
-	var g_v2: float = gauge_after.call(["v2"])
+	var g_v1: float = gauge_after.call(["v1"])
+	var g_v2: float = gauge_after.call([])
 	_check((1.0 - g_v2) < (1.0 - g_v1) * 0.86 and (1.0 - g_v2) > (1.0 - g_v1) * 0.80, "同じ接触で、v2 のダメージは約 1/1.2(v1 %.3f / v2 %.3f)" % [1.0 - g_v1, 1.0 - g_v2])
 
 
@@ -542,7 +545,7 @@ func _test_mod_apply(picks: Array) -> void:
 	_check(storm.level > g.level + 0.5, "v2 + 暴風雨 の Lv %.2f が、MOD なし %.2f より上がる" % [storm.level, g.level])
 	var rush: Dictionary = Mods.apply(g, Mods.params(["rush"]))
 	_check(rush.level > g.level + 0.3, "v2 + 加速 の Lv %.2f が、MOD なし %.2f より上がる" % [rush.level, g.level])
-	_check(is_equal_approx(Mods.apply(g, Mods.params(["v2"])).level, g.level), "v2 だけなら、MOD の適用で Lv は変わらない")
+	_check(is_equal_approx(Mods.apply(g, Mods.params([])).level, g.level), "v2 だけ(MOD なし)なら、MOD の適用で Lv は変わらない")
 
 
 # --- 弾サイズの 3 段階 ---

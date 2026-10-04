@@ -15,6 +15,7 @@ signal song_picked(loader, bm, settings: Dictionary, level: float)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const SongBrowser = preload("res://scripts/song_browser.gd")
+const ChartCache = preload("res://scripts/chart_cache.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
 const Settings = preload("res://scripts/settings.gd")
@@ -815,8 +816,16 @@ func _on_song_loaded(res: Dictionary) -> void:
 
 ## 読み込んでいるあいだに MOD(弾幕 v2 の入り切り)が変わっていたら、弾幕を作り直すために読み直す。
 func _reload_if_style_changed() -> void:
-	if is_inside_tree() and not _job_pending and bool(Mods.params(settings.mods).gen_v2) != _gens_v2:
+	if is_inside_tree() and not _job_pending and _needs_reload():
 		_reload_for_style()
+
+
+## 弾幕の作り直し(読み直し)が要るか: 弾幕 v2 の入り切り / 統計だけの弾幕に、弾幕を変える MOD(加速・弾数など)を付けた(全譜面の発射の一覧が要る)。
+func _needs_reload() -> bool:
+	var p := Mods.params(settings.mods)
+	if bool(p.gen_v2) != _gens_v2:
+		return true
+	return not Mods.pattern_neutral(p) and _gens.any(func(g): return ChartCache.is_stub(g))
 
 
 # --- 難易度カード ---
@@ -973,7 +982,7 @@ func _update_detail() -> void:
 	UiStyle.tween(_detail_l, "modulate:a", 0.25, 1.0, 0.25)   # 選択が変わると、詳細がふわっと入れ替わる
 	var secs := int(round((bm.last_time() - bm.first_time()) / 1000.0))
 	_detail_l.text = "弾速 %d px/s     弾径 %.1f     平均 %d 発 / 最大 %d 発     イベント %d     長さ %d:%02d" % [
-		int(round(r.speed)), r.size, int(round(r.mean)), int(r.peak), _gens[_diff_sel].events.size(), secs / 60, secs % 60]
+		int(round(r.speed)), r.size, int(round(r.mean)), int(r.peak), int(_gens[_diff_sel].get("n_events", (_gens[_diff_sel].events as Array).size() if _gens[_diff_sel].has("events") else 0)), secs / 60, secs % 60]
 
 
 # --- 下部バー(付けている MOD) ---
@@ -1029,7 +1038,7 @@ func open_mods() -> void:
 func _on_mods_changed() -> void:
 	if _loader == null:
 		return
-	if bool(Mods.params(settings.mods).gen_v2) != _gens_v2:   # 弾幕 v2 の入り切り: 弾幕そのものが変わるので、曲を読み直す(終わったら難易度も出る)
+	if _needs_reload():   # 弾幕 v2 の入り切り・全譜面の発射の一覧が要る MOD: 弾幕そのものが変わるので、曲を読み直す(終わったら難易度も出る)
 		_reload_for_style()
 		return
 	_rate_all()
@@ -1068,6 +1077,8 @@ func _start() -> void:
 		settings.last_song = _songs[_song_sel].path
 		settings.last_diff = _loader.difficulties[_diff_sel].version
 	Settings.save_all(settings)
+	if not pick_mode and ChartCache.is_stub(_gens[_diff_sel]):   # 統計だけの弾幕(保存から読んだ曲): 選んだ譜面の発射の一覧を、ここで用意する(保存してあれば読む。50〜130 ms)
+		_gens[_diff_sel] = SongBrowser.full_gen_for(str(_songs[_song_sel].path), _loader.difficulties[_diff_sel], _gens_v2, true)
 	UiSfx.play("confirm")
 	# 発進: すぐには切り替えず、選んだ難易度が前に出て、ほかが退き、背景がズームインして、曲が小さくなる(0.4 秒)。それから次の画面へ
 	_launching = true

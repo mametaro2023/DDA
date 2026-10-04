@@ -459,6 +459,7 @@ func _swap_now(n: Node) -> void:
 	_current = n
 	var k = n.get("kind")
 	_kind = k if k is String else ""
+	SongArt.paused = _kind == "game"   # プレイ中は、選曲の一覧の画像・難易度の取得を止める(初めての曲で、プレイ中に画面が止まっていた)
 	if n.has_signal("settings_requested") and not n.is_connected("settings_requested", open_settings):   # 画面が設定の入口を持つとき(タイトル・選曲・lazer 風の画面)
 		n.connect("settings_requested", open_settings)
 	add_child(n)
@@ -688,6 +689,7 @@ func start_game(loader, bm, settings: Dictionary, debug_seek := -1.0, debug_deat
 	g.quit_requested.connect(show_menu)
 	g.retry_requested.connect(func(): start_game(loader, bm, settings, -1.0, -1.0, pre))
 	_stop_music()
+	SongArt.cancel_all()   # 選曲の一覧の画像・難易度の取得は、プレイ中は続けない(別スレッドの解析が、プレイ中の画面を止めることがある)
 	_swap(g)
 
 
@@ -826,6 +828,12 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				_current._activate(2)
 				if extra.size() > 1 and extra[1].is_valid_int():
 					_current._overlay._show(int(extra[1]))
+				if extra.size() > 2 and extra[2].is_valid_int():   # 3 つ目: スクロールの位置(px)。長いページの下のほうを撮る
+					await get_tree().create_timer(0.8).timeout
+					for sc in _current._overlay.find_children("*", "ScrollContainer", true, false):
+						if sc.is_visible_in_tree():
+							sc.scroll_vertical = int(extra[2])
+					await get_tree().create_timer(0.3).timeout
 			elif extra.size() > 0 and extra[0] == "options":
 				_current._activate(3)
 			elif extra.size() > 0 and extra[0] == "quit":
@@ -858,6 +866,8 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			for e in extra:   # lazer 風: 検索 q=文字 / 並び替え sort=title|artist|added
 				if str(e).begins_with("q=") and _current.has_method("debug_search"):
 					_current.debug_search(str(e).trim_prefix("q="))
+				if str(e) == "sortmenu" and _current.has_method("debug_sort_menu"):   # 並び替えのメニューを開いた状態: --shot menu out.png sortmenu
+					_current.debug_sort_menu()
 				if str(e).begins_with("sort=") and _current.has_method("debug_sort"):
 					_current.debug_sort(str(e).trim_prefix("sort="))
 		"cursor":
@@ -1961,6 +1971,20 @@ func _smoke_carousel() -> void:
 					moving += 1
 		chk.call((moving > 0) == changed, "並び替え(%s): 並びが%s → 最初のフレームで、%d 行が前の位置から動き始めている" % [mode, "変わった" if changed else "同じ", moving])
 		await get_tree().create_timer(0.8).timeout
+	# 並び替えのボタン: 押すとメニューが開き、選ぶと閉じて並びが変わる(ボタンの文字も変わる)
+	m._toggle_sort_menu()
+	chk.call(m._sort_menu.visible and m._sort_btn.button_pressed, "並び替えのボタンを押すと、選択肢が開く")
+	m._pick_sort("artist")
+	await get_tree().process_frame
+	chk.call(not m._sort_menu.visible and m.browser.sort_mode == "artist" and m._sort_btn.text.contains("アーティスト") and m._sort_btns[1].button_pressed, "選ぶと、メニューが閉じて、並び方とボタンの文字が変わる")
+	m._toggle_sort_menu()
+	var esc := InputEventKey.new()
+	esc.keycode = KEY_ESCAPE
+	esc.pressed = true
+	m._input(esc)
+	chk.call(not m._sort_menu.visible and _current == m, "メニューが開いているとき、Esc は、メニューを閉じるだけ(画面は戻らない)")
+	m.debug_sort("title")
+	await get_tree().create_timer(0.5).timeout
 	# 曲が多いとき(作り物の曲を 300 曲足す): 滑る行は、前も後も画面の中にあった行だけ。外から入る行は、滑らずにそっと現れる(目にうるさくしない)
 	var n_real: int = m._songs.size()
 	for q in range(300):
@@ -1971,6 +1995,21 @@ func _smoke_carousel() -> void:
 	await get_tree().create_timer(0.8).timeout
 	m._smooth.scroll_to(3000.0)
 	await get_tree().create_timer(1.0).timeout
+	# 一覧の真ん中あたりの行は、上下の端の行より、左へせり出す(スクロール位置は 3000 px。選んでいる行は、ずっと上)
+	var mid_y: float = m._scroll.get_global_rect().get_center().y
+	var half_h: float = m._scroll.size.y * 0.5
+	var near_mid: Array = []
+	var near_edge: Array = []
+	for c in m._box.get_children():
+		if c is Control and c.visible and c.get_child_count() > 0 and c.get_child(0).has_meta("bulge"):
+			var cy: float = (c as Control).get_global_rect().get_center().y
+			if absf(cy - mid_y) < half_h * 0.25:
+				near_mid.append(float(c.get_child(0).offset_left))
+			elif absf(cy - mid_y) > half_h * 0.75 and absf(cy - mid_y) < half_h * 1.1:
+				near_edge.append(float(c.get_child(0).offset_left))
+	var mid_min: float = near_mid.min() if not near_mid.is_empty() else 99.0
+	var edge_max: float = near_edge.max() if not near_edge.is_empty() else -1.0
+	chk.call(not near_mid.is_empty() and mid_min < 6.0 and edge_max > 14.0 and edge_max <= m.BULGE + 0.5, "一覧の真ん中あたりの行は、上下の端の行より、左へせり出す(真ん中 %.1f px / 端 %.1f px)" % [mid_min, edge_max])
 	m.debug_sort("artist")
 	await get_tree().process_frame
 	var sliding := 0
@@ -2211,8 +2250,11 @@ func _prof_play() -> void:
 	var orig := Settings.load_all()
 	var args := OS.get_cmdline_user_args()
 	var want := ""
+	var play_secs := 3.0
 	for a in args:
-		if not str(a).begins_with("--") and str(a) != "nocache":
+		if str(a).begins_with("secs="):   # 測る長さ(秒。既定 3)
+			play_secs = float(str(a).trim_prefix("secs="))
+		elif not str(a).begins_with("--") and str(a) != "nocache":
 			want = str(a)
 	var st := Settings.load_all()
 	for p in SongLibrary.find_all():
@@ -2237,7 +2279,12 @@ func _prof_play() -> void:
 	while m._job_pending:
 		await get_tree().process_frame
 	await get_tree().create_timer(1.0).timeout
-	m._diff_sel = m._diff_cards.size() - 1   # 一番難しい譜面
+	if m.has_method("_select_diff"):
+		m._select_diff(m._diff_cards.size() - 1)   # 一番難しい譜面(発射の一覧を、裏で用意する経路を通す)
+		while m.has_method("_select_diff") and "browser" in m and not m.browser.can_start():
+			await get_tree().process_frame
+	else:
+		m._diff_sel = m._diff_cards.size() - 1
 	if args.has("nocache"):   # 比較用: 選曲で作った弾幕を渡さない(プレイ画面が作り直す)
 		m._gens[m._diff_sel] = {}
 	m._start()
@@ -2245,7 +2292,7 @@ func _prof_play() -> void:
 	var last := t0
 	var worst := 0.0
 	var log := []
-	while Time.get_ticks_usec() - t0 < 3000000:
+	while Time.get_ticks_usec() - t0 < int(play_secs * 1000000.0):
 		await get_tree().process_frame
 		var now := Time.get_ticks_usec()
 		var dt := (now - last) / 1000.0
@@ -2261,7 +2308,7 @@ func _prof_play() -> void:
 	get_tree().quit()
 
 
-## 開発用: 選曲画面の一覧を、ドラッグでスクロールできるか確かめる(左 = つかんだ分だけ / 右 = 速く)。-- --smoke-drag
+## 開発用: 選曲画面の一覧を、ドラッグでスクロールできるか確かめる(左 = つかんだ分だけ(手の向きに中身がついてくる)/ 右 = 速く(スクロールバーのように、下へ動かすと、一覧の先へ進む))。-- --smoke-drag
 ## ドラッグしたときは曲を選ばず、動かさずにクリックしたときだけ選ぶ。
 func _smoke_drag() -> void:
 	var fails := 0
@@ -2302,9 +2349,10 @@ func _smoke_drag() -> void:
 		Input.warp_mouse(get_viewport().get_screen_transform() * at)
 		await send.call(motion.call(at))
 		await send.call(button.call(btn, true, at))
+		var dsign := -1.0 if btn == MOUSE_BUTTON_LEFT else 1.0   # 左: 一覧をつかんで上へ 30px(一覧は下へ進む)/ 右: スクロールバーのように、下へ 30px(一覧は下へ進む)
 		for k in range(1, 7):
-			await send.call(motion.call(at - Vector2(0, 5.0 * k)))   # 上へ 30px(一覧は下へ進む)
-		await send.call(button.call(btn, false, at - Vector2(0, 30)))
+			await send.call(motion.call(at + Vector2(0, dsign * 5.0 * k)))
+		await send.call(button.call(btn, false, at + Vector2(0, dsign * 30.0)))
 		await get_tree().create_timer(0.5).timeout
 		var moved: float = sc.scroll_vertical
 		# しきい値(6px)を越えたのは 10px の時点。そこから動いた 20px ぶん(右は FAST_MIN 倍以上)。左は離したあと少し滑る(行き過ぎない)

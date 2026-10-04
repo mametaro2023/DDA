@@ -146,6 +146,13 @@ static func names(ids: Array) -> String:
 	return " + ".join(out)
 
 
+## この MOD の組み合わせが、弾幕(発射の一覧)を変えない(= 難易度の統計だけで Lv が分かる)か。練習・暗闇などは変えない。
+## 加速・弾数・弾速・弾の大きさ・自機の大きさは変える。
+static func pattern_neutral(p: Dictionary) -> bool:
+	return is_equal_approx(p.rate, 1.0) and is_equal_approx(p.count_mul, 1.0) and is_equal_approx(p.size_mul, 1.0) \
+			and is_equal_approx(p.speed_mul, 1.0) and is_equal_approx(p.player_scale, 1.0)
+
+
 ## 生成済みの弾幕に MOD を適用した新しい gen を返す(元の gen は変えない)。
 ## events / gizmos / breaks / rating / level / speed / size を MOD 適用後のものに置き換える(base_level = 適用前の Lv)。
 ##   - 弾数: 各ショットの n に count_mul を掛ける。端数は次のショットへ持ち越すので、合計はほぼ count_mul 倍になる
@@ -157,9 +164,7 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 	out["base_level"] = gen.level
 	out["time_rate"] = 1.0
 	# 弾幕に効かない MOD(練習・暗闇など)だけなら、測り直しは要らない(Lv はそのまま)
-	var neutral: bool = is_equal_approx(p.rate, 1.0) and is_equal_approx(p.count_mul, 1.0) and is_equal_approx(p.size_mul, 1.0) \
-			and is_equal_approx(p.speed_mul, 1.0) and is_equal_approx(p.player_scale, 1.0)
-	if p.ids.is_empty() or neutral:
+	if p.ids.is_empty() or pattern_neutral(p):
 		return out
 	var rate: float = p.rate
 	var count_mul: float = p.count_mul

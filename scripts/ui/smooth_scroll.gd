@@ -2,7 +2,7 @@ extends Node
 ## ScrollContainer のスクロールをなめらかにする(ホイールで目標の位置を動かし、そこへ少しずつ近づく。プログラムからの移動も同じ)。
 ## 使い方: SmoothScroll.attach(scroll)。scroll_to_control(card) で、そのカードが見える位置へなめらかに動く。
 ## attach(scroll, true) なら、一覧をドラッグしてもスクロールできる: 左ドラッグ = つかんだ分だけ動く(離すと少し滑る)、
-## 右ドラッグ = 同じ向きに速く動く(一覧の高さぶんドラッグすると、だいたい全体を移動できる)。
+## 右ドラッグ = スクロールバーのように、マウスを下へ動かすと一覧の先(下)へ、上へ動かすと前(上)へ、速く動く(一覧の高さぶんドラッグすると、だいたい全体を移動できる)。
 ## wheel_anywhere = true なら、ホイールは画面のどこで回しても(一覧の外でも)この一覧が受ける(音量メーターの上・Ctrl・wheel_except の上を除く)。
 ## 揺れ・点滅はなく、目標へ一方向に近づくだけ(UiStyle.animate が false のときは、すぐ動く)。ホイール・ドラッグはすぐ反応し、
 ## プログラムからの移動(scroll_to / scroll_to_control)は、止まった状態から加速して止まる(急に跳ばない)。
@@ -145,7 +145,9 @@ func _drag_input(event: InputEvent) -> bool:
 			_drag_y0 = event.position.y   # ここから動かし始める(しきい値の分、跳ばない)
 			dy = 0.0
 		var mul := 1.0 if _drag_btn == MOUSE_BUTTON_LEFT else maxf(FAST_MIN, _max_scroll() / maxf(sc.size.y * 0.8, 1.0))
-		_target = clampf(_drag_from - dy * mul, 0.0, _max_scroll())
+		# 左 = 一覧をつかんで動かす(手の向きに、中身がついてくる)。右 = スクロールバーのように、マウスを下へ動かすと、一覧の先(下)へ進む(速く動く)
+		var dir := 1.0 if _drag_btn == MOUSE_BUTTON_RIGHT else -1.0
+		_target = clampf(_drag_from + dir * dy * mul, 0.0, _max_scroll())
 		if _drag_btn == MOUSE_BUTTON_LEFT:   # つかんだ分だけ、遅れずに動く
 			_drag_hist.append([Time.get_ticks_msec(), _target])
 			while _drag_hist.size() > 1 and Time.get_ticks_msec() - int(_drag_hist[0][0]) > 100:

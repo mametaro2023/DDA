@@ -829,7 +829,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			for d in loader.difficulties:
 				if d.version.contains(want):
 					bm = d
-			var gs := {"offset_ms": 0, "density_mul": 1.0,
+			var gs := {"offset_ms": 0, "density_mul": 1.0, "eye_comfort": extra.has("soft"),   # soft: 目に優しい表示
 				"mods": extra.filter(func(x): return not Mods.find(x).is_empty())}   # 例: ... Extra 40 hell rush
 			var death_t := -1.0
 			if extra.size() > 2 and extra[2].begins_with("death"):

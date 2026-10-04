@@ -35,6 +35,7 @@ var pos := PackedVector2Array()
 var vel := PackedVector2Array()
 var rad := PackedFloat32Array()
 var col := PackedInt32Array()
+var colf := PackedFloat32Array()   # col と同じ(描画用。GPU へ数の並びのまま送るため、小数で持つ)
 var grace := PackedFloat32Array()  # 残り無害距離(px)
 var turn := PackedFloat32Array()   # 角速度(rad/s)
 var grazed := PackedByteArray()
@@ -72,6 +73,10 @@ const WARP_EXIT := 0.4
 const WARP_EVAL := 0.016   # 弾ごとの目標の倍率(どの淀みの中か)を調べる間隔(秒)。毎ステップ調べると重い(弾が多いとフレームが落ちる)。間の刻みは、前に調べた目標を使う(16ms で 4px 程度しか進まず、倍率もなめらかに変わるので、見た目は変わらない)
 const WARP_SLOW_TINT := Color(0.6, 0.55, 1.0)    # 遅くなっている弾の光の色(時の淀み)
 const WARP_FAST_TINT := Color(1.0, 0.4, 0.35)    # 速くなっている弾の光の色(時の急流)
+## 時の淀み・急流の中の弾の光(描画だけ)。重ねて塗る光(加算ではない)なので、弾が密集しても白く飛ばず、エリアの色の淡いもやになる
+const WARP_GLOW_A := 0.45    # 光の濃さ(倍率が目標に着いたとき)
+const WARP_GLOW_SIZE := 7.0  # 光の直径(弾の半径に対する倍率)
+const WARP_BODY_TINT := 0.45 # 本体の色を、淀み(紫)・急流(赤)へ寄せる割合
 
 ## 見える範囲(暗闇 MOD。描画だけで、判定には関係しない)。vis_r1 > 0 のとき、vis_center から vis_r0 までは全部見え、
 ## vis_r1 に向けてなめらかに薄れ、それより遠い弾は見えない。
@@ -81,23 +86,34 @@ var vis_r1 := 0.0
 ## キアイ中の拍に合わせた光の強さ 0..1。0 より大きいとき、弾の周りに淡い光(加算合成のハロー)を足す。描画だけで、判定には関係しない
 var halo := 0.0
 
-var _mm_halo: MultiMesh    # 弾の周りの淡い光(加算合成。いちばん下の層)
+var _mm_halo: MultiMesh    # 弾の周りの淡い光(キアイの光・時の淀み/急流の光。いちばん下の層)
 var _mm_color: MultiMesh
 var _mm_core: MultiMesh
 var _mm_ring: MultiMesh   # 当たり判定がまだ無い弾(発射直後)は中抜きのリングで描く
-var _buf_halo := PackedFloat32Array()
-var _buf_color := PackedFloat32Array()
-var _buf_core := PackedFloat32Array()
-var _buf_ring := PackedFloat32Array()
-var _ring_on := PackedByteArray()   # 弾の番号ごとに、リングの層に今、描く内容が入っているか(入っていなければ、毎フレーム 0 を書き直さない)
+var _mats: Array[ShaderMaterial] = []
+var _data_img: Image       # 弾の配列を並べた画像(1 チャンネルの小数。並びは下の説明)
+var _data_tex: ImageTexture
+var _sent := {}            # シェーダーに最後に渡した値(変わったときだけ渡し直す)
+
+## 描画は、弾ごとの計算を GPU で行う: 毎フレーム、弾の配列をそのまま 1 枚の画像にして送り、各層のシェーダーが
+## 弾の番号(INSTANCE_ID)から位置・大きさ・色を決める(GDScript で弾ごとに書き込むと、弾が多いとき 1 フレームに数 ms かかるため)。
+## 画像の並び(弾の番号 i。CAP = 配列の長さ): 2i, 2i+1 = 位置 / 2CAP + i = 半径 / 3CAP + i = 色の番号 / 4CAP + i = 残り無害距離 / 5CAP + i = 時間の倍率
+const DATA_TEX_W := 64
+const CAP := 4032          # 送る配列の長さ(DATA_TEX_W の倍数で、MAX_BULLETS 以上)
+const DATA_TEX_H := CAP * 6 / DATA_TEX_W
+const LAYER_BODY := 0
+const LAYER_CORE := 1
+const LAYER_RING := 2
+const LAYER_GLOW := 3
 
 
 func _init() -> void:
-	pos.resize(MAX_BULLETS)
+	pos.resize(CAP)
 	vel.resize(MAX_BULLETS)
-	rad.resize(MAX_BULLETS)
+	rad.resize(CAP)
 	col.resize(MAX_BULLETS)
-	grace.resize(MAX_BULLETS)
+	colf.resize(CAP)
+	grace.resize(CAP)
 	turn.resize(MAX_BULLETS)
 	grazed.resize(MAX_BULLETS)
 	kind.resize(MAX_BULLETS)
@@ -105,80 +121,159 @@ func _init() -> void:
 	pa.resize(MAX_BULLETS)
 	pb.resize(MAX_BULLETS)
 	pc.resize(MAX_BULLETS)
-	tscale.resize(MAX_BULLETS)
+	tscale.resize(CAP)
 	wtgt.resize(MAX_BULLETS)
 
 
 ## 描画用ノードを作る(テストなど描画不要なときは呼ばない)。
 func setup_render() -> void:
-	_mm_halo = _make_layer(_make_halo_texture(), CanvasItemMaterial.BLEND_MODE_ADD)
-	var body_mat := _make_disc_material(1.0, 0.0)
-	var core_mat := _make_disc_material(0.0, 1.0)
-	_mm_color = _make_layer(null, CanvasItemMaterial.BLEND_MODE_MIX, body_mat)
-	_mm_core = _make_layer(null, CanvasItemMaterial.BLEND_MODE_MIX, core_mat)
-	_mm_ring = _make_layer(_make_ring_texture(), CanvasItemMaterial.BLEND_MODE_MIX)
-	_buf_halo.resize(MAX_BULLETS * 12)
-	_buf_color.resize(MAX_BULLETS * 12)
-	_buf_core.resize(MAX_BULLETS * 12)
-	_buf_ring.resize(MAX_BULLETS * 12)
-	_ring_on.resize(MAX_BULLETS)
+	_data_img = Image.create_empty(DATA_TEX_W, DATA_TEX_H, false, Image.FORMAT_RF)
+	_data_tex = ImageTexture.create_from_image(_data_img)
+	_mm_halo = _make_layer(_make_halo_texture(), LAYER_GLOW)
+	_mm_color = _make_layer(null, LAYER_BODY)
+	_mm_core = _make_layer(null, LAYER_CORE)
+	_mm_ring = _make_layer(_make_ring_texture(), LAYER_RING)
 
 
-func _make_layer(tex: Texture2D, blend: int, mat_override: Material = null) -> MultiMesh:
+func _make_layer(tex: Texture2D, layer: int) -> MultiMesh:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_2D
-	mm.use_colors = true
 	var quad := QuadMesh.new()
 	quad.size = Vector2(1, 1)
 	mm.mesh = quad
 	mm.instance_count = MAX_BULLETS
+	var ident := PackedFloat32Array()   # 位置・大きさはシェーダーが決めるので、インスタンスの変換は全部そのまま(単位行列)
+	ident.resize(MAX_BULLETS * 8)
+	for i in range(MAX_BULLETS):
+		ident[i * 8] = 1.0
+		ident[i * 8 + 5] = 1.0
+	mm.buffer = ident
+	mm.custom_aabb = AABB(Vector3(-300, -300, 0), Vector3(1560, 1320, 0))   # インスタンスはどれも原点にあるので、描く範囲を自分で決める(画面外として間引かれないように)
 	mm.visible_instance_count = 0
 	var inst := MultiMeshInstance2D.new()
 	inst.multimesh = mm
 	inst.texture = tex
-	var mat := CanvasItemMaterial.new()
-	mat.blend_mode = blend
-	inst.material = mat_override if mat_override != null else mat
+	var sh := Shader.new()
+	sh.code = BULLET_SHADER.replace("BLEND_MODE", "blend_premul_alpha" if layer == LAYER_GLOW else "blend_mix")
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	mat.set_shader_parameter("layer", layer)
+	mat.set_shader_parameter("data", _data_tex)
+	mat.set_shader_parameter("cap", CAP)
+	var pal := PackedColorArray()
+	for c in PALETTE:
+		pal.append(c)
+	mat.set_shader_parameter("palette", pal)
+	mat.set_shader_parameter("slow_tint", WARP_SLOW_TINT)
+	mat.set_shader_parameter("fast_tint", WARP_FAST_TINT)
+	mat.set_shader_parameter("warp_glow_a", WARP_GLOW_A)
+	mat.set_shader_parameter("warp_glow_size", WARP_GLOW_SIZE)
+	mat.set_shader_parameter("warp_body_tint", WARP_BODY_TINT)
+	inst.material = mat
+	_mats.append(mat)
 	add_child(inst)
 	return mm
 
 
-## 弾の円盤(本体と芯)のシェーダー。縁のぼかしを、弾の半径に対する割合ではなく、ほぼ一定のピクセル幅にする
+## 弾の層のシェーダー(本体・芯・リング・光で共通。layer で描くものを変える)。
+## 本体と芯は、縁のぼかしを、弾の半径に対する割合ではなく、ほぼ一定のピクセル幅にする
 ## (以前のテクスチャは縁が半径の 22% で、大きい弾(弾サイズの「大」)は縁が太く、ぼやけて見えた。普通の大きさの弾の縁は、ほぼ同じ)。
-const DISC_SHADER := """
+const BULLET_SHADER := """
 shader_type canvas_item;
-uniform float rim = 0.0;   // 1 = 大きい弾の本体に、輪郭(本体を暗く・縁を明るく)をつける(本体の層だけ。芯の層は 0)
-uniform float core = 0.0;   // 1 = 白い芯の層: 縁が、当たり判定の縁(半径 = 判定半径)。層の大きさは、判定の直径 + 2px
+render_mode BLEND_MODE;
+uniform int layer = 0;   // 0 = 本体 / 1 = 白い芯 / 2 = リング(当たり判定がまだ無い弾) / 3 = 光
+uniform sampler2D data : filter_nearest;
+uniform int cap = 4032;
+uniform vec4 palette[10];
+uniform vec4 slow_tint;
+uniform vec4 fast_tint;
+uniform float warp_glow_a = 0.3;
+uniform float warp_glow_size = 5.0;
+uniform float warp_body_tint = 0.45;
+uniform vec2 vis_center;
+uniform float vis_r0 = 0.0;
+uniform float vis_r1 = 0.0;
+uniform float halo = 0.0;   // キアイの光の強さ(0 なら光らない)
 varying float sz;
-void vertex() {
-	sz = length(MODEL_MATRIX[0].xy);   // 弾の直径(px)。QuadMesh の大きさが 1 なので、インスタンスの拡大率がそのまま直径
+varying vec4 vc;
+
+float fetch(int k) {
+	return texelFetch(data, ivec2(k & 63, k >> 6), 0).r;
 }
-void fragment() {
-	float d = length(UV - vec2(0.5)) * 2.0;
-	if (core > 0.5) {
-		float rh = max(sz * 0.5 - 1.0, 0.5);   // 判定の半径(px)。縁は、そこを中心にした約 1.4px のぼかし(ほぼくっきり)
-		COLOR.a *= 1.0 - smoothstep(rh - 0.7, rh + 0.7, d * sz * 0.5);
+
+void vertex() {
+	int i = INSTANCE_ID;
+	vec2 p = vec2(fetch(2 * i), fetch(2 * i + 1));
+	float r = fetch(2 * cap + i);
+	vec4 base = palette[int(fetch(3 * cap + i) + 0.5) % 10];
+	bool fresh = fetch(4 * cap + i) > 0.0;   // 発射直後で、当たり判定がまだ無い
+	float ts = fetch(5 * cap + i);
+	float st = clamp(abs(ts - 1.0) / 0.45, 0.0, 1.0);   // 時の淀み・急流の効き(0..1)
+	vec3 tint = ts < 1.0 ? slow_tint.rgb : fast_tint.rgb;
+	vec3 c = mix(base.rgb, tint, warp_body_tint * st);
+	float va = 1.0;   // 暗闇: 見える範囲の外ほど薄い
+	if (vis_r1 > 0.0) {
+		va = 1.0 - smoothstep(vis_r0, vis_r1, distance(p, vis_center));
+	}
+	float s = 0.0;
+	if (layer == 0) {
+		s = fresh ? 0.0 : r * 2.3;
+		vc = vec4(c, va);
+	} else if (layer == 1) {
+		s = fresh ? 0.0 : r * 1.4 + 2.0;   // 白い芯の縁 = 当たり判定の縁(判定半径 = 0.7r。縁のぼかし分の 2px を足す)
+		vc = vec4(1.0, 1.0, 1.0, va);
+	} else if (layer == 2) {
+		s = fresh ? r * 2.3 : 0.0;
+		vc = vec4(c, va);
 	} else {
-		float w = clamp(2.0 / max(sz * 0.5, 1.0), 0.04, 0.22);   // 縁のぼかしの幅(半径に対する割合)。2px ぶん。小さい弾は従来どおり 22%
-		COLOR.a *= 1.0 - smoothstep(1.0 - w, 1.0, d);
-		float big = smoothstep(26.0, 38.0, sz) * rim;   // 直径 26px 以下(普通・小)は 0、38px 以上(大)で 1
-		float edge = smoothstep(0.74, 0.9, d);
-		vec3 body = COLOR.rgb * 0.78;
-		vec3 lit = mix(COLOR.rgb, vec3(1.0), 0.6);
-		COLOR.rgb = mix(COLOR.rgb, mix(body, lit, edge), big);
+		// キアイの光は加算(不透明度 0 の、あらかじめ掛けた色)。時の淀み・急流の光は、重ねて塗る(白く飛ばない)
+		float ha = halo * 0.4;
+		vec3 hc = base.rgb;
+		float over = 0.0;
+		s = r * 7.0;
+		float wa = warp_glow_a * st;
+		if (wa > ha) {
+			ha = wa;
+			hc = tint;
+			over = 1.0;
+			s = r * warp_glow_size;
+		}
+		ha *= va;
+		if (ha <= 0.004) {
+			s = 0.0;
+		}
+		vc = vec4(hc * ha, ha * over);
+	}
+	if (va < 0.005) {
+		s = 0.0;
+	}
+	sz = s;
+	VERTEX = VERTEX * s + p;
+}
+
+void fragment() {
+	if (layer == 3) {
+		COLOR = vc * texture(TEXTURE, UV).a;
+	} else if (layer == 2) {
+		COLOR = vc * texture(TEXTURE, UV);
+	} else {
+		COLOR = vc;
+		float d = length(UV - vec2(0.5)) * 2.0;
+		if (layer == 1) {
+			float rh = max(sz * 0.5 - 1.0, 0.5);   // 判定の半径(px)。縁は、そこを中心にした約 1.4px のぼかし(ほぼくっきり)
+			COLOR.a *= 1.0 - smoothstep(rh - 0.7, rh + 0.7, d * sz * 0.5);
+		} else {
+			float w = clamp(2.0 / max(sz * 0.5, 1.0), 0.04, 0.22);   // 縁のぼかしの幅(半径に対する割合)。2px ぶん。小さい弾は従来どおり 22%
+			COLOR.a *= 1.0 - smoothstep(1.0 - w, 1.0, d);
+			float big = smoothstep(26.0, 38.0, sz);   // 大きい弾の本体に輪郭(本体を暗く・縁を明るく)。直径 26px 以下(普通・小)は 0、38px 以上(大)で 1
+			float edge = smoothstep(0.74, 0.9, d);
+			vec3 body = COLOR.rgb * 0.78;
+			vec3 lit = mix(COLOR.rgb, vec3(1.0), 0.6);
+			COLOR.rgb = mix(COLOR.rgb, mix(body, lit, edge), big);
+		}
 	}
 }
 """
-
-static func _make_disc_material(rim: float, core: float) -> ShaderMaterial:
-	var sh := Shader.new()
-	sh.code = DISC_SHADER
-	var mat := ShaderMaterial.new()
-	mat.shader = sh
-	mat.set_shader_parameter("rim", rim)
-	mat.set_shader_parameter("core", core)
-	return mat
-
 
 
 ## 中心が明るく、外へなめらかに消える光の玉(ハロー用)。
@@ -219,6 +314,7 @@ func add(p: Vector2, v: Vector2, radius: float, color_idx: int, grace_px := 0.0,
 	vel[count] = v
 	rad[count] = radius
 	col[count] = color_idx
+	colf[count] = color_idx
 	grace[count] = grace_px
 	turn[count] = turn_rate
 	grazed[count] = 0
@@ -240,6 +336,7 @@ func _remove(i: int) -> void:
 		vel[i] = vel[count]
 		rad[i] = rad[count]
 		col[i] = col[count]
+		colf[i] = colf[count]
 		grace[i] = grace[count]
 		turn[i] = turn[count]
 		grazed[i] = grazed[count]
@@ -558,79 +655,34 @@ func nearest_gap(p: Vector2) -> float:
 	return best
 
 
-## 1 発分のインスタンスデータ(2D 変換 + 色)を書き込む。scale=0 なら見えない。
-static func _put(buf: PackedFloat32Array, o: int, x: float, y: float, s: float, c: Color) -> void:
-	buf[o] = s
-	buf[o + 1] = 0.0
-	buf[o + 2] = 0.0
-	buf[o + 3] = x
-	buf[o + 4] = 0.0
-	buf[o + 5] = s
-	buf[o + 6] = 0.0
-	buf[o + 7] = y
-	buf[o + 8] = c.r
-	buf[o + 9] = c.g
-	buf[o + 10] = c.b
-	buf[o + 11] = c.a
-
-
 func sync_render() -> void:
 	if _mm_color == null:
 		return
 	var n := count
-	var ts_fx := _ts_active
-	var halo_on := halo > 0.01 or ts_fx   # 光の層(キアイの光・時の淀み/急流の光)。1 回の繰り返しの中で、本体と一緒に書く
-	var halo_base := halo * 0.4 if halo > 0.01 else 0.0
-	for i in range(n):
-		var p := pos[i]
-		var r := rad[i]
-		var base := PALETTE[col[i] % PALETTE.size()]
-		var c := base
-		var ts := tscale[i] if ts_fx else 1.0
-		var st := 0.0
-		if ts != 1.0:   # 時の淀み・急流の中の弾は、本体の色も、淀み(紫)・急流(赤)へ寄せる
-			st = clampf(absf(ts - 1.0) / 0.45, 0.0, 1.0)
-			c = c.lerp(WARP_SLOW_TINT if ts < 1.0 else WARP_FAST_TINT, 0.4 * st)
-		var o := i * 12
-		var va := 1.0
-		if vis_r1 > 0.0:
-			va = 1.0 - smoothstep(vis_r0, vis_r1, p.distance_to(vis_center))
-			if va < 0.005:
-				_put(_buf_color, o, p.x, p.y, 0.0, c)
-				_put(_buf_halo, o, p.x, p.y, 0.0, c)
-				_put(_buf_core, o, p.x, p.y, 0.0, c)
-				_put(_buf_ring, o, p.x, p.y, 0.0, c)
-				_ring_on[i] = 0
-				continue
-			c.a = va
-		if grace[i] > 0.0:
-			# 発射直後で当たり判定がまだ無い弾: 塗りつぶしを消し、中抜きのリングだけを不透明で描く
-			_put(_buf_color, o, p.x, p.y, 0.0, c)
-			_put(_buf_core, o, p.x, p.y, 0.0, Color(1, 1, 1, c.a))
-			_put(_buf_ring, o, p.x, p.y, r * 2.3, c)
-			_ring_on[i] = 1
-		else:
-			_put(_buf_color, o, p.x, p.y, r * 2.3, c)
-			_put(_buf_core, o, p.x, p.y, r * HIT_SCALE * 2.0 + 2.0, Color(1, 1, 1, c.a))   # 白い芯の縁 = 当たり判定の縁(自機の白い円と同じ規則。縁のぼかし分の 2px を足す)
-			if _ring_on[i] != 0:   # 直前まで中抜きのリングだった弾だけ、リングの層を消す
-				_put(_buf_ring, o, p.x, p.y, 0.0, c)
-				_ring_on[i] = 0
-		if halo_on:
-			var hc := base
-			var ha := halo_base
-			var hs := 7.0
-			if st > 0.0:   # 時の淀み(紫)・時の急流(赤): 効いている弾だけ、周りに強い光の玉をつける(外へ出て戻る間も、倍率に応じて薄れていく)
-				hc = WARP_SLOW_TINT if ts < 1.0 else WARP_FAST_TINT
-				ha = maxf(ha, 0.55 * st)
-				hs = 10.0
-			ha *= va
-			_put(_buf_halo, o, p.x, p.y, r * hs if ha > 0.004 else 0.0, Color(hc.r, hc.g, hc.b, ha))
-	if halo_on:
-		_mm_halo.buffer = _buf_halo
-	_mm_halo.visible_instance_count = n if halo_on else 0
-	_mm_color.buffer = _buf_color
-	_mm_core.buffer = _buf_core
-	_mm_ring.buffer = _buf_ring
+	if n > 0:   # 弾の配列を、そのまま 1 枚の画像にして送る(並びは DATA_TEX_W の説明のとおり)
+		var bytes := pos.to_byte_array()
+		bytes.append_array(rad.to_byte_array())
+		bytes.append_array(colf.to_byte_array())
+		bytes.append_array(grace.to_byte_array())
+		bytes.append_array(tscale.to_byte_array())
+		_data_img.set_data(DATA_TEX_W, DATA_TEX_H, false, Image.FORMAT_RF, bytes)
+		_data_tex.update(_data_img)
+	var halo_v := halo if halo > 0.01 else 0.0
+	_send("halo", halo_v)
+	_send("vis_r1", vis_r1)
+	if vis_r1 > 0.0:
+		_send("vis_r0", vis_r0)
+		_send("vis_center", vis_center)
+	_mm_halo.visible_instance_count = n if halo_v > 0.0 or _ts_active else 0
 	_mm_color.visible_instance_count = n
 	_mm_core.visible_instance_count = n
 	_mm_ring.visible_instance_count = n
+
+
+## シェーダーの値を、変わったときだけ全部の層へ渡す。
+func _send(key: String, v: Variant) -> void:
+	if _sent.get(key) == v:
+		return
+	_sent[key] = v
+	for m in _mats:
+		m.set_shader_parameter(key, v)

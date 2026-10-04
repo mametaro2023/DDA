@@ -62,9 +62,14 @@ var bounds := Rect2(-12, -12, 984, 744)
 ## 弾ごとの倍率 tscale は、そのときの目標(中なら f・外なら 1)へなめらかに近づく: 入るときは WARP_ENTER(/秒)、出るときは WARP_EXIT(/秒)で、
 ## エリアが消えても、弾が急に元の速さへ戻らない(急に速くなる弾は避けにくいため。ゆっくり戻すので、見てから避けられる)。
 var warp: Array = []
+var _wz := PackedFloat32Array()   # warp を数の並びにしたもの(_flatten_warp)
+var _wb_x0 := 0.0                 # 全部の淀みをまとめた外枠
+var _wb_y0 := 0.0
+var _wb_x1 := 0.0
+var _wb_y1 := 0.0
 const WARP_ENTER := 1.2
 const WARP_EXIT := 0.4
-const WARP_EVAL := 0.008   # 弾ごとの目標の倍率(どの淀みの中か)を調べる間隔(秒)。1ms 刻みで毎回調べると重い。間の刻みは、前に調べた目標を使う(8ms で 2px も進まない)
+const WARP_EVAL := 0.016   # 弾ごとの目標の倍率(どの淀みの中か)を調べる間隔(秒)。毎ステップ調べると重い(弾が多いとフレームが落ちる)。間の刻みは、前に調べた目標を使う(16ms で 4px 程度しか進まず、倍率もなめらかに変わるので、見た目は変わらない)
 const WARP_SLOW_TINT := Color(0.6, 0.55, 1.0)    # 遅くなっている弾の光の色(時の淀み)
 const WARP_FAST_TINT := Color(1.0, 0.4, 0.35)    # 速くなっている弾の光の色(時の急流)
 
@@ -331,6 +336,9 @@ func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, ppre
 		if _warp_acc >= WARP_EVAL:
 			_warp_acc = 0.0
 			eval_warp = true
+			_flatten_warp()
+	var wz := _wz   # 淀みの形(数の並び)。弾ごとの判定は、関数を呼ばずにこの場で行う(弾の数 × 調べる回数ぶん呼ばれるため)
+	var wn := wz.size()
 	var bx0 := b.position.x   # 範囲の判定は、メソッド呼び出しを避けて、比較だけで行う(弾の数 × 刻みの回数ぶん呼ばれる)
 	var by0 := b.position.y
 	var bx1 := b.end.x
@@ -341,8 +349,26 @@ func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, ppre
 		if warped:
 			var ts := tscale[i]
 			var tgt := wtgt[i] if warp_on else 1.0
-			if eval_warp:
-				tgt = _warp_factor(pos[i])
+			if eval_warp:   # 淀みをまとめた外枠の外なら、調べるまでもなく 1(弾の大半)
+				var wp := pos[i]
+				tgt = 1.0
+				if not (wp.x < _wb_x0 or wp.x > _wb_x1 or wp.y < _wb_y0 or wp.y > _wb_y1):
+					var lo := 1.0
+					var hi := 1.0
+					var o := 0
+					while o < wn:   # _warp_factor_flat と同じ判定
+						var inside: bool
+						if wz[o] == 0.0:
+							inside = wp.x >= wz[o + 2] and wp.y >= wz[o + 3] and wp.x < wz[o + 4] and wp.y < wz[o + 5]
+						else:
+							var dx := wp.x - wz[o + 2]
+							var dy := wp.y - wz[o + 3]
+							inside = dx * dx + dy * dy <= wz[o + 4]
+						if inside:
+							lo = minf(lo, wz[o + 1])
+							hi = maxf(hi, wz[o + 1])
+						o += 6
+					tgt = lo if lo < 1.0 else hi
 				wtgt[i] = tgt
 			if ts != tgt:
 				ts = move_toward(ts, tgt, (WARP_ENTER if absf(tgt - 1.0) > absf(ts - 1.0) else WARP_EXIT) * dt_all)
@@ -393,6 +419,67 @@ func update(dt_all: float, ppos: Vector2, player_r: float, check_hit: bool, ppre
 					graze_count += 1
 		i -= 1
 	_ts_active = any_off
+
+
+## 淀み・急流の形(warp の辞書)を、弾ごとに調べやすい並び(_wz)と、全部をまとめた外枠(_wb_*)にする(調べるたびに 1 回)。
+## 弾ごとに辞書を引くと重い(弾の数 × 形の数 × 調べる回数)ので、数の並びにしてから調べる。
+## _wz: 形ごとに 6 個 [種類(0 = 長方形・1 = 円), 倍率, a, b, c, d](長方形: 左・上・右・下 / 円: 中心 x・中心 y・半径の 2 乗・未使用)
+func _flatten_warp() -> void:
+	_wz.resize(warp.size() * 6)
+	_wb_x0 = INF
+	_wb_y0 = INF
+	_wb_x1 = -INF
+	_wb_y1 = -INF
+	var o := 0
+	for w in warp:
+		_wz[o + 1] = float(w.f)
+		if w.has("rect"):
+			var r: Rect2 = w.rect
+			_wz[o] = 0.0
+			_wz[o + 2] = r.position.x
+			_wz[o + 3] = r.position.y
+			_wz[o + 4] = r.end.x
+			_wz[o + 5] = r.end.y
+			_wb_x0 = minf(_wb_x0, r.position.x)
+			_wb_y0 = minf(_wb_y0, r.position.y)
+			_wb_x1 = maxf(_wb_x1, r.end.x)
+			_wb_y1 = maxf(_wb_y1, r.end.y)
+		else:
+			var c: Vector2 = w.c
+			var r2 := float(w.r2)
+			var rr := sqrt(r2)
+			_wz[o] = 1.0
+			_wz[o + 2] = c.x
+			_wz[o + 3] = c.y
+			_wz[o + 4] = r2
+			_wb_x0 = minf(_wb_x0, c.x - rr)
+			_wb_y0 = minf(_wb_y0, c.y - rr)
+			_wb_x1 = maxf(_wb_x1, c.x + rr)
+			_wb_y1 = maxf(_wb_y1, c.y + rr)
+		o += 6
+
+
+## _warp_factor と同じ結果を、_flatten_warp で作った並びから求める(update の中で使う)。
+func _warp_factor_flat(p: Vector2) -> float:
+	var lo := 1.0
+	var hi := 1.0
+	var z := _wz
+	var o := 0
+	var n := z.size()
+	while o < n:
+		var inside: bool
+		if z[o] == 0.0:
+			inside = p.x >= z[o + 2] and p.y >= z[o + 3] and p.x < z[o + 4] and p.y < z[o + 5]
+		else:
+			var dx := p.x - z[o + 2]
+			var dy := p.y - z[o + 3]
+			inside = dx * dx + dy * dy <= z[o + 4]
+		if inside:
+			var f := z[o + 1]
+			lo = minf(lo, f)
+			hi = maxf(hi, f)
+		o += 6
+	return lo if lo < 1.0 else hi
 
 
 ## 位置 p の弾の、時間の目標の倍率(淀み・急流の中なら f。重なるときは、遅いものがあれば遅いほう、なければ速いほう)。
@@ -491,24 +578,31 @@ func sync_render() -> void:
 	if _mm_color == null:
 		return
 	var n := count
+	var ts_fx := _ts_active
+	var halo_on := halo > 0.01 or ts_fx   # 光の層(キアイの光・時の淀み/急流の光)。1 回の繰り返しの中で、本体と一緒に書く
+	var halo_base := halo * 0.4 if halo > 0.01 else 0.0
 	for i in range(n):
 		var p := pos[i]
 		var r := rad[i]
-		var c := PALETTE[col[i] % PALETTE.size()]
-		if _ts_active and tscale[i] != 1.0:   # 時の淀み・急流の中の弾は、本体の色も、淀み(紫)・急流(赤)へ寄せる
-			var st := clampf(absf(tscale[i] - 1.0) / 0.45, 0.0, 1.0)
-			c = c.lerp(WARP_SLOW_TINT if tscale[i] < 1.0 else WARP_FAST_TINT, 0.4 * st)
+		var base := PALETTE[col[i] % PALETTE.size()]
+		var c := base
+		var ts := tscale[i] if ts_fx else 1.0
+		var st := 0.0
+		if ts != 1.0:   # 時の淀み・急流の中の弾は、本体の色も、淀み(紫)・急流(赤)へ寄せる
+			st = clampf(absf(ts - 1.0) / 0.45, 0.0, 1.0)
+			c = c.lerp(WARP_SLOW_TINT if ts < 1.0 else WARP_FAST_TINT, 0.4 * st)
+		var o := i * 12
+		var va := 1.0
 		if vis_r1 > 0.0:
-			var va := 1.0 - smoothstep(vis_r0, vis_r1, p.distance_to(vis_center))
+			va = 1.0 - smoothstep(vis_r0, vis_r1, p.distance_to(vis_center))
 			if va < 0.005:
-				_put(_buf_color, i * 12, p.x, p.y, 0.0, c)
-				_put(_buf_halo, i * 12, p.x, p.y, 0.0, c)
-				_put(_buf_core, i * 12, p.x, p.y, 0.0, c)
-				_put(_buf_ring, i * 12, p.x, p.y, 0.0, c)
+				_put(_buf_color, o, p.x, p.y, 0.0, c)
+				_put(_buf_halo, o, p.x, p.y, 0.0, c)
+				_put(_buf_core, o, p.x, p.y, 0.0, c)
+				_put(_buf_ring, o, p.x, p.y, 0.0, c)
 				_ring_on[i] = 0
 				continue
 			c.a = va
-		var o := i * 12
 		if grace[i] > 0.0:
 			# 発射直後で当たり判定がまだ無い弾: 塗りつぶしを消し、中抜きのリングだけを不透明で描く
 			_put(_buf_color, o, p.x, p.y, 0.0, c)
@@ -521,23 +615,19 @@ func sync_render() -> void:
 			if _ring_on[i] != 0:   # 直前まで中抜きのリングだった弾だけ、リングの層を消す
 				_put(_buf_ring, o, p.x, p.y, 0.0, c)
 				_ring_on[i] = 0
-	var ts_fx := _ts_active
-	if halo > 0.01 or ts_fx:
-		for i in range(n):
-			var hc := PALETTE[col[i] % PALETTE.size()]
-			var hp := pos[i]
-			var ha := halo * 0.4 if halo > 0.01 else 0.0
+		if halo_on:
+			var hc := base
+			var ha := halo_base
 			var hs := 7.0
-			if ts_fx and tscale[i] != 1.0:   # 時の淀み(紫)・時の急流(赤): 効いている弾だけ、周りに強い光の玉をつける(外へ出て戻る間も、倍率に応じて薄れていく)
-				var st := clampf(absf(tscale[i] - 1.0) / 0.45, 0.0, 1.0)
-				hc = WARP_SLOW_TINT if tscale[i] < 1.0 else WARP_FAST_TINT
+			if st > 0.0:   # 時の淀み(紫)・時の急流(赤): 効いている弾だけ、周りに強い光の玉をつける(外へ出て戻る間も、倍率に応じて薄れていく)
+				hc = WARP_SLOW_TINT if ts < 1.0 else WARP_FAST_TINT
 				ha = maxf(ha, 0.55 * st)
 				hs = 10.0
-			if vis_r1 > 0.0:
-				ha *= 1.0 - smoothstep(vis_r0, vis_r1, hp.distance_to(vis_center))
-			_put(_buf_halo, i * 12, hp.x, hp.y, rad[i] * hs if ha > 0.004 else 0.0, Color(hc.r, hc.g, hc.b, ha))
+			ha *= va
+			_put(_buf_halo, o, p.x, p.y, r * hs if ha > 0.004 else 0.0, Color(hc.r, hc.g, hc.b, ha))
+	if halo_on:
 		_mm_halo.buffer = _buf_halo
-	_mm_halo.visible_instance_count = n if (halo > 0.01 or ts_fx) else 0
+	_mm_halo.visible_instance_count = n if halo_on else 0
 	_mm_color.buffer = _buf_color
 	_mm_core.buffer = _buf_core
 	_mm_ring.buffer = _buf_ring

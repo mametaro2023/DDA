@@ -432,7 +432,7 @@ func _build_screen() -> Control:
 	ui_gap.custom_minimum_size = Vector2(0, 8)
 	v.add_child(ui_gap)
 	v.add_child(_toggle_card("目に優しい表示", "プレイ画面の弾の色を落ち着かせ、白い芯・予兆の点滅・キアイの拍の光を弱めます(弾の位置・当たり判定・難易度は変わりません)。弾が多いときの、目のチカチカが気になる方向け", UiStyle.ACCENT,
-		bool(settings.get("eye_comfort", false)), "", func(on: bool):
+		bool(settings.get("eye_comfort", true)), "", func(on: bool):
 			settings.eye_comfort = on))
 	v.add_child(_toggle_card("FPS を表示", "画面の右下に、描画と処理の FPS を出します(プレイ中は、弾の判定の計算回数も出ます)", UiStyle.ACCENT,
 		FpsOverlay.enabled, "", func(on: bool):

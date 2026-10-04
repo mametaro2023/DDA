@@ -271,7 +271,7 @@ func _ready() -> void:
 		add_child(tr)
 		_bg_nodes.append(tr)
 		_bg_img = tr
-	_soft = bool(settings.get("eye_comfort", false))
+	_soft = bool(settings.get("eye_comfort", true))
 	_arena_bg = ColorRect.new()
 	_arena_bg.color = Color(0.0, 0.0, 0.02, SOFT_BG_ALPHA if _soft else ARENA_BG_ALPHA)
 	_arena_bg.position = ARENA_POS

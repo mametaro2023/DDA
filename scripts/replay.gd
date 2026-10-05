@@ -119,6 +119,12 @@ class Player extends RefCounted:
 		frames = p_frames
 		keys = p_keys
 		t = start_time()
+		# 自機の始めの位置は固定ではない(カーソルがアリーナの中にあると、その場から始まる)ので、最初のキーフレームのものにそろえる。
+		# 最初のキーフレームは、記録の前に(位置を決めたあとで)作られる。再生の sim は build_game の既定の位置から始まるので、これがないと、飛ばずに最初から流したとき自機の位置がずれる。
+		if not keys.is_empty():
+			var s0: Dictionary = (keys[0].s as Dictionary).sim
+			if s0.has("player_pos"):
+				sim.player_pos = s0.player_pos
 
 	func frame_count() -> int:
 		return frames.size() / STRIDE

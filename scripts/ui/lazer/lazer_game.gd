@@ -149,6 +149,11 @@ func _build_right_panel() -> void:
 
 # --- 体力バー・スコア・枠・進行バー ---
 
+## 体力バーの塗りの角の丸み。幅が高さより狭い(残りわずか)ときは、角ばらないよう、幅の半分までにする。
+func _cap_radius(width: float, h: float) -> int:
+	return maxi(int(minf(h * 0.5, width * 0.5)), 1)
+
+
 ## 体力バー: 丸い端の細いバー。溝 + 減った分の白い残像(ゆっくり縮む)+ 塗り(残量で青緑 → 琥珀 → 赤)。20%(被ダメージ半減の境目)に小さな三角。
 ## 被弾中は赤みがかり、休憩中(回復が止まっている)は冷たい色に沈む。回復中は、先端にやわらかい光。
 func _draw_hp_bar(_font: Font, bx: float, y: float, g: float) -> void:
@@ -157,15 +162,14 @@ func _draw_hp_bar(_font: Font, bx: float, y: float, g: float) -> void:
 	var by := y + (HP_H - h) * 0.5
 	_hp_node.draw_style_box(LazerStyle.box(Color(0.03, 0.025, 0.06, 0.66), Color(1, 1, 1, 0.16), 1, 9), Rect2(bx - 3.0, by - 3.0, w + 6.0, h + 6.0))
 	var gw := w * clampf(_gauge_ghost, 0.0, 1.0)
-	if gw > h:   # 減った分の残像(白。ゆっくり縮む)
-		_hp_node.draw_style_box(LazerStyle.box(Color(1, 1, 1, 0.34), Color(0, 0, 0, 0), 0, 6), Rect2(bx, by, gw, h))
+	if gw > 0.5:   # 減った分の残像(白。ゆっくり縮む)。幅が高さより細くても、丸い端は、幅に合わせて小さくする
+		_hp_node.draw_style_box(LazerStyle.box(Color(1, 1, 1, 0.34), Color(0, 0, 0, 0), 0, _cap_radius(gw, h)), Rect2(bx, by, gw, h))
 	var fc := UiStyle.hp_color(g).lerp(Color(1.0, 0.3, 0.34), clampf(_hit_glow, 0.0, 1.0) * 0.45).lerp(Color(0.62, 0.74, 1.0), _fx_break * 0.7)
 	var fw := w * g
+	if fw > 0.5:
+		_hp_node.draw_style_box(LazerStyle.box(fc, Color(0, 0, 0, 0), 0, _cap_radius(fw, h)), Rect2(bx, by, fw, h))
 	if fw > h:
-		_hp_node.draw_style_box(LazerStyle.box(fc, Color(0, 0, 0, 0), 0, 6), Rect2(bx, by, fw, h))
 		_hp_node.draw_style_box(LazerStyle.box(Color(1, 1, 1, 0.22), Color(0, 0, 0, 0), 0, 3), Rect2(bx + 3.0, by + 1.5, maxf(fw - 6.0, 0.0), 3.0))   # 上面の艶
-	elif fw > 0.5:
-		_hp_node.draw_rect(Rect2(bx, by + 1.0, fw, h - 2.0), fc)
 	var tx: float = bx + w * (sim.low_threshold if sim != null else GameSim.GAUGE_LOW_THRESHOLD)   # 20%(MOD「天国」は 35%)の目印
 	_hp_node.draw_colored_polygon(PackedVector2Array([Vector2(tx - 4.0, by - 9.0), Vector2(tx + 4.0, by - 9.0), Vector2(tx, by - 3.0)]), Color(1, 1, 1, 0.55))
 	if _fx_regen > 0.02 and fw > h:   # 回復中: 先端に、やわらかい光

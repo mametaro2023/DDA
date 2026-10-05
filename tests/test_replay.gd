@@ -38,6 +38,7 @@ func _init() -> void:
 			["Chimera(弾幕 v1)", hard, ["v1", "practice"], 3]]:
 		_test_roundtrip(cfg[0], cfg[1], cfg[2], cfg[3])
 	_test_loops(easy)
+	_test_start_pos(easy)
 	_test_files(easy)
 	for n in _nodes:
 		n.free()
@@ -46,11 +47,13 @@ func _init() -> void:
 
 
 ## 録りながら、キーボード/マウスを混ぜて動くボットでプレイする(プレイ画面の _step_sim と同じ手順)。戻り値: 録ったもの + 最後の状態。
-func _play(bm, mods: Array, seed_n: int, secs := SECS) -> Dictionary:
+func _play(bm, mods: Array, seed_n: int, secs := SECS, start_at = null) -> Dictionary:
 	var field := BulletField.new()
 	_nodes.append(field)
 	var g := Replay.build_game(field, bm, {"mods": mods, "density_mul": 1.0}, "", {})
 	var sim = g.sim
+	if start_at != null:   # カーソルがアリーナの中にあるときの開始(プレイ画面が、記録の始めの前に自機を置く)
+		sim.player_pos = start_at
 	var rec := Replay.Recorder.new()
 	rec.begin(sim, field, -1.5)
 	var sim_t := -1.5
@@ -97,6 +100,16 @@ func _player_for(bm, mods: Array, rec: Replay.Recorder) -> Replay.Player:
 	_nodes.append(field)
 	var g := Replay.build_game(field, bm, {"mods": mods, "density_mul": 1.0}, "", {})
 	return Replay.Player.new(g.sim, field, rec.frames, rec.keys)
+
+
+## 自機の始めの位置が既定と違う記録(その場から始まる開始)も、最初から通しで再生すると同じになる。
+func _test_start_pos(bm) -> void:
+	var at := Vector2(120.0, 200.0)
+	var played := _play(bm, ["practice"], 5, 8.0, at)
+	var p := _player_for(bm, ["practice"], played.rec)
+	_check(p.sim.player_pos.is_equal_approx(at), "始めの位置: 再生の始まりの自機が、記録の始めの位置にある")
+	p.advance_to(1.0e9)
+	_check(_digest(p.sim, p.field) == played.digest, "始めの位置: 通しで再生すると、最後の状態(自機の位置を含む)が記録時と同じ")
 
 
 func _test_roundtrip(label: String, bm, mods: Array, seed_n: int) -> void:

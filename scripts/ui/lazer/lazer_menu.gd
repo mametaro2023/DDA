@@ -17,9 +17,12 @@ signal replay_requested(name: String)
 signal song_picked(loader, bm, settings: Dictionary, level: float)
 ## osu! の譜面ページの URL の曲を取り込みたい(「URL から取り込む」・検索欄への貼り付け。main がダウンロードする)
 signal url_requested(text: String)
+## 「探す」で、曲(BeatmapSet の ID)のダウンロードが頼まれた(main がダウンロードする。label は通知に出す名前)
+signal set_requested(set_id: int, label: String)
 
 const SongBrowser = preload("res://scripts/song_browser.gd")
 const SongSources = preload("res://scripts/song_sources.gd")
+const LazerFinder = preload("res://scripts/ui/lazer/lazer_finder.gd")
 const ModPanel = preload("res://scripts/ui/lazer/lazer_mods.gd")
 const SmoothScroll = preload("res://scripts/ui/smooth_scroll.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
@@ -188,6 +191,13 @@ var _dialog: FileDialog
 var _options: Control            # 開いている設定パネル(main が持つ。開いている間だけ設定される)
 var _mod_panel: Control          # 開いている MOD パネル
 var _launching := false
+## 曲の ID → ダウンロードの状態(main の fetch_states と同じ辞書。「探す」の行に出す)
+var fetch_states := {}
+var _finder: Control               # 「探す」タブの中身(開いている間だけある)
+var _tabs: Array = []              # 上のツールバーのタブ [ソロ, 探す](Button)
+var _tab_line: ColorRect           # 選んでいるタブの下線
+var _owned := {}                   # 「アーティスト|曲名」(小文字)→ 一覧の曲のパス(「探す」で、入っている曲を見分ける)
+var _owned_n := -1
 var _pl_wait := false   # プレイリストの曲を選んで、読み込みを待っている
 var _intro_nodes: Array = []
 var _cards_gen := 0
@@ -209,7 +219,9 @@ func _ready() -> void:
 	backdrop_bright = true
 	_build_base()
 	_bg_shade = get_child(BACKDROP_NODES - 1)   # 土台の暗幕(背景の 3 枚の、いちばん上)
-	_build_toolbar(["ロビー", "曲を選ぶ"] if pick_mode else ["ソロ"])
+	_build_toolbar(["ロビー", "曲を選ぶ"] if pick_mode else [])
+	if not pick_mode:
+		_build_tabs()
 	_build_info()
 	_build_stats()
 	_build_records()
@@ -2509,6 +2521,105 @@ func _refresh_mod_bar() -> void:
 
 # --- ランダム・開始 ---
 
+# --- 上のタブ(ソロ / 探す) ---
+
+## ツールバーの左(歯車の右)に、「ソロ」「探す」のタブを置く(パンくずと同じ位置・大きさ。選んでいるタブにピンクの下線)。
+func _build_tabs() -> void:
+	var x := 66.0
+	for i in range(2):
+		var b := Button.new()
+		b.text = ["ソロ", "探す"][i]
+		b.focus_mode = Control.FOCUS_NONE
+		b.flat = true
+		b.add_theme_font_override("font", LazerStyle.font_bold())
+		b.add_theme_font_size_override("font_size", 15)
+		var w := LazerStyle.font_bold().get_string_size(b.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x
+		for st in ["normal", "hover", "pressed", "hover_pressed", "focus"]:
+			b.add_theme_stylebox_override(st, StyleBoxEmpty.new())
+		b.position = Vector2(x - 8.0, 0)
+		b.size = Vector2(w + 16.0, TOOLBAR_H)
+		b.pressed.connect(func(): _set_tab(i))
+		_toolbar.add_child(b)
+		_tabs.append(b)
+		x += w + 26.0
+	_tab_line = ColorRect.new()
+	_tab_line.color = LazerStyle.PINK
+	_tab_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_toolbar.add_child(_tab_line)
+	_sync_tabs(false)
+
+
+func _sync_tabs(animated: bool) -> void:
+	var cur := 1 if _finder != null else 0
+	for i in range(_tabs.size()):
+		var b: Button = _tabs[i]
+		b.add_theme_color_override("font_color", LazerStyle.TEXT if i == cur else LazerStyle.TEXT_MUTE)
+		for c in ["font_hover_color", "font_pressed_color", "font_hover_pressed_color"]:
+			b.add_theme_color_override(c, LazerStyle.TEXT if i == cur else LazerStyle.TEXT_DIM)
+	var t: Button = _tabs[cur]
+	var to_pos := Vector2(t.position.x + 6.0, TOOLBAR_H - 3)
+	var to_size := Vector2(t.size.x - 12.0, 3)
+	if animated and UiStyle.animate:
+		var tw := _tab_line.create_tween().set_parallel(true).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_property(_tab_line, "position", to_pos, 0.22)
+		tw.tween_property(_tab_line, "size", to_size, 0.22)
+	else:
+		_tab_line.position = to_pos
+		_tab_line.size = to_size
+
+
+## タブを切り替える(0 = ソロ: 曲の一覧 / 1 = 探す)。
+func _set_tab(i: int) -> void:
+	if _launching or (i == 1) == (_finder != null):
+		return
+	_close_sort_menu()
+	if i == 1:
+		_search.release_focus()
+		_finder = LazerFinder.new()
+		_finder.states = fetch_states
+		_finder.owned_cb = _owned_path
+		_finder.download_requested.connect(func(id: int, label: String): set_requested.emit(id, label))
+		_finder.play_requested.connect(func(path: String):
+			_set_tab(0)
+			var k := browser.index_of_path(path)
+			if k < 0:
+				_add_song_and_select(path)
+			elif k != _song_sel:
+				_select_song(k)
+				_center_selected())
+		_finder.closed.connect(func(): _set_tab(0))
+		add_child(_finder)   # いちばん上に重ねる(ツールバーの下から。タブは押せるまま)
+		UiSfx.play("open")
+	else:
+		var f := _finder
+		_finder = null
+		if UiStyle.animate:
+			f.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var tw := f.create_tween()
+			tw.tween_property(f, "modulate:a", 0.0, 0.15)
+			tw.tween_callback(f.queue_free)
+		else:
+			f.queue_free()
+		UiSfx.play("close")
+	_sync_tabs(true)
+
+
+## main から: ダウンロードの状態が変わった(状態そのものは、main と同じ辞書 fetch_states に入っている)。
+func on_fetch_state(set_id: int, _s: Dictionary) -> void:
+	if _finder != null:
+		_finder.refresh_state(set_id)
+
+
+## 「探す」の曲が、もう一覧にあるか(アーティストと曲名が同じ曲。あればそのパス)。
+func _owned_path(it: Dictionary) -> String:
+	if _owned_n != _songs.size():
+		_owned_n = _songs.size()
+		_owned.clear()
+		for sg in _songs:
+			_owned[(str(sg.artist) + "|" + str(sg.title)).to_lower()] = str(sg.path)
+	return str(_owned.get((str(it.artist) + "|" + str(it.title)).to_lower(), ""))
+
+
 func _random_song() -> void:
 	if _was_chart:   # 難易度順: 表示している譜面から(いまの譜面以外)
 		if _chart_order.size() < 2 or _launching:
@@ -2707,11 +2818,16 @@ func _player_step(d: int) -> void:
 
 ## 曲の一覧がホイールを受け付けるか(MOD パネルや設定パネルが上に重なっているときは、受け付けない)。
 func _lists_active() -> bool:
-	return _mod_panel == null and _options == null
+	return _mod_panel == null and _options == null and _finder == null
 
 
 func _input(event: InputEvent) -> void:
 	if _options != null or _mod_panel != null or _launching:
+		return
+	if _finder != null:   # 「探す」を開いている: キーは「探す」に任せる(Esc だけ、ここで受ける)
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+			_finder.handle_escape()
+			get_viewport().set_input_as_handled()
 		return
 	if _sort_menu != null and _sort_menu.visible:   # 並び替えのメニューが開いている: 外のクリック・Esc で閉じる
 		if event is InputEventMouseButton and event.pressed and not _sort_menu.get_global_rect().has_point(event.global_position) and not _sort_btn.get_global_rect().has_point(event.global_position):

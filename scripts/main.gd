@@ -60,6 +60,10 @@ var _settings_btn: Button          # 画面の右上の「設定」(タイトル
 var _songs_changed := false      # 設定パネルで、osu! の Songs フォルダの設定が変わった(閉じたときに、選曲画面の一覧を作り直す)
 var _fetch: Node                  # osu! の譜面ページの URL から曲を取るダウンロード(fetch_song_url。初めて使うときに作る)
 var _fetch_note_at := 0            # ダウンロードの進み具合の通知を、最後に書き換えた時刻(ミリ秒)
+var _fetch_queue: Array = []       # ダウンロードの順番待ち [{id, label, select}]
+var _fetch_cur := {}               # いまダウンロードしている曲 {id, label, select}
+## 曲の ID → ダウンロードの状態(_set_fetch_state)。lazer 風の選曲画面が、同じ辞書を持って「探す」の行に出す
+var fetch_states := {}
 var _watch_known := {}             # songs フォルダに、いま見えている .osz(名前|大きさ → パス)
 var _watch_pending := {}           # 見つけたが、コピーの途中かもしれないもの(大きさが落ち着くまで待つ)
 var _watch_ready := false
@@ -500,7 +504,6 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 ## osu! の譜面ページの URL の曲を、ミラーサイトからダウンロードして取り込む(選曲画面の「URL から取り込む」・検索欄への貼り付け・Ctrl+V)。
-## 初めては、非公式のミラーから取ることへの同意を求める(マルチプレイのダウンロードと同じ設定 mirror_consent)。
 ## 取り込めたら、.osz を開いたときと同じく、選曲画面でその曲を選ぶ(プレイ中・ロビーなら、取り込みと通知だけ)。
 func fetch_song_url(text: String) -> void:
 	var id := SongSources.set_id_of(text)
@@ -508,14 +511,24 @@ func fetch_song_url(text: String) -> void:
 		if overlay != null:
 			overlay.toast("難易度のページではなく、曲のページ(osu.ppy.sh/beatmapsets/…)の URL を使ってください" if id < 0 else "osu! の譜面ページの URL ではありません(osu.ppy.sh/beatmapsets/…)", 4.0)
 		return
-	if _fetch != null and _fetch.busy:
-		if overlay != null:
-			overlay.toast("ほかの曲をダウンロードしています")
+	fetch_song_set(id, "", true)
+
+
+## 曲(BeatmapSet の ID)をダウンロードして取り込む(URL・lazer 風の選曲の「探す」)。ダウンロード中なら、順番待ちに足す。
+## 初めては、非公式のミラーから取ることへの同意を求める(マルチプレイのダウンロードと同じ設定 mirror_consent)。
+## select: 取り込めたら選曲画面でその曲を選ぶ(「探す」から続けて取るときは選ばない)。進み具合は fetch_states に入れ、画面の on_fetch_state へ知らせる。
+func fetch_song_set(set_id: int, label := "", select := true) -> void:
+	if set_id <= 0:
+		return
+	var cur_state := str((fetch_states.get(set_id, {}) as Dictionary).get("state", ""))
+	if cur_state == "queued" or cur_state == "downloading":
 		return
 	var cur = _current.get("settings") if _current != null else null
 	var st: Dictionary = cur if cur is Dictionary else Settings.load_all()
 	if bool(st.get("mirror_consent", false)):
-		_start_fetch(id)
+		_enqueue_fetch(set_id, label, select)
+		return
+	if _aux_panel != null:
 		return
 	var q = UiSets.current().make_quit()
 	q.setup("非公式のミラーサイトから取得します", "同意してダウンロード", "キャンセル",
@@ -526,44 +539,79 @@ func fetch_song_url(text: String) -> void:
 		st.mirror_consent = true
 		Settings.save_all(st)
 		close_aux()
-		_start_fetch(id))
+		_enqueue_fetch(set_id, label, select))
 	_open_aux(q)
 
 
-func _start_fetch(set_id: int) -> void:
-	if _fetch == null:
-		_fetch = SongDownload.new()
-		add_child(_fetch)   # main の子なので、画面を移ってもダウンロードは続く
-		_fetch.progress.connect(func(frac: float, text: String):
-			var now := Time.get_ticks_msec()
-			if overlay != null and now - _fetch_note_at >= 250:   # 文字の差し替えは、ときどき
-				_fetch_note_at = now
-				overlay.toast_update(("%s  %d%%" % [text, roundi(frac * 100.0)]) if frac > 0.0 else text, 30.0))
-		_fetch.finished.connect(_on_fetch_finished)
+func _ensure_fetch() -> void:
+	if _fetch != null:
+		return
+	_fetch = SongDownload.new()
+	add_child(_fetch)   # main の子なので、画面を移ってもダウンロードは続く
+	_fetch.progress.connect(func(frac: float, text: String):
+		var now := Time.get_ticks_msec()
+		if now - _fetch_note_at >= 250:   # 文字の差し替え・画面への知らせは、ときどき
+			_fetch_note_at = now
+			if overlay != null:
+				overlay.toast_update(("%s  %d%%" % [text, roundi(frac * 100.0)]) if frac > 0.0 else text, 30.0)
+			if not _fetch_cur.is_empty():
+				_set_fetch_state(int(_fetch_cur.id), {"state": "downloading", "frac": frac}))
+	_fetch.finished.connect(_on_fetch_finished)
+
+
+func _enqueue_fetch(set_id: int, label: String, select: bool) -> void:
+	_fetch_queue.append({"id": set_id, "label": label, "select": select})
+	_set_fetch_state(set_id, {"state": "queued"})
+	_next_fetch()
+
+
+func _next_fetch() -> void:
+	_ensure_fetch()
+	if _fetch.busy or _fetch_queue.is_empty():
+		return
+	_fetch_cur = _fetch_queue.pop_front()
 	_fetch_note_at = 0
+	var id := int(_fetch_cur.id)
+	_set_fetch_state(id, {"state": "downloading", "frac": 0.0})
 	if overlay != null:
-		overlay.toast("曲(ID %d)をダウンロードしています…" % set_id, 30.0)
-	_fetch.start(set_id, "", str(set_id))
+		var name := str(_fetch_cur.label) if str(_fetch_cur.label) != "" else "曲(ID %d)" % id
+		overlay.toast("%s をダウンロードしています…" % name + ("(あと %d 曲)" % _fetch_queue.size() if not _fetch_queue.is_empty() else ""), 30.0)
+	_fetch.start(id, "", ("%d %s" % [id, _fetch_cur.label]) if str(_fetch_cur.label) != "" else str(id))
+
+
+## ダウンロードの状態を覚えて、いまの画面に知らせる。s: {state: queued / downloading / done / failed, frac, path, error}
+func _set_fetch_state(set_id: int, s: Dictionary) -> void:
+	fetch_states[set_id] = s
+	if _current != null and _current.has_method("on_fetch_state"):
+		_current.on_fetch_state(set_id, s)
 
 
 func _on_fetch_finished(r: Dictionary) -> void:
+	var job := _fetch_cur
+	_fetch_cur = {}
+	var id := int(job.get("id", 0))
 	if not r.ok:
+		_set_fetch_state(id, {"state": "failed", "error": str(r.error)})
 		if overlay != null:
 			overlay.toast(str(r.error), 6.0)
+		_next_fetch()
 		return
 	_watch_sync()   # 取り込んだ曲は、フォルダの監視には「新しい曲」として知らせない
+	_set_fetch_state(id, {"state": "done", "path": str(r.path)})
 	var name := str(r.title) if str(r.title) != "" else str(r.path).get_file()
 	if overlay != null:
 		overlay.toast(("%s はもう入っています" if r.get("existed", false) else "%s を取り込みました") % name)
 	if _kind == "menu":
 		_current.refresh_songs()
-		_current.select_path(str(r.path))
-	elif _kind == "title" and _settings_panel == null and _aux_panel == null:
+		if bool(job.get("select", true)):
+			_current.select_path(str(r.path))
+	elif _kind == "title" and bool(job.get("select", true)) and _settings_panel == null and _aux_panel == null:
 		var st := Settings.load_all()
 		st.last_song = r.path
 		st.last_diff = ""
 		Settings.save_all(st)
 		show_menu()
+	_next_fetch()
 
 
 ## 画面を切り替える。通常起動では、短い暗転(フェードアウト → 入れ替え → フェードイン。点滅・フラッシュなし)を挟む。
@@ -774,6 +822,10 @@ func show_menu(pick := false) -> void:
 	m.settings_requested.connect(open_settings)
 	if m.has_signal("url_requested"):   # 「URL から取り込む」・検索欄への URL の貼り付け
 		m.url_requested.connect(fetch_song_url)
+	if m.has_signal("set_requested"):   # lazer 風の選曲の「探す」: 曲をダウンロードする
+		m.set_requested.connect(func(id: int, label: String): fetch_song_set(id, label, false))
+	if "fetch_states" in m:
+		m.fetch_states = fetch_states
 	if pick:
 		m.song_picked.connect(_on_song_picked)
 		m.back_requested.connect(func(): show_multi())
@@ -1265,6 +1317,22 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				print("toggle: 切り替え後 v2=%s Lv=%.2f 選択=%d" % [str(_current._gens_v2), float(_current._ratings[_current._diff_sel].level), _current._diff_sel])
 			if extra.has("empty"):   # 曲が 1 つもない状態: --shot menu out.png empty
 				await _current.debug_empty()
+			if extra.has("finder") and _current.has_method("_set_tab"):   # lazer 風: 「探す」タブ(osu.direct を実際に読む): --shot menu out.png finder
+				_current._set_tab(1)
+				var t0 := Time.get_ticks_msec()
+				while Time.get_ticks_msec() - t0 < 6000:
+					await get_tree().process_frame
+				if extra.has("dl"):   # 2 つめの曲を、実際にミラーから取る(同意は済んだことにする。設定には保存しない): --shot menu out.png finder dl
+					_current.settings.mirror_consent = true
+					var cards: Array = _current._finder._grid.get_children()
+					if cards.size() >= 2:
+						var c = cards[1]
+						(c.get_meta("btn") as Button).pressed.emit()
+						t0 = Time.get_ticks_msec()
+						while Time.get_ticks_msec() - t0 < 60000 and str((fetch_states.get(int(c.get_meta("item").id), {}) as Dictionary).get("state", "")) in ["queued", "downloading"]:
+							await get_tree().process_frame
+						print("finder dl: ", fetch_states)
+						await get_tree().create_timer(0.5).timeout
 			if extra.has("loading"):   # 曲の読み込み中の見た目: --shot menu out.png loading
 				await _current.debug_loading()
 			if extra.has("records") and _current.has_method("debug_records"):   # lazer 風: 作り物の記録(保存しない): --shot menu out.png records
@@ -2514,17 +2582,14 @@ func _smoke_fetch() -> void:
 	m = _current
 	while m._job_pending:
 		await get_tree().process_frame
-	_fetch = SongDownload.new()
-	add_child(_fetch)
+	_ensure_fetch()
 	_fetch.dest_dir = dl_dir
 	_fetch.mirrors = [{"name": "local", "url": "http://127.0.0.1:%d/d/%%d" % port}]
-	_fetch.progress.connect(func(_f: float, _t: String): pass)
 	var got := {"path": "", "existed": false, "title": ""}
 	_fetch.finished.connect(func(r: Dictionary):
 		got.path = SongLibrary.norm(str(r.get("path", "")))
 		got.title = str(r.get("title", ""))
 		got.existed = bool(r.get("existed", false)))
-	_fetch.finished.connect(_on_fetch_finished)
 	var url_btn: Control = find_btn.call(m, "URL から取り込む")
 	chk.call(url_btn != null, "「URL から取り込む」がある")
 	DisplayServer.clipboard_set("https://example.com/foo")

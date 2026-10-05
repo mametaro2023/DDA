@@ -634,6 +634,61 @@ func _init() -> void:
 	_check(dmg_long[0].damage_factor > dmg_short[0].damage_factor, "同じ被弾なら、長い曲のほうが係数が高い (%.3f > %.3f)" % [dmg_long[0].damage_factor, dmg_short[0].damage_factor])
 	_check(absf(dmg_short[0].damage_factor - exp(-dmg_short[0].damage_total / GameSim.DAMAGE_TAU)) < 1e-9, "短い譜面の係数は従来の式 exp(−ダメージ ÷ 2) のまま")
 
+	# --- 小型化・無回復・天国・減速 ---
+	_check(absf(Mods.params(["shrink"]).score_mul - 1.04) < 1e-9, "小型化: ベーススコア ×1.04")
+	var noregen: Dictionary = Mods.params(["noregen", "v1"])
+	_check(not noregen.regen and absf(noregen.score_mul - 1.03) < 1e-9 and absf(noregen.drain_time - GameSim.GAUGE_DRAIN_TIME) < 1e-9,
+		"無回復: 自然回復なし / ベーススコア ×1.03 / 体力はそのまま")
+	a = _make(false, 100.0, [], [], noregen)
+	sim = a[0]
+	f = a[1]
+	_put_bullet_on_player(sim, f)
+	now = _run(sim, 0.0, 6)
+	f.clear()
+	g0 = sim.gauge
+	now = _run(sim, now, 300)
+	_check(sim.gauge == g0 and g0 < 1.0, "無回復: 被弾したあと 5 秒たっても回復しない (%.3f → %.3f)" % [g0, sim.gauge])
+	var heaven: Dictionary = Mods.params(["heaven", "v1"])
+	_check(is_equal_approx(heaven.size_mul, 0.7) and absf(heaven.drain_time - 0.5) < 1e-9 and heaven.low_protect and absf(heaven.low_threshold - 0.35) < 1e-9 and absf(heaven.score_mul - 0.65) < 1e-9,
+		"天国: 弾サイズ ×0.7 / 体力 500ms / 半減は 35%% 以下から / ベーススコア ×0.65")
+	_check(absf(Mods.params(["heaven"]).drain_time - 0.6) < 1e-9, "天国 + 弾幕 v2(初期状態)は 500ms × 1.2 = 600ms")
+	a = _make(true, 10.0, [], [], heaven)
+	sim = a[0]
+	f = a[1]
+	_put_bullet_on_player(sim, f)
+	g_prev = sim.gauge
+	now = _run(sim, 0.0, 1)
+	full_step = g_prev - sim.gauge
+	_check(absf(full_step - DT / 0.5) < 0.001, "天国: 1 フレームで %.4f 減る(= dt / 500ms)" % full_step)
+	while sim.gauge > 0.37:
+		now = _run(sim, now, 1)
+	g_prev = sim.gauge
+	now = _run(sim, now, 1)
+	_check(absf((g_prev - sim.gauge) - full_step) < 0.001, "天国: 35%% より上(%.2f)では、まだ半減しない" % g_prev)
+	while sim.gauge > 0.34:
+		now = _run(sim, now, 1)
+	g_prev = sim.gauge
+	now = _run(sim, now, 1)
+	_check(absf((g_prev - sim.gauge) - full_step * 0.5) < 0.001, "天国: 35%% 以下(%.2f)では被ダメージが半分" % g_prev)
+	a = _make(false, 10.0, [], [], heaven)
+	sim = a[0]
+	f = a[1]
+	_put_bullet_on_player(sim, f)
+	frames = 0
+	while not sim.finished and frames < 240:
+		sim.step(frames * DT, DT, Vector2.ZERO, false)
+		frames += 1
+	_check(sim.failed and absf(sim.hit_time - 0.675) <= DT * 2.0, "天国: 連続被弾 %.3fs ≒ 0.675s(500ms × 0.65 + 半減した残り 35%%)でゲージ 0" % sim.hit_time)
+	var slow: Dictionary = Mods.params(["slow"])
+	_check(is_equal_approx(slow.rate, 2.0 / 3.0) and absf(slow.score_mul - 0.8) < 1e-9, "減速: 再生速度 ×2/3 / ベーススコア ×0.8")
+	# 同時に付けられないもの: 地獄と天国・加速と減速(付けたほうを残す)
+	_check(Mods.conflicts("hell", "heaven") and Mods.conflicts("heaven", "hell") and Mods.conflicts("rush", "slow") and not Mods.conflicts("hell", "rush"),
+		"地獄と天国・加速と減速は同時に付けられない(両向き)")
+	var removed: Array = []
+	_check(Mods.toggled(["hell", "dark"], "heaven", true, removed) == ["dark", "heaven"] and removed == ["hell"], "天国を付けると、地獄が外れる")
+	_check(Mods.toggled(["slow"], "rush", true) == ["rush"] and Mods.toggled(["slow", "dark"], "slow", false) == ["dark"], "加速を付けると減速が外れる / 外すのはそのまま")
+	_check(Mods.params(["hell", "heaven"]).ids == ["hell"] and Mods.params(["slow", "rush"]).ids == ["slow"], "両方が入った一覧は、先のほうだけ効く")
+
 	# --- キアイ / 拍の位相(背景・弾の光に使う) ---
 	var kbm := Beatmap.new()
 	kbm.timing_points = [

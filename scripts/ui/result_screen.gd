@@ -397,7 +397,7 @@ func _update_graph() -> void:
 		item.add_child(dot)
 		item.add_child(UiStyle.label(str(e.name), 12, UiStyle.TEXT if bool(e.me) else UiStyle.TEXT_DIM))
 		_legend.add_child(item)
-	_graph.set_data(g.series, g.t0, g.t1, stats.get("breaks", []), stats.get("hit_log", PackedFloat32Array()), GameSim.GAUGE_LOW_THRESHOLD)
+	_graph.set_data(g.series, g.t0, g.t1, stats.get("breaks", []), stats.get("hit_log", PackedFloat32Array()), float(stats.get("low_line", GameSim.GAUGE_LOW_THRESHOLD)))
 
 
 ## マルチプレイ: 参加者の成績の一覧。対戦はスコアの高い順(1 位に色。全員が終えたら WIN)、協力は 1 人ずつの GRAZE・被弾。

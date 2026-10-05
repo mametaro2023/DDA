@@ -129,7 +129,7 @@ func setup(data: Dictionary, end_time: float) -> void:
 	_graph.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_panel.add_child(_graph)
 	_graph.set_data([{"pts": _pts, "color": UiStyle.ACCENT, "thick": 2.0, "by_hp": true, "end_mark": failed}], 0.0, _total,
-		st.get("breaks", []), _hit_times, GameSim.GAUGE_LOW_THRESHOLD)
+		st.get("breaks", []), _hit_times, float(st.get("low_line", GameSim.GAUGE_LOW_THRESHOLD)))
 	_graph.reveal = 1.0
 
 	_scrub = Control.new()

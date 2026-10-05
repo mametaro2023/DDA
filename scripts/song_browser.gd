@@ -695,7 +695,7 @@ static func make_gen(bm, v2: bool) -> Dictionary:
 ## 開発用: 弾幕の作り方をその場で切り替える(順序は変えない。スクリーンショットの MOD 指定用)。
 func debug_regen() -> void:
 	var v2 := bool(Mods.params(settings.mods).gen_v2)
-	if loader != null and v2 != gens_v2:
+	if loader != null and (v2 != gens_v2 or needs_style_reload()):   # 統計だけの弾幕に、弾幕を変える MOD を付けたときも(開発用。その場で作る)
 		gens = loader.difficulties.map(func(bm): return make_gen(bm, v2))
 		gens_v2 = v2
 

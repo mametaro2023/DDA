@@ -1052,6 +1052,7 @@ func _stats() -> Dictionary:
 		"hp_t_end": sim.log_end_t,
 		"hit_log": sim.hit_log,
 		"breaks": sim.breaks,
+		"low_line": sim.low_threshold,   # 体力グラフの低体力のライン(被ダメージ半減の境目)
 		"first_fire": sim.first_fire_time,
 		"last_fire": sim.log_end_t if sim.boss != null else sim.last_fire_time,   # 撃破は曲が繰り返すので、戦いの終わりまで
 	}
@@ -1187,9 +1188,9 @@ func _draw_hp_bar(font: Font, bx: float, y: float, g: float) -> void:
 	cv.draw_polyline(o2, Color(edge.r, edge.g, edge.b, edge.a * 0.42), 1.0, true)
 	if g > 0.005:
 		_draw_hp_tip(bx + fw, y, h, sl, gc)
-	# 20% の目印(これ以下は被ダメージ半減。半減のない MOD では出さない)
+	# 20%(MOD「天国」は 35%)の目印(これ以下は被ダメージ半減。半減のない MOD では出さない)
 	if sim == null or sim.low_protect:
-		var tx := bx + bw * GameSim.GAUGE_LOW_THRESHOLD + sl
+		var tx: float = bx + bw * (sim.low_threshold if sim != null else GameSim.GAUGE_LOW_THRESHOLD) + sl
 		cv.draw_colored_polygon(PackedVector2Array([Vector2(tx - 4.0, y - 10.0), Vector2(tx + 4.0, y - 10.0), Vector2(tx, y - 4.0)]), Color(1, 1, 1, 0.6))
 
 

@@ -136,12 +136,11 @@ func _ready() -> void:
 
 
 func _on_toggled(id: String, on: bool) -> void:
-	var mods: Array = settings.mods
-	if on and not mods.has(id):
-		mods.append(id)
-	elif not on:
-		mods.erase(id)
-	settings.mods = mods
+	var removed: Array = []
+	settings.mods = Mods.toggled(settings.mods, id, on, removed)
+	for x in removed:   # 同時に付けられない MOD(地獄と天国・加速と減速)は、付けたほうを残して外す
+		if _cards.has(x):
+			ToggleCard.set_on(_cards[x], false)
 	_sync_clear_btn()
 	changed.emit()
 	refresh_info()

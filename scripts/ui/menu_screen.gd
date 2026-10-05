@@ -1202,7 +1202,7 @@ func debug_set_mods(ids: Array) -> void:
 	settings.mods = ids
 	if _loader != null:
 		var v2 := bool(Mods.params(ids).gen_v2)
-		if v2 != _gens_v2:   # 開発用: その場で作り直す(順序は変えない)
+		if v2 != _gens_v2 or _needs_reload():   # 開発用: その場で作り直す(順序は変えない。統計だけの弾幕に、弾幕を変える MOD を付けたときも)
 			_gens = _loader.difficulties.map(func(bm): return _make_gen(bm, v2))
 			_gens_v2 = v2
 		_rate_all()

@@ -469,6 +469,7 @@ static func _meta_from(name: String, d: Dictionary, size: int) -> Dictionary:
 		"failed": failed, "score": int(round(score)), "level": float(st.get("level", 0.0)), "hits": int(st.get("hits", 0)),
 		"rank": GameSim.rank_of(failed, int(st.get("hits", 0)), score, float(st.get("score_base", 1000000.0))),
 		"dur": float(st.get("hp_t_end", 0.0)), "progress": float(st.get("progress", 1.0)),
+		"keyboard": bool(st.get("keyboard", false)),
 	}
 
 

@@ -232,6 +232,10 @@ func _make_row(i: int, m: Dictionary) -> PanelContainer:
 	tags.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tags_clip.add_child(tags)
 	tags.add_child(UiStyle.label("Lv %.2f" % float(m.level), 13, UiStyle.level_color(float(m.level)), true))
+	if bool(m.get("keyboard", false)):   # キーボードで遊んだ(マウスは何も出さない)
+		var kb := UiStyle.chip("キーボード", UiStyle.TEXT_DIM)
+		kb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		tags.add_child(kb)
 	for id in m.mods:
 		var mod = Mods.find(str(id))
 		if mod != null and not mod.is_empty():

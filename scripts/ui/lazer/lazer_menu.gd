@@ -399,7 +399,11 @@ func _draw_records() -> void:
 			var m := Mods.find(id)
 			if not m.is_empty():
 				mods.append(str(m.tag))
-		_rec_card.draw_string(f, Vector2(204, y + 18), " ".join(mods), HORIZONTAL_ALIGNMENT_LEFT, 190, 13, LazerStyle.PURPLE)
+		var mx := 204.0
+		if bool(r.get("kb", false)):   # キーボードで遊んだ記録(マウスは何も出さない)
+			_rec_card.draw_string(f, Vector2(mx, y + 18), "キーボード", HORIZONTAL_ALIGNMENT_LEFT, 190, 13, LazerStyle.TEXT_DIM)
+			mx += f.get_string_size("キーボード", HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x + 8.0
+		_rec_card.draw_string(f, Vector2(mx, y + 18), " ".join(mods), HORIZONTAL_ALIGNMENT_LEFT, maxf(394.0 - mx, 1.0), 13, LazerStyle.PURPLE)
 		var d := Time.get_datetime_dict_from_unix_time(int(r.get("t", 0)))
 		_rec_card.draw_string(f, Vector2(w - 110, y + 18), "%d/%02d/%02d" % [d.year, d.month, d.day], HORIZONTAL_ALIGNMENT_RIGHT, 90, 13, LazerStyle.TEXT_MUTE)
 		if _rec_has_replay(r):   # 再生ボタン(三角)

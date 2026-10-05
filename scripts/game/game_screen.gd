@@ -1086,6 +1086,7 @@ func _stats() -> Dictionary:
 		"graze": sim.graze,
 		"score": sim.score,
 		"practice": _mods.practice,
+		"keyboard": bool((replay_data.get("stats", {}) as Dictionary).get("keyboard", false)) if not replay_data.is_empty() else str(settings.get("control", "mouse")) == "keyboard",   # キーボードで遊んだ(リザルト・記録・リプレイの一覧に出す。マウスは何も出さない)。再生では、記録したときの値
 		"bg": _bg_tex,
 		# 結果画面の体力グラフ用
 		"hp_log": sim.gauge_log,

@@ -1549,10 +1549,10 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			var rl := OszLoader.new()
 			rl.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 			var rbm = rl.difficulties[rl.difficulties.size() - 1]
-			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "dmg": 0.16, "damage": 0.16, "graze": 123, "score": 1013000.0 if extra.has("ss") or extra.has("s") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false,
+			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "dmg": 0.16, "damage": 0.16, "graze": 123, "score": 1013000.0 if extra.has("ss") or extra.has("s") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false, "keyboard": extra.has("kb"),
 				"score_base": 1060000.0, "mod_ids": ["hell", "rush"], "mods": "地獄 + 加速",
 				"bg": rl.load_image(rbm.background) if rbm.background != "" else null}.merged(_fake_hp(1, 118.0, extra.size() > 0 and extra[0] == "failed", 3)).merged(
-				{"boss": {"defeated": not (extra.size() > 0 and extra[0] == "failed"), "defeat_t": 152.0, "hp_left": 0.38, "loops": 2}, "score_boss_time": 15600.0, "mod_ids": ["boss", "shrink"], "mods": "撃破 + 小型化"} if extra.has("boss") else {}, true))   # 例: --shot result out.png [failed] boss
+				{"boss": {"defeated": not (extra.size() > 0 and extra[0] == "failed"), "defeat_t": 152.0, "hp_left": 0.38, "loops": 2}, "score_boss_time": 15600.0, "mod_ids": ["boss", "shrink"], "mods": "撃破 + 小型化"} if extra.has("boss") else {}, true))   # 例: --shot result out.png [failed] boss kb
 			_current.skip_animation()   # スクリーンショットでは、演出を待たない
 	_setup_ui_layer()   # 右上の「設定」ボタンも撮る
 	_update_settings_button()

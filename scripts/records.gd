@@ -52,7 +52,7 @@ static func entry_from_stats(stats: Dictionary) -> Dictionary:
 	if bool(stats.get("failed", true)) or stats.has("mp") or str(stats.get("md5", "")) == "":
 		return {}
 	var score_base: float = float(stats.get("score_base", 1000000.0))
-	return {
+	var e := {
 		"score": int(round(float(stats.score))),
 		"rank": GameSim.rank_of(false, int(stats.hits), float(stats.score), score_base),
 		"hits": int(stats.hits), "graze": int(stats.graze), "damage": float(stats.get("damage", 0.0)),
@@ -60,6 +60,9 @@ static func entry_from_stats(stats: Dictionary) -> Dictionary:
 		"t": int(Time.get_unix_time_from_system()),
 		"replay": str(stats.get("replay", "")),
 	}
+	if bool(stats.get("keyboard", false)):   # キーボードで遊んだ記録(マウスのときは持たない)
+		e.kb = true
+	return e
 
 
 ## 1 件を足す。上位 KEEP 件に入らなければ捨てる。戻り値: これまでの最高を超えた(初めての記録も含む)なら true。

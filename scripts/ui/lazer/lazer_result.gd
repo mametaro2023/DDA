@@ -188,6 +188,8 @@ func _build_right() -> void:
 		chips.add_child(LazerStyle.pill("NEW BEST", LazerStyle.YELLOW, 14))
 	if stats.has("mp"):
 		chips.add_child(LazerStyle.pill("対戦" if stats.mp.mode == "versus" else "協力", LazerStyle.YELLOW, 14))
+	if bool(stats.get("keyboard", false)):   # キーボードで遊んだ(マウスのときは出さない)
+		chips.add_child(LazerStyle.pill("キーボード", LazerStyle.PANEL, 14, LazerStyle.TEXT_DIM))
 	for id in stats.get("mod_ids", []):
 		var m := Mods.find(id)
 		if not m.is_empty():

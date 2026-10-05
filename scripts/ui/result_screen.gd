@@ -146,6 +146,8 @@ func _ready() -> void:
 	chips.add_child(UiStyle.chip("Lv %.2f" % stats.level, UiStyle.level_color(stats.level)))
 	if stats.has("mp"):
 		chips.add_child(UiStyle.chip("対戦" if stats.mp.mode == "versus" else "協力", UiStyle.GOLD))
+	if bool(stats.get("keyboard", false)):   # キーボードで遊んだ(マウスのときは出さない)
+		chips.add_child(UiStyle.chip("キーボード", UiStyle.TEXT_DIM))
 	for id in stats.get("mod_ids", []):
 		var m := Mods.find(id)
 		if not m.is_empty():

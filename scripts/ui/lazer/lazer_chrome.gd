@@ -13,8 +13,10 @@ const FOOTER_H := 56.0
 const SIZE_PX := Vector2(1280, 720)
 
 
-## 背景(曲の画像を暗く敷く)を host に作る。返す辞書: {holder(視差で動かす入れもの), layers(クロスフェードする 2 枚), drift(ゆっくりの拡大縮小の Tween。なければ null)}
-static func build_backdrop(host: Control) -> Dictionary:
+## 背景(曲の画像を暗く敷く)を host に作る。bright = true なら、画像を明るめに見せる(選曲・開始前画面)。
+## 返す辞書: {holder(視差で動かす入れもの), layers(クロスフェードする 2 枚)}。背景は、マウスの動きに合わせて動く(視差)だけで、ひとりでに揺れ動くことはない。
+static func build_backdrop(host: Control, bright := false) -> Dictionary:
+	var tint: Color = LazerStyle.BG_TINT_BRIGHT if bright else LazerStyle.BG_TINT
 	var base := ColorRect.new()
 	base.color = LazerStyle.BG
 	base.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -23,6 +25,7 @@ static func build_backdrop(host: Control) -> Dictionary:
 	var holder := Control.new()
 	holder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	holder.pivot_offset = SIZE_PX * 0.5
+	holder.scale = Vector2(LazerStyle.BG_SCALE, LazerStyle.BG_SCALE)
 	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	host.add_child(holder)
 	var layers: Array = []
@@ -31,21 +34,16 @@ static func build_backdrop(host: Control) -> Dictionary:
 		t.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		t.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		t.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-		t.modulate = Color(LazerStyle.BG_TINT.r, LazerStyle.BG_TINT.g, LazerStyle.BG_TINT.b, 0.0)
+		t.modulate = Color(tint.r, tint.g, tint.b, 0.0)
 		t.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		holder.add_child(t)
 		layers.append(t)
-	var drift: Tween = null
-	if UiStyle.animate:   # 背景画像をごくゆっくり拡大・縮小し続ける(視差で動かしても、端が見えないように少し大きくしておく)
-		drift = host.create_tween().set_loops()
-		drift.tween_property(holder, "scale", Vector2(1.07, 1.07), 22.0).from(Vector2(1.025, 1.025)).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		drift.tween_property(holder, "scale", Vector2(1.025, 1.025), 22.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	var shade := ColorRect.new()   # 暗幕(画像の明るさに関係なく、文字が読める暗さにする)
-	shade.color = Color(0.055, 0.045, 0.10, 0.60)
+	shade.color = Color(0.055, 0.045, 0.10, LazerStyle.BG_SHADE_A_BRIGHT if bright else LazerStyle.BG_SHADE_A)
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	host.add_child(shade)
-	return {"holder": holder, "layers": layers, "drift": drift}
+	return {"holder": holder, "layers": layers}
 
 
 ## 上のツールバー: 左に設定の歯車と、いまの場所(パンくず。最後が現在地)、右に流れている曲のプレイヤー・時計・プレイヤー名(押すと名前とアイコンを変えられる)。返す辞書: {node, clock(時計の Label)}

@@ -24,7 +24,8 @@ var _bg_holder: Control
 var _bg: TextureRect          # 今見えている背景(もう 1 枚 _bg2 と交代でクロスフェードする)
 var _bg2: TextureRect
 var _par := Vector2.ZERO
-var _drift: Tween
+## 背景の画像を明るめに見せる(選曲・開始前画面)。_build_base の前に決める
+var backdrop_bright := false
 var _toolbar: Control
 var _footer: Control
 var _clock_l: Label
@@ -35,11 +36,10 @@ var _clock_t := 1.0
 func _build_base() -> void:
 	theme = LazerStyle.make_theme()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var b := LazerChrome.build_backdrop(self)
+	var b := LazerChrome.build_backdrop(self, backdrop_bright)
 	_bg_holder = b.holder
 	_bg = b.layers[0]
 	_bg2 = b.layers[1]
-	_drift = b.drift
 
 
 ## 背景画像を、前の画像からクロスフェードで切り替える(null なら、画像なし = 暗い単色)。instant = true なら、すぐ切り替える(ゲームから続く背景など)。

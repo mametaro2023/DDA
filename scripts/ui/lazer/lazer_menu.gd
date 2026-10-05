@@ -35,7 +35,8 @@ const SongArt = preload("res://scripts/song_art.gd")
 
 const BAR_MAX := 500.0        # 弾数バーの満点
 const SPEED_MAX := 500.0      # 弾速バーの満点(px/s)
-const LAUNCH_TIME := 0.4      # プレイを押してから、次の画面へ切り替えるまでの演出の長さ(秒)
+const LAUNCH_TIME := 0.25       # プレイを押してから、次の画面へ切り替えるまでの演出の長さ(秒)
+const BACKDROP_NODES := 3     # 土台(_build_base)が最初に作る背景のノード数(下地・画像の入れ物・暗幕)。発進の演出で、これより上の中身だけを消す
 const ROW_H := 70.0           # 曲の行の高さ(1 画面に 7 行ほど入る。行の間は ROW_GAP)
 const ROW_GAP := 6            # 行と行の間
 const DIFF_H := 46.0          # 難易度の一覧の 1 行の高さ
@@ -172,10 +173,12 @@ func _ready() -> void:
 	browser.song_loaded.connect(_on_song_loaded)
 	browser.song_load_failed.connect(_on_song_load_failed)
 	browser.song_reloading.connect(func(): _set_loading(true))   # 弾幕 v2 の入り切りで、同じ曲を読み直している
+	browser.audio_switched.connect(_start_preview)   # 難易度によって音声のファイルが違う曲: 選んだ難易度の音声を流し直す
 	browser.gen_ready.connect(_on_gen_ready)   # 統計だけで開いた曲の、選んだ譜面の発射の一覧がそろった
 	browser.sort_mode = str(settings.get("song_sort", "title"))
 	browser.charts_of = _charts_of
 	browser.length_of = func(i: int) -> float: return SongArt.length_of(str(_songs[i].md5))
+	backdrop_bright = true
 	_build_base()
 	_build_toolbar(["ロビー", "曲を選ぶ"] if pick_mode else ["ソロ"])
 	_build_info()
@@ -2043,13 +2046,29 @@ func _on_song_loaded(res: Dictionary) -> void:
 		if int(res.job) == browser.job and is_inside_tree():
 			_pl_wait = false
 			Playlist.note_song(str(_songs[_song_sel].path))   # プレイリストを流している最中なら、入っている曲はその位置へ・入っていない曲なら流しを止める
-			var head := Playlist.is_active() and res.audio_full != null   # プレイリストの曲は、試聴の位置ではなく、頭から流す
-			_audio.stream = res.audio_full if head else res.audio
-			var from := 0.0 if head else float(res.audio_from)
-			NowPlaying.set_track(_audio, str(_songs[_song_sel].title), str(_songs[_song_sel].artist), from, _player_step.bind(-1), _player_step.bind(1), str(_songs[_song_sel].path))   # 上のプレイヤー: 前・次 = 一覧の前後の曲
-			if not head and res.audio_full != res.audio:
-				NowPlaying.set_full(res.audio_full, float(res.audio_offset))
-			_audio.play(from)
+			if browser.audio_gone or not browser.audio_matches(browser.diff_sel):   # 選んでいる難易度の音声が、この音声(いちばん易しい難易度のもの)と別のファイル
+				browser.request_audio(browser.diff_sel)   # 読み込めたら、_start_preview が流す
+				return
+			_start_preview(res)
+
+
+## 試聴を流し始める。res: audio(流すもの)・audio_from・audio_offset・audio_full(曲が読み込めたとき・難易度の音声が別のファイルで読み込めたとき)。
+func _start_preview(res: Dictionary) -> void:
+	if _launching or _song_sel < 0 or _song_sel >= _songs.size():
+		return
+	var head := Playlist.is_active() and res.audio_full != null   # プレイリストの曲は、試聴の位置ではなく、頭から流す
+	_audio.stream = res.audio_full if head else res.audio
+	_apply_preview_rate()
+	var from := 0.0 if head else float(res.audio_from)
+	NowPlaying.set_track(_audio, str(_songs[_song_sel].title), str(_songs[_song_sel].artist), from, _player_step.bind(-1), _player_step.bind(1), str(_songs[_song_sel].path))   # 上のプレイヤー: 前・次 = 一覧の前後の曲
+	if not head and res.audio_full != res.audio:
+		NowPlaying.set_full(res.audio_full, float(res.audio_offset))
+	_audio.play(from)
+
+
+## 試聴の速さを、付けた MOD(加速・減速)に合わせる(プレイ画面と同じ、再生速度ごと変える)。
+func _apply_preview_rate() -> void:
+	_audio.pitch_scale = Mods.params(settings.mods).rate
 
 
 # --- 難易度 ---
@@ -2070,6 +2089,8 @@ func _select_diff(i: int) -> void:
 	if old == -2:
 		return
 	i = _diff_sel
+	if old != i and not _job_pending and browser.request_audio(i):   # 音声が別のファイルの難易度: いまの試聴を止めて、その音声に替える(読み込めたら流れる)
+		_audio.stop()
 	_set_loading(_job_pending)   # 発射の一覧を用意している間は、プレイを押せない
 	if old != i:
 		UiSfx.play("select", 1.35 * UiSfx.scale_pitch(float(i % 6) / 5.0, 1.0))
@@ -2209,38 +2230,31 @@ func _start() -> void:
 	play_requested.emit(info.loader, info.bm, settings, info.pre)
 
 
-## 発進の演出。選んだ曲の行と情報だけを残して、ほかをなめらかに退かせる。
+## いま見えている背景の画像(開始前画面が、同じ画像で続けるため。なければ null)
+func current_background() -> Texture2D:
+	return _bg.texture if _bg != null else null
+
+
+## いま見えている背景の拡大率(開始前画面が、同じ大きさから続けるため)
+func current_zoom() -> float:
+	return _bg_holder.scale.x
+
+
+## 発進の演出。背景(画像と暗幕)だけを残して、画面の中身をすべてなめらかに消す。背景はそのままズームインして、開始前画面へ続く。
 func _launch_anim() -> void:
 	if not UiStyle.animate:
 		return
-	for c in [_stats, _toolbar, _footer]:
-		var t: Tween = c.create_tween()
-		t.tween_property(c, "modulate:a", 0.0, 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	for i in range(_rows.size()):
-		if i == _song_sel:
-			continue
-		var t2: Tween = _rows[i].create_tween()
-		t2.tween_property(_rows[i], "modulate:a", 0.0, 0.25)
-	for hk in _chart_holders.keys():   # 難易度順: 選んでいる譜面の行以外を退かせる
-		if hk != _chart_sel and is_instance_valid(_chart_holders[hk]) and (_chart_holders[hk] as Control).visible:
-			var t3: Tween = (_chart_holders[hk] as Control).create_tween()
-			t3.tween_property(_chart_holders[hk], "modulate:a", 0.0, 0.25)
-	if _was_chart and _chart_holders.has(_chart_sel):
-		var chold: Control = (_chart_holders[_chart_sel] as Control).get_meta("card")
-		chold.pivot_offset = chold.size * 0.5
-		UiStyle.spring(chold, "scale", Vector2.ONE, Vector2(1.03, 1.03), 0.3)
-	elif _song_sel >= 0 and _song_sel < _song_cards.size():
-		var holder: Control = _song_cards[_song_sel]
-		holder.pivot_offset = holder.size * 0.5
-		UiStyle.spring(holder, "scale", Vector2.ONE, Vector2(1.03, 1.03), 0.3)
+	for c in get_children().slice(BACKDROP_NODES):   # 土台(_build_base)が作った背景の 3 枚より上は、すべて中身
+		if c is CanvasItem and c.visible:
+			var t: Tween = c.create_tween()
+			t.tween_property(c, "modulate:a", 0.0, LAUNCH_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	if _play_btn != null:
 		var at := _play_btn.get_global_rect().get_center()
-		UiFx.ring(self, at, LazerStyle.PINK, 20.0, 200.0, 0.5, 3.0)
-		UiFx.burst(self, at, LazerStyle.PINK, 14, 260.0, 0.55, 3.0)
-	if _drift != null and _drift.is_valid():
-		_drift.kill()
+		UiFx.ring(self, at, LazerStyle.PINK, 20.0, 160.0, LAUNCH_TIME, 3.0)
+		UiFx.burst(self, at, LazerStyle.PINK, 12, 200.0, LAUNCH_TIME, 3.0)
+	var z1 := _bg_holder.scale.x + 0.5 * LazerStyle.LAUNCH_ZOOM_SPEED * LAUNCH_TIME   # 0 から LAUNCH_ZOOM_SPEED まで加速(終わりの速さが、開始前画面の速さと同じ)
 	var tz := _bg_holder.create_tween()
-	tz.tween_property(_bg_holder, "scale", Vector2(1.16, 1.16), LAUNCH_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tz.tween_property(_bg_holder, "scale", Vector2(z1, z1), LAUNCH_TIME).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	var ta := _audio.create_tween()
 	ta.tween_property(_audio, "volume_db", -40.0, LAUNCH_TIME)
 
@@ -2271,6 +2285,7 @@ func open_mods() -> void:
 
 
 func _on_mods_changed() -> void:
+	_apply_preview_rate()   # 加速・減速を付けた / 外したら、流れている試聴の速さも変える
 	_refresh_mod_bar()
 	if _loader == null:
 		return
@@ -2316,6 +2331,7 @@ func _play_playlist_path(path: String) -> void:
 	if i == _song_sel and _loader != null and not _job_pending and _audio.stream != null:   # もう選んでいる曲: 選び直しでは流れ直さないので、ここで頭から流す
 		var full: AudioStream = browser.full_audio if browser.full_audio != null else _audio.stream
 		_audio.stream = full
+		_apply_preview_rate()
 		NowPlaying.set_track(_audio, str(_songs[i].title), str(_songs[i].artist), 0.0, _player_step.bind(-1), _player_step.bind(1), str(_songs[i].path))
 		_audio.play(0.0)
 		return

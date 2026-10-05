@@ -62,6 +62,7 @@ var _watch_ready := false
 var _watch_t := 0.0
 var net                    # 通信層(マルチプレイを開くときに作る。部屋を出ても使い回す)
 var _last_play := {}
+var _play_loader := true           # 選曲からプレイへ進むとき、開始前画面を挟むか(開発用の確認は、直接始める)
 var overlay                # 音量メーター・通知(全画面の上)
 var updater                # アプリ内アップデート(GitHub のリリースを確認する)
 var _update_timer: Timer     # 起動している間の、更新の再確認(UPDATE_RECHECK_SEC ごと)
@@ -94,6 +95,9 @@ func _ready() -> void:
 		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
 			Records.enabled = false
 			Playlist.file_path = "user://dev_playlists.json"   # 確認用の起動は、使う人のプレイリストを書き換えない
+			_play_loader = false   # 確認用の起動は、開始前画面を挟まない(挟むのは、--smoke-loader だけ)
+	if args.has("--smoke-loader"):
+		_play_loader = true
 	var hi := args.find("--hitch")   # 開発用: 長いフレームを記録する。例: -- --hitch 25 --smoke-ui
 	if hi >= 0:
 		var hl := HitchLog.new()
@@ -171,6 +175,12 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-back"):
 		_smoke_back()
+		return
+	if args.has("--smoke-loader"):
+		_smoke_loader()
+		return
+	if args.has("--smoke-preview"):
+		_smoke_preview()
 		return
 	if args.has("--smoke-clear"):
 		_smoke_clear()
@@ -692,7 +702,7 @@ func show_menu(pick := false) -> void:
 		m.song_picked.connect(_on_song_picked)
 		m.back_requested.connect(func(): show_multi())
 	else:
-		m.play_requested.connect(func(l, b, st: Dictionary, pre: Dictionary): start_game(l, b, st, -1.0, -1.0, pre))
+		m.play_requested.connect(func(l, b, st: Dictionary, pre: Dictionary): _on_play_requested(m, l, b, st, pre))
 		m.back_requested.connect(show_title)
 		if m.has_signal("replay_requested"):   # lazer 風の選曲: 記録の再生ボタン
 			m.replay_requested.connect(func(n: String): show_replay(n, func(): show_menu()))
@@ -756,6 +766,22 @@ func _on_mp_result_done() -> void:
 	if net != null and net.is_host():
 		net.return_to_lobby()
 	show_multi()
+
+
+## 選曲で「プレイ」を押した。開始前画面のある UI セットなら、それを挟む(背景は選曲の続き)。なければ、すぐ始める。
+## リトライ・リザルトからのやり直し・リプレイ・マルチプレイは挟まず、start_game を直接呼ぶ。
+func _on_play_requested(menu, loader, bm, settings: Dictionary, pre: Dictionary) -> void:
+	var ld = UiSets.current().make_loader() if _play_loader else null
+	if ld == null:
+		start_game(loader, bm, settings, -1.0, -1.0, pre)
+		return
+	var tex = menu.current_background() if menu.has_method("current_background") else null
+	ld.setup(loader, bm, settings, pre, tex, menu.current_zoom() if menu.has_method("current_zoom") else 1.0)
+	ld.go_requested.connect(func(): start_game(loader, bm, settings, -1.0, -1.0, pre))
+	ld.back_requested.connect(show_menu)
+	_stop_music()
+	SongArt.cancel_all()
+	_swap(ld, true)   # 選曲の発進の演出がそのまま続くので、幕は入れずに切り替える(プレイへ進むときに、幕を入れる)
 
 
 func start_game(loader, bm, settings: Dictionary, debug_seek := -1.0, debug_death_t := -1.0, pre := {}) -> void:
@@ -1187,6 +1213,20 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			cu.debug_pos = at
 			for n in range(30):
 				await get_tree().process_frame
+		"loader":
+			show_menu()   # 開始前画面(lazer 風)。例: --shot loader out.png rush storm(MOD を付ける)。自動では進まない
+			while _current._job_pending or _current._diff_cards.is_empty():
+				await get_tree().process_frame
+			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
+			var info: Dictionary = _current.browser.launch_info()
+			var ld = UiSets.current().make_loader()
+			if ld == null:
+				printerr("この UI セットには、開始前画面がありません(--ui lazer で)")
+				get_tree().quit(1)
+				return
+			ld.auto = false
+			ld.setup(info.loader, info.bm, info.settings, info.pre, _current.current_background(), _current.current_zoom())
+			_swap(ld, true)
 		"mod":
 			show_menu()   # MOD パネル。例: --shot mod out.png rush storm
 			while _current._job_pending or _current._diff_cards.is_empty():   # 曲の読み込みを待つ
@@ -3638,6 +3678,225 @@ func _smoke_back() -> void:
 	var got: String = m2._loader.difficulties[m2._diff_sel].version if m2._diff_sel >= 0 else "-"
 	print("back in menu: song=%s idx=%d '%s'  -> %s" % [m2._songs[m2._song_sel].path.get_file(), m2._diff_sel, got, "OK" if got == want else "MISMATCH"])
 	Settings.restore(original)   # ユーザーの設定を元に戻す
+	get_tree().quit()
+
+
+## 開発用: 選曲の試聴 ① 加速・減速の MOD で、試聴の再生速度が変わる ② 難易度によって音声のファイルが違う曲で、難易度を選ぶと、その音声に替わる。-- --ui lazer --smoke-preview
+## (② は、確認用の .osz を user:// に作る: 同じ音声を a.mp3 / b.mp3 の 2 つの名前で入れ、2 つの難易度がそれぞれを使う)
+func _smoke_preview() -> void:
+	var original := Settings.load_all()
+	var fails := 0
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			fails += 1
+	show_menu()
+	await get_tree().create_timer(0.5).timeout
+	var m = _current
+	while m._job_pending or m._diff_cards.is_empty():
+		await get_tree().process_frame
+	await get_tree().create_timer(0.8).timeout
+	chk.call(m._audio.playing and is_equal_approx(m._audio.pitch_scale, 1.0), "MOD なし: 試聴は等速で流れている")
+	m.settings.mods = ["rush"]
+	m._on_mods_changed()
+	chk.call(is_equal_approx(m._audio.pitch_scale, 1.5) and m._audio.playing, "加速: 試聴が 1.5 倍で流れる(%.3f)" % m._audio.pitch_scale)
+	m.settings.mods = ["slow"]
+	m._on_mods_changed()
+	chk.call(is_equal_approx(m._audio.pitch_scale, 2.0 / 3.0), "減速: 試聴が 2/3 倍で流れる(%.3f)" % m._audio.pitch_scale)
+	m._select_diff(0)
+	m._select_diff(m._diff_cards.size() - 1)
+	chk.call(is_equal_approx(m._audio.pitch_scale, 2.0 / 3.0), "難易度を選び替えても、速さはそのまま")
+	m.settings.mods = []
+	m._on_mods_changed()
+	chk.call(is_equal_approx(m._audio.pitch_scale, 1.0), "MOD を外すと、等速に戻る")
+	# 選曲画面の中でも、難易度を選ぶと試聴が替わる(別の音声のファイル名を持つ難易度を、作り物で用意する)
+	while m._job_pending:   # 上の MOD の入り切りで、曲を読み直していることがある
+		await get_tree().process_frame
+	await get_tree().create_timer(0.5).timeout
+	var bw = m.browser
+	var cur: int = m._diff_sel
+	var other: int = (cur + 1) % bw.loader.difficulties.size()
+	var fake_pv: Dictionary = bw._audio_cache[bw.full_audio_file.to_lower()].duplicate()
+	fake_pv["audio_file"] = "fake_other.mp3"
+	bw._audio_cache["fake_other.mp3"] = fake_pv
+	var keep_name: String = bw.loader.difficulties[other].audio_filename
+	bw.loader.difficulties[other].audio_filename = "fake_other.mp3"
+	m._select_diff(other)
+	chk.call(not m._audio.playing and bw.audio_gone, "別の音声の難易度を選ぶと、いまの試聴が止まる")
+	await get_tree().create_timer(0.3).timeout
+	chk.call(m._audio.playing and bw.full_audio_file == "fake_other.mp3" and not bw.audio_gone, "替わった音声の試聴が流れ始める")
+	m._select_diff(cur)
+	await get_tree().create_timer(0.3).timeout
+	chk.call(m._audio.playing and bw.full_audio_file != "fake_other.mp3", "元の難易度へ戻すと、元の音声が流れる")
+	bw.loader.difficulties[other].audio_filename = keep_name
+	# ② 難易度ごとに音声が違う曲(確認用の .osz を作る)
+	var src := ZIPReader.new()
+	var src_path := _dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
+	if src.open(src_path) != OK:
+		chk.call(false, "元の .osz を開けない: " + src_path)
+	else:
+		var osus: Array = []
+		var audio_name := ""
+		var audio_bytes := PackedByteArray()
+		for f in src.get_files():
+			if f.to_lower().ends_with(".osu") and osus.size() < 2:
+				osus.append(f)
+		var first_text := src.read_file(osus[0]).get_string_from_utf8()
+		for line in first_text.split("
+"):
+			if line.begins_with("AudioFilename:"):
+				audio_name = line.trim_prefix("AudioFilename:").strip_edges()
+		audio_bytes = src.read_file(audio_name)
+		var out_path := "user://smoke_preview.osz"
+		var zp := ZIPPacker.new()
+		zp.open(out_path)
+		var names := ["a." + audio_name.get_extension(), "b." + audio_name.get_extension()]
+		for k in range(2):
+			var text := src.read_file(osus[k]).get_string_from_utf8()
+			var lines := text.split("
+")
+			for li in range(lines.size()):
+				if lines[li].begins_with("AudioFilename:"):
+					lines[li] = "AudioFilename: " + names[k]
+			zp.start_file("d%d.osu" % k)
+			zp.write_file("
+".join(lines).to_utf8_buffer())
+			zp.close_file()
+			zp.start_file(names[k])
+			zp.write_file(audio_bytes)
+			zp.close_file()
+		zp.close()
+		src.close()
+		var real := ProjectSettings.globalize_path(out_path)
+		var l := OszLoader.new()
+		chk.call(l.open(real) and l.difficulties.size() == 2, "確認用の .osz(2 難易度)を開けた")
+		var sb = preload("res://scripts/song_browser.gd").new()
+		sb.loader = l
+		var a0 = l.difficulties[0]
+		var pv0 = sb.preview_of(l.load_audio(a0.audio_filename), int(a0.preview_time), str(a0.audio_filename))
+		sb.full_audio = pv0.audio_full
+		sb.full_audio_file = str(a0.audio_filename)
+		sb._audio_cache[sb.full_audio_file.to_lower()] = pv0
+		chk.call(sb.audio_matches(0) and not sb.audio_matches(1), "難易度 0 は今の音声と同じ・難易度 1 は別のファイル")
+		chk.call(not sb.request_audio(0), "同じ音声なら、何もしない")
+		var got := []
+		sb.audio_switched.connect(func(r): got.append(r))
+		chk.call(sb.request_audio(1) and sb.audio_gone, "別の音声なら、要求して、止めて待つ")
+		var t0 := Time.get_ticks_msec()
+		while got.is_empty() and Time.get_ticks_msec() - t0 < 4000:
+			await get_tree().process_frame
+		chk.call(got.size() == 1 and str(got[0].audio_file) == str(l.difficulties[1].audio_filename) and sb.full_audio_file == str(l.difficulties[1].audio_filename) and not sb.audio_gone, "別スレッドで読み込めて、audio_switched が 1 度届く(%d ms)" % (Time.get_ticks_msec() - t0))
+		chk.call(sb.request_audio(0), "元の難易度へ戻ると、元の音声を流し直す(読み込み済みのものから)")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		chk.call(got.size() == 2 and sb.full_audio_file == str(l.difficulties[0].audio_filename), "戻した音声が届く")
+		sb.request_audio(1)
+		sb.request_audio(0)   # すぐ別の難易度へ変えたら、前の要求の結果は捨てる
+		await get_tree().create_timer(0.6).timeout
+		chk.call(sb.full_audio_file == str(l.difficulties[0].audio_filename) and not sb.audio_gone, "要求を出し直したら、古い結果は使わない(最後の難易度の音声)")
+		l.close()
+		DirAccess.remove_absolute(out_path)
+	print("smoke-preview: ", "OK" if fails == 0 else "%d FAILED" % fails)
+	Settings.restore(original)
+	get_tree().quit()
+
+
+## 開発用: 選曲 →「プレイ」→ 開始前画面 → 自動でプレイへ / Esc で選曲へ戻る / Enter ですぐ進む、を確かめる。-- --ui lazer --smoke-loader
+func _smoke_loader() -> void:
+	var original := Settings.load_all()
+	var fails := 0
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			fails += 1
+	add_child(UiSfx.new())
+	_setup_fade()
+	show_menu()
+	await get_tree().create_timer(0.5).timeout
+	var m = _current
+	while m._job_pending or m._diff_cards.is_empty():
+		await get_tree().process_frame
+	m._select_diff(m._diff_cards.size() - 1)
+	while not m.browser.can_start():
+		await get_tree().process_frame
+	var key := func(code: Key):
+		var ev := InputEventKey.new()
+		ev.keycode = code
+		ev.pressed = true
+		Input.parse_input_event(ev)
+	# 1) 押すと開始前画面が出る。しばらく待つと、自動でプレイ画面へ進む
+	m._start()
+	var t0 := Time.get_ticks_msec()
+	var shots_i := OS.get_cmdline_user_args().find("--shots")   # 例: --shots tmp_loader  →  tmp_loader_0.png ...(「プレイ」を押してからの 0.05 / 0.15 / 0.3 / 0.5 / 0.9 秒)
+	var shot_at := [0.05, 0.15, 0.3, 0.5, 0.9]
+	var shot_k := 0
+	var zooms: Array = []   # 押してから開始前画面が出て 0.6 秒たつまでの、背景の拡大率(1 フレームごと)
+	var t_loader := -1
+	while (_kind != "loader" and Time.get_ticks_msec() - t0 < 3000) or (_kind == "loader" and Time.get_ticks_msec() - t_loader < 600) or (shots_i >= 0 and shot_k < shot_at.size()):
+		await get_tree().process_frame
+		if _kind == "loader" and t_loader < 0:
+			t_loader = Time.get_ticks_msec()
+		var zh = _current.get("_bg_holder")
+		if zh != null:
+			zooms.append(zh.scale.x)
+		if shots_i >= 0 and shot_k < shot_at.size() and (Time.get_ticks_msec() - t0) / 1000.0 >= shot_at[shot_k]:
+			get_viewport().get_texture().get_image().save_png("%s_%d.png" % [OS.get_cmdline_user_args()[shots_i + 1], shot_k])
+			shot_k += 1
+	chk.call(_kind == "loader", "「プレイ」で、開始前画面が出る(幕なしで切り替わる)")
+	var back_step := 0.0   # 戻った量の最大(増え続けるはず)
+	var jump_step := 0.0   # 1 フレームで増えた量の最大
+	for zi in range(1, zooms.size()):
+		back_step = maxf(back_step, zooms[zi - 1] - zooms[zi])
+		jump_step = maxf(jump_step, zooms[zi] - zooms[zi - 1])
+	chk.call(zooms.size() > 10 and back_step < 0.0005 and jump_step < 0.004, "背景の拡大が、選曲から開始前画面まで途切れず・戻らず続く(%d フレーム、戻り最大 %.5f、1 フレームの増え最大 %.5f)" % [zooms.size(), back_step, jump_step])
+	if _kind == "loader":
+		chk.call(_current._pre.has("level") and _current._tex != null, "Lv と背景の画像を受け取っている")
+		t0 = Time.get_ticks_msec()
+		while _kind != "game" and Time.get_ticks_msec() - t0 < 6000:
+			await get_tree().process_frame
+		chk.call(_kind == "game", "待つと自動でプレイ画面へ進む(%d ms)" % (Time.get_ticks_msec() - t0))
+	# 2) リトライは開始前画面を通らない
+	if _kind == "game":
+		_current.retry_requested.emit()
+		await get_tree().create_timer(1.5).timeout
+		chk.call(_kind == "game", "リトライは開始前画面を挟まない")
+	# 3) Esc で選曲へ戻る
+	show_menu()
+	await get_tree().create_timer(0.8).timeout
+	m = _current
+	while m._job_pending or m._diff_cards.is_empty():
+		await get_tree().process_frame
+	while not m.browser.can_start():
+		await get_tree().process_frame
+	m._start()
+	t0 = Time.get_ticks_msec()
+	while _kind != "loader" and Time.get_ticks_msec() - t0 < 3000:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.5).timeout   # 表示してすぐの間は、キーを受けない
+	key.call(KEY_ESCAPE)
+	t0 = Time.get_ticks_msec()
+	while _kind != "menu" and Time.get_ticks_msec() - t0 < 3000:
+		await get_tree().process_frame
+	chk.call(_kind == "menu", "Esc で選曲へ戻る")
+	# 4) Enter ですぐ進む(自動で進むより早く)
+	await get_tree().create_timer(0.8).timeout
+	m = _current
+	while m._job_pending or m._diff_cards.is_empty():
+		await get_tree().process_frame
+	while not m.browser.can_start():
+		await get_tree().process_frame
+	m._start()
+	t0 = Time.get_ticks_msec()
+	while _kind != "loader" and Time.get_ticks_msec() - t0 < 3000:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.5).timeout
+	var t1 := Time.get_ticks_msec()
+	key.call(KEY_ENTER)
+	while _kind != "game" and Time.get_ticks_msec() - t1 < 3000:
+		await get_tree().process_frame
+	chk.call(_kind == "game" and Time.get_ticks_msec() - t1 < 1400, "Enter ですぐプレイ画面へ進む(%d ms)" % (Time.get_ticks_msec() - t1))
+	print("smoke-loader: ", "OK" if fails == 0 else "%d FAILED" % fails)
+	Settings.restore(original)
 	get_tree().quit()
 
 

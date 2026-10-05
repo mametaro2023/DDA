@@ -13,7 +13,6 @@ const LazerQuit = preload("res://scripts/ui/lazer/lazer_quit.gd")
 ## 設定の入口(上のツールバーの歯車)を、この画面が持っている。main は、右上の「設定」ボタンを出さない(ui_set.gd の契約)
 var own_settings_button := true
 
-var _drift: Tween
 var _toolbar: Control
 
 
@@ -23,7 +22,6 @@ func _build_backdrop() -> void:
 	var b := LazerChrome.build_backdrop(self)
 	_bg_holder = b.holder
 	_bg = b.layers[0]
-	_drift = b.drift
 	_ambient = null   # 漂うリングはなし(視差は背景だけ)
 
 

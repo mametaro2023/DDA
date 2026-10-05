@@ -80,6 +80,16 @@ static func read_objects(p: String, file: String) -> Array:
 	return bm.hit_objects if bm != null else []
 
 
+## p の中の音声ファイル name を読み込む(開き直すので、別スレッドから呼んでも、使っている OszLoader と干渉しない)。読めなければ null。
+static func load_audio_at(p: String, name: String) -> AudioStream:
+	var l := new()
+	if not l._open_container(p):
+		return null
+	var a := l.load_audio(name)
+	l.close()
+	return a
+
+
 func open(p: String) -> bool:
 	if not _open_container(p):
 		return false

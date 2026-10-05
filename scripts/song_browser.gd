@@ -15,6 +15,9 @@ signal song_load_failed(error: String, bad: int)
 signal song_reloading
 ## 選んでいる曲の、k 番の譜面の弾幕(発射の一覧を含む全部)が、そろった(統計だけだった弾幕が、プレイに使える形になった)。画面は、プレイを押せるようにする
 signal gen_ready(k: int)
+## 選んだ難易度の音声が、いま流れている音声と別のファイルで、読み込めた(res は song_loaded の res と同じ audio・audio_from・audio_offset・audio_full・audio_file)。
+## request_audio が true を返したあとに、必ず 1 度届く(読み込めなかったときは届かない)。画面は、試聴を流し直す
+signal audio_switched(res: Dictionary)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
@@ -42,6 +45,8 @@ var job_pending := false        # 読み込み中か
 var prev_sel := -1              # 読み込み中の曲を選ぶ前に選んでいた曲(読めなかったときに戻す)
 var full_audio: AudioStream     # 選んでいる曲の、全体の音声(試聴用は途中から切り出したもの。プレイ画面へ渡す)
 var full_audio_file := ""
+## 難易度の音声が別のファイルだったので、試聴を止めて、新しい音声を待っている間 true(画面が止めたあと、audio_switched で流し直す)
+var audio_gone := false
 
 var _song_keys := {}            # key → songs の番号(重複の確認が、曲が何千あっても速いように)
 var _song_key2s := {}           # key2(名前|大きさ) → 番号
@@ -53,6 +58,8 @@ var auto_sel_idx := -1          # 自動で選んだ曲の番号(その曲のま
 var _restore_key := ""          # 一覧を作り直す間、選んでいた曲(足し直されたときに、選択を戻す)
 var _reload_keep := ""          # 弾幕の作り方が変わって読み直すとき: 選んでいた難易度の version(空なら、ふつうの選曲)
 var _closed := false
+var _audio_job := 0             # 難易度ごとの音声の読み込みの通し番号。最新のものだけ使う
+var _audio_cache := {}          # 音声のファイル名 → 試聴の用意(選んでいる曲のぶん。同じ曲の中で、難易度を行き来しても読み直さない)
 var _full_pending := {}         # 発射の一覧を用意している譜面の番号(ensure_full)
 static var loading_now := false   # 曲を読み込み中か(裏の準備は、この間は待つ)
 static var _pruned := false     # 保存した譜面の整理(ChartCache.prune)を、もうしたか(起動のあと 1 回)
@@ -465,6 +472,11 @@ func _on_load_done(res: Dictionary) -> void:
 		SongArt.set_levels(str(songs[song_sel].md5), gens_v2, res.levels)   # 測った Lv を残す(難易度順・難易度の表示に使う)
 	full_audio = res.audio_full
 	full_audio_file = str(res.audio_file)
+	_audio_job += 1   # 前の曲の、難易度ごとの音声の読み込みは捨てる
+	audio_gone = false
+	_audio_cache.clear()
+	if res.audio_full != null:
+		_audio_cache[full_audio_file.to_lower()] = _preview_of_res(res)
 	# 曲を移ったときは、前に選んでいた難易度に Lv がいちばん近いものを選ぶ(Lv 7 を遊んでいる人が、曲を変えるたびに易しい譜面に戻らない)。最初の 1 回は 3 番目
 	var prev_lv := -1.0
 	if diff_sel >= 0 and diff_sel < ratings.size():
@@ -514,6 +526,53 @@ func select_diff(i: int) -> int:
 	return old
 
 
+## k 番の難易度の音声が、いま用意している音声(full_audio)と同じファイルか。同じ曲でも、難易度によって、使う音声が違うことがある。
+func audio_matches(k: int) -> bool:
+	if loader == null or k < 0 or k >= loader.difficulties.size():
+		return true
+	return str(loader.difficulties[k].audio_filename).to_lower() == full_audio_file.to_lower()
+
+
+## k 番の難易度の音声に合わせる。別のファイルなら読み込んで(別スレッド。読み込み済みなら、すぐ)、full_audio を入れ替えて audio_switched を出し、true を返す
+## (画面は、試聴を止めて、audio_switched を待つ)。同じファイルなら false。ただし、止めたまま待っているときに、同じ音声へ戻ったら、それを流し直すために true。
+func request_audio(k: int) -> bool:
+	if loader == null or k < 0 or k >= loader.difficulties.size():
+		return false
+	_audio_job += 1   # 前の要求は、もう要らない
+	var bm = loader.difficulties[k]
+	var file := str(bm.audio_filename)
+	if audio_matches(k) and not audio_gone:
+		return false
+	if _audio_cache.has(file.to_lower()):
+		_apply_audio.call_deferred(_audio_job, _audio_cache[file.to_lower()])
+		audio_gone = true
+		return true
+	audio_gone = true
+	var my := _audio_job
+	var p := str(loader.path)
+	var ms := int(bm.preview_time)
+	var me: WeakRef = weakref(self)
+	WorkerThreadPool.add_task(func():
+		var a: AudioStream = OszLoader.load_audio_at(p, file)
+		var pv := {} if a == null else preview_of(a, ms, file)
+		var target: Object = me.get_ref()
+		if target != null:
+			target._apply_audio.call_deferred(my, pv))
+	return true
+
+
+func _apply_audio(job_id: int, pv: Dictionary) -> void:
+	if _closed or job_id != _audio_job:   # 画面を離れた / 別の難易度・曲を選び直した
+		return
+	if pv.is_empty():   # 読み込めなかった(試聴は止まったまま)
+		return
+	_audio_cache[str(pv.audio_file).to_lower()] = pv
+	full_audio = pv.audio_full
+	full_audio_file = str(pv.audio_file)
+	audio_gone = false
+	audio_switched.emit(pv)
+
+
 ## 選択中の難易度の、MOD 適用後の Lv(難易度がなければ -1)。
 func selected_level() -> float:
 	if diff_sel < 0 or diff_sel >= ratings.size():
@@ -544,7 +603,7 @@ func remember_selection() -> void:
 ## プレイ画面へ渡すもの {loader, bm, settings, pre, level}。pre は、選曲のときに作っておいたもの(弾幕・曲全体の音声)で、プレイ画面が作り直さず(読み直さず)に使う。
 func launch_info() -> Dictionary:
 	var bm = loader.difficulties[diff_sel]
-	var pre := {"gen": gens[diff_sel]}
+	var pre := {"gen": gens[diff_sel], "level": float(ratings[diff_sel].level)}   # level: 開始前画面に出す、MOD 適用後の Lv
 	if full_audio != null and bm.audio_filename == full_audio_file:
 		pre["audio"] = full_audio
 	return {"loader": loader, "bm": bm, "settings": settings, "pre": pre, "level": float(ratings[diff_sel].level)}
@@ -766,8 +825,13 @@ static func load_song(path: String, mod_params: Dictionary, want_full := false) 
 	var levels := {}   # 譜面の識別子 → MOD なしの Lv(SongArt に残して、難易度順・難易度の表示に使う)
 	for k in range(gens_out.size()):
 		levels[str(l.difficulties[k].md5)] = float(gens_out[k].level)
-	var audio: AudioStream = l.load_audio(first.audio_filename)
-	var from := maxf(first.preview_time / 1000.0, 0.0)
+	var pv := preview_of(l.load_audio(first.audio_filename), int(first.preview_time), str(first.audio_filename))
+	return {"ok": true, "loader": l, "gens": gens_out, "v2": v2, "ratings": ratings_out, "levels": levels, "image": image, "audio": pv.audio, "audio_from": pv.audio_from, "audio_offset": pv.audio_offset, "audio_full": pv.audio_full, "audio_file": pv.audio_file}
+
+
+## 試聴の用意: 音声 audio(全体)と、試聴の始まりの時刻(ms)から、{audio(流すもの), audio_from(流し始める秒), audio_offset(曲の頭からのずれ), audio_full, audio_file}。
+static func preview_of(audio: AudioStream, preview_ms: int, file: String) -> Dictionary:
+	var from := maxf(preview_ms / 1000.0, 0.0)
 	var full: AudioStream = audio
 	var cropped := crop_mp3(audio, from)
 	var offset := 0.0   # 試聴の音声が、曲の頭から何秒ずれているか(切り出したときだけ。上のプレイヤーが、曲の時刻で表示するのに使う)
@@ -775,7 +839,11 @@ static func load_song(path: String, mod_params: Dictionary, want_full := false) 
 		audio = cropped
 		offset = from
 		from = 0.0
-	return {"ok": true, "loader": l, "gens": gens_out, "v2": v2, "ratings": ratings_out, "levels": levels, "image": image, "audio": audio, "audio_from": from, "audio_offset": offset, "audio_full": full, "audio_file": first.audio_filename}
+	return {"audio": audio, "audio_from": from, "audio_offset": offset, "audio_full": full, "audio_file": file}
+
+
+static func _preview_of_res(res: Dictionary) -> Dictionary:
+	return {"audio": res.audio, "audio_from": res.audio_from, "audio_offset": res.audio_offset, "audio_full": res.audio_full, "audio_file": res.audio_file}
 
 
 ## 全難易度の弾幕を作って、Lv(同じなら本家★)の低い順に並べる。l.difficulties も同じ並びにする。戻り値: {gens, order(元の並びでの番号)}。

@@ -52,6 +52,12 @@ func make_result() -> Control:
 	return null
 
 
+## 開始前画面(ひとりプレイを始める前に挟む。null ならこの UI セットには無く、すぐ始める)。
+## setup(loader, bm, settings, pre, bg: Texture2D, zoom: float) / signal go_requested / signal back_requested
+func make_loader() -> Control:
+	return null
+
+
 func make_options() -> Control:
 	return null
 

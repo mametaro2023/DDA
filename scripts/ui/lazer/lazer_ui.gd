@@ -13,6 +13,7 @@ const LazerHowto = preload("res://scripts/ui/lazer/lazer_howto.gd")
 const LazerMods = preload("res://scripts/ui/lazer/lazer_mods.gd")
 const LazerQuit = preload("res://scripts/ui/lazer/lazer_quit.gd")
 const LazerUpdate = preload("res://scripts/ui/lazer/lazer_update.gd")
+const LazerLoader = preload("res://scripts/ui/lazer/lazer_loader.gd")
 
 
 func id() -> String:
@@ -50,6 +51,10 @@ func make_game() -> Node:
 
 func make_result() -> Control:
 	return LazerResult.new()
+
+
+func make_loader() -> Control:
+	return LazerLoader.new()
 
 
 func make_menu(pick: bool) -> Control:

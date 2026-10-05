@@ -354,6 +354,8 @@ func _exit_tree() -> void:
 # --- 下のフッターと、入場の演出 ---
 
 func _build_footer_buttons() -> void:
+	if bool(stats.get("video", false)):   # リプレイの動画の最後に撮るときは、ボタンを出さない
+		return
 	if stats.has("mp"):   # マルチプレイ: ロビーへ戻る(リトライはない)
 		var lobby := _footer_button("ロビーへ", LazerStyle.PINK, "back", 0, 200, func(): menu_requested.emit())
 		lobby.set_meta("juice_sound", "back")

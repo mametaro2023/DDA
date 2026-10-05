@@ -47,6 +47,7 @@ func _ready() -> void:
 	_panel = PanelContainer.new()
 	_panel.position = Vector2(150, 36)
 	_panel.size = Vector2(980, 648)
+	_panel.clip_contents = true   # 中身(フォントの幅が広い UI でも)が、パネルの外へ出ないように
 	_panel.add_theme_stylebox_override("panel", UiStyle.box(UiStyle.PANEL, UiStyle.LINE, 1, 8, 0, 0))
 	add_child(_panel)
 	var margin := MarginContainer.new()
@@ -105,6 +106,8 @@ func _ready() -> void:
 	_count_l = UiStyle.label("", 13, UiStyle.TEXT_DIM)
 	_count_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_count_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_count_l.clip_text = true   # 長い文で、パネルが広がらないように
+	_count_l.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	foot.add_child(_count_l)
 	var open_b := Button.new()
 	open_b.text = "保存先のフォルダを開く"
@@ -210,10 +213,15 @@ func _make_row(i: int, m: Dictionary) -> PanelContainer:
 	title.clip_text = true
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	info.add_child(title)
+	var sub_clip := Control.new()   # 2 行目(作者・難易度・Lv・MOD)は、長いと切る(行の幅を広げて、パネルからはみ出さないように)
+	sub_clip.clip_contents = true
+	sub_clip.custom_minimum_size = Vector2(0, 22)
+	sub_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	info.add_child(sub_clip)
 	var sub := HBoxContainer.new()
 	sub.add_theme_constant_override("separation", 8)
 	sub.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	info.add_child(sub)
+	sub_clip.add_child(sub)
 	sub.add_child(UiStyle.label(str(m.artist), 12, UiStyle.TEXT_DIM))
 	sub.add_child(UiStyle.label(str(m.diff), 12, UiStyle.ACCENT))
 	sub.add_child(UiStyle.label("Lv %.2f" % float(m.level), 12, UiStyle.level_color(float(m.level))))

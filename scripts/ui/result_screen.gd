@@ -220,6 +220,8 @@ func _ready() -> void:
 	var specs: Array = [["ロビーへ", menu_requested, true]] if stats.has("mp") else [["リトライ", retry_requested, false], ["メニューへ", menu_requested, true]]
 	if not stats.has("mp") and str(stats.get("replay", "")) != "":
 		specs.insert(1, ["リプレイ", replay_requested, false])   # このプレイの記録を見返す(P キーでも)
+	if bool(stats.get("video", false)):   # リプレイの動画の最後に撮るときは、ボタンを出さない
+		specs = []
 	for spec in specs:
 		var b := Button.new()
 		b.text = spec[0]

@@ -31,7 +31,7 @@ var remotes: Array = []
 ## 再開の待ち(ポーズから戻る前): 自機と、その周りの輪だけを描く(弾・予兆・軌道・危険エリアは見せない)。wait_t は輪を動かす時間(秒)
 var ship_only := false
 var wait_t := 0.0
-## リプレイ: 自機の軌道(記録した全フレームの位置と時刻)。trail_mode 0 = 出さない / 1 = 過去 trail_sec 秒の尾 / 2 = 過去の尾 + 未来 trail_sec 秒の予定線
+## リプレイ: 自機の軌道(記録した全フレームの位置と時刻)。trail_mode 0 = 出さない / 1 = 過去 trail_sec 秒の尾
 var trail_pts := PackedVector2Array()
 var trail_ts := PackedFloat64Array()
 var trail_mode := 0
@@ -104,52 +104,69 @@ func _draw_under() -> void:
 		_draw_player_body()
 
 
-## リプレイ: 自機の軌道。過去は、新しいほど濃く太い線(尾)。未来(モード 2)は、細い点線。
+## リプレイ: 自機の軌道(過去 trail_sec 秒)。自機の尾と同じ作りの、1 本の帯(古いほど細く薄い)。
+## 記録の点は 1 フレームごとで細かく折れるので、間引いてから角を丸め(Chaikin)、帯の幅と透明度を頂点ごとに変えてつなぐ(線分の重なりによる縞・ギザギザを出さない)。
 func _draw_replay_trail() -> void:
 	if trail_mode == 0 or trail_pts.size() < 2:
 		return
 	var i_now := _upper(now)
 	var i_past := _upper(now - trail_sec)
-	if i_now - i_past >= 1:
-		var span := float(i_now - i_past)
-		var line := PackedVector2Array()
+	var pts := PackedVector2Array()
+	var ts := PackedFloat32Array()
+	for k in range(i_past, i_now + 1):
+		var q: Vector2 = trail_pts[k]
+		if pts.is_empty() or q.distance_squared_to(pts[pts.size() - 1]) >= 9.0:   # 3 px より近い点は間引く
+			pts.append(q)
+			ts.append(float(trail_ts[k]))
+	var tip: Vector2 = sim.player_pos   # 帯の先は、いまの自機の位置につなぐ
+	if pts.is_empty() or tip.distance_squared_to(pts[pts.size() - 1]) >= 1.0:
+		pts.append(tip)
+		ts.append(now)
+	for _pass in range(2):   # 角を丸める(端は、そのまま残す)
+		if pts.size() < 3:
+			break
+		var np := PackedVector2Array([pts[0]])
+		var nt := PackedFloat32Array([ts[0]])
+		for k in range(pts.size() - 1):
+			np.append(pts[k].lerp(pts[k + 1], 0.25))
+			np.append(pts[k].lerp(pts[k + 1], 0.75))
+			nt.append(lerpf(ts[k], ts[k + 1], 0.25))
+			nt.append(lerpf(ts[k], ts[k + 1], 0.75))
+		np.append(pts[pts.size() - 1])
+		nt.append(ts[ts.size() - 1])
+		pts = np
+		ts = nt
+	if pts.size() >= 2:
+		var c := own_color
+		var left := PackedVector2Array()
+		var right := PackedVector2Array()
 		var cols := PackedColorArray()
-		var glow := PackedColorArray()
-		for k in range(i_past, i_now + 1):
-			var q: Vector2 = trail_pts[k]
-			if not line.is_empty() and q.distance_squared_to(line[line.size() - 1]) < 1.0:
-				continue   # ほぼ同じ位置の点は、重ねない(長さ 0 の線分は、太い線の描画を壊す)
-			var u := float(k - i_past) / span   # 0(古い)→ 1(いま)
-			line.append(q)
-			cols.append(Color(0.55, 0.9, 1.0, 0.1 + 0.8 * u * u))
-			glow.append(Color(0.4, 0.8, 1.0, 0.04 + 0.2 * u * u))
-		if line.size() >= 2:
-			draw_polyline_colors(line, glow, 7.0, true)
-			draw_polyline_colors(line, cols, 2.5, true)
-	if trail_mode >= 2:
-		var i_fut := _upper(now + trail_sec)
-		var k := i_now
-		var total := float(maxi(i_fut - i_now, 1))
-		while k + 1 <= i_fut:   # 点線(3 点ごとに 1 本。遠いほど薄い)
-			var u := float(k - i_now) / total
-			var p0: Vector2 = trail_pts[k]
-			var p1: Vector2 = trail_pts[k + 1]
-			if p0.distance_squared_to(p1) >= 1.0:
-				draw_line(p0, p1, Color(1.0, 0.82, 0.4, 0.75 * (1.0 - 0.7 * u)), 1.6, true)
-			k += 3
-	# 被弾した位置の印(軌道が出ている範囲だけ。過去は薄れていき、未来は「ここで当たる」と分かる)
-	var h0 := _lower_hit(now - trail_sec)
-	for h in range(h0, hit_ts.size()):
+		for k in range(pts.size()):
+			var dir: Vector2 = pts[mini(k + 1, pts.size() - 1)] - pts[maxi(k - 1, 0)]
+			var nrm := (dir.normalized() if dir.length() > 0.001 else Vector2.UP).orthogonal()
+			var u := clampf(1.0 - (now - ts[k]) / maxf(trail_sec, 0.1), 0.0, 1.0)   # 0(古い)→ 1(いま)
+			var half := 0.3 + 1.5 * u
+			left.append(pts[k] + nrm * half)
+			right.append(pts[k] - nrm * half)
+			cols.append(Color(c.r, c.g, c.b, 0.62 * u * u))
+		for k in range(1, pts.size()):
+			for tri in [[left[k - 1], left[k], right[k], cols[k - 1], cols[k], cols[k]], [left[k - 1], right[k], right[k - 1], cols[k - 1], cols[k], cols[k - 1]]]:
+				var ta: Vector2 = tri[0]
+				var tb: Vector2 = tri[1]
+				var tc: Vector2 = tri[2]
+				if absf((tb - ta).cross(tc - ta)) > 0.01:
+					draw_primitive(PackedVector2Array([ta, tb, tc]), PackedColorArray([tri[3], tri[4], tri[5]]), PackedVector2Array())
+	# 被弾した位置の印(軌道が出ている範囲だけ。古いほど薄い)
+	for h in range(_lower_hit(now - trail_sec), hit_ts.size()):
 		var ht: float = hit_ts[h]
-		if ht > now + (trail_sec if trail_mode >= 2 else 0.0):
+		if ht > now:
 			break
 		var q: Vector2 = trail_pts[_upper(ht)]
-		var u := clampf((now - ht) / maxf(trail_sec, 0.1), -1.0, 1.0)   # 過去 0..1(古いほど大きい) / 未来 -1..0
-		var a := 0.95 - 0.55 * maxf(u, 0.0) - 0.25 * maxf(-u, 0.0)
-		var c := Color(1.0, 0.36, 0.42, a)
-		draw_arc(q, 11.0, 0.0, TAU, 24, Color(c.r, c.g, c.b, a * 0.6), 1.6, true)
-		draw_line(q + Vector2(-6, -6), q + Vector2(6, 6), c, 2.4, true)
-		draw_line(q + Vector2(-6, 6), q + Vector2(6, -6), c, 2.4, true)
+		var a := 0.9 * clampf(1.0 - (now - ht) / maxf(trail_sec, 0.1), 0.0, 1.0)
+		var hc := Color(1.0, 0.36, 0.42, a)
+		draw_arc(q, 9.0, 0.0, TAU, 24, Color(hc.r, hc.g, hc.b, a * 0.55), 1.4, true)
+		draw_line(q + Vector2(-4.5, -4.5), q + Vector2(4.5, 4.5), hc, 2.0, true)
+		draw_line(q + Vector2(-4.5, 4.5), q + Vector2(4.5, -4.5), hc, 2.0, true)
 
 
 ## hit_ts の中で、時刻 t 以降の最初の番号(なければ hit_ts.size())。
@@ -567,6 +584,8 @@ func _make_line_group(points: PackedVector2Array, color: Color, width: float) ->
 func _update_trail() -> void:
 	if now == _trail_now:
 		return
+	if now < _trail_now or now - _trail_now > 0.25:   # 時刻が戻った・跳んだ(リプレイで飛んだ): 前の尾は捨てる(残すと、古い位置から太い帯が伸びる)
+		_trail.clear()
 	_trail_now = now
 	var p: Vector2 = sim.player_pos
 	var moved := 0.0

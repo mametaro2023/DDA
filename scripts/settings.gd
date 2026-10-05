@@ -28,8 +28,8 @@ const DEFAULTS := {
 	"replay_save": true, # ひとりで遊んだプレイを、リプレイとして自動で保存する(scripts/replay.gd。直近 30 件。記録に載ったものは残す)
 	"speed_study": false, # 弾速の実験に参加する(scripts/speed_study.gd。ひとりで遊ぶとき、弾速などを変えた弾幕で遊び、結果を user://speed_study.csv に記録する)
 	"song_sort": "title", # 選曲の並び順(song_browser.gd の SORT_MODES の id。lazer 風の選曲画面)
-	"ui_style": "classic", # UI の見た目(scripts/ui/ui_sets.gd の名前。知らない名前のときは classic)
-	"ui_promo_hidden": false, # クラシックのタイトルの「新しい UI で遊ぼう」を出さない(✕ で閉じた・一度試した)
+	"ui_style": "lazer", # UI の見た目(scripts/ui/ui_sets.gd の名前。知らない名前のときは lazer)
+	"ui_default_migrated": true, # 既定の UI を lazer にしたときの、一度きりの引き継ぎが済んだか(下の load_all。新しく作る設定は、最初から済み)
 	"osu_songs": false,   # osu! の Songs フォルダの曲も、一覧に加える(コピーせず、その場で読む。scripts/song_library.gd)
 	"osu_songs_dir": "",  # その Songs フォルダ。空なら osu! の標準の場所から探す
 	"mirror_consent": false, # マルチプレイで曲を、非公式のミラーサイトからダウンロードすることに同意した(最初のダウンロードのときに聞く)
@@ -44,6 +44,12 @@ static func load_all() -> Dictionary:
 			out[k] = cfg.get_value("game", k, DEFAULTS[k])
 		# 弾幕 v2 は初期状態になった(旧版の MOD「弾幕 v2」は、もう無い)
 		out.mods = (out.mods as Array).filter(func(id): return str(id) != "v2")
+		# 既定の UI を lazer にした: classic を「自分で選んだ」のではない人(既定のまま。宣伝カードを閉じても試してもいない)は、一度だけ lazer にする。
+		# 選び直した人(ui_promo_hidden が true、または引き継ぎ後に classic へ戻した人)は、そのまま。
+		if not bool(cfg.get_value("game", "ui_default_migrated", false)):
+			out.ui_default_migrated = true
+			if str(out.ui_style) == "classic" and not bool(cfg.get_value("game", "ui_promo_hidden", false)):
+				out.ui_style = "lazer"
 		# 旧版の「練習モード」の設定は、MOD「練習」に引き継ぐ
 		if bool(cfg.get_value("game", "practice", false)) and not (out.mods as Array).has("practice"):
 			var ms: Array = (out.mods as Array).duplicate()

@@ -95,6 +95,7 @@ func _ready() -> void:
 		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
 			Records.enabled = false
 			Playlist.file_path = "user://dev_playlists.json"   # 確認用の起動は、使う人のプレイリストを書き換えない
+			UiSets.override_id = "classic"   # 確認用の起動は、内部の変数を見る確認が多いので classic が既定(--ui で変えられる。下)
 			_play_loader = false   # 確認用の起動は、開始前画面を挟まない(挟むのは、--smoke-loader だけ)
 	if args.has("--smoke-loader"):
 		_play_loader = true
@@ -105,7 +106,7 @@ func _ready() -> void:
 			hl.threshold_ms = float(args[hi + 1])
 		hl.screen_of = func() -> String: return str(_current.get("kind")) if is_instance_valid(_current) else ""
 		add_child(hl)
-	var ui_i := args.find("--ui")   # 例: -- --ui classic(設定の ui_style を、この起動だけ上書きする)
+	var ui_i := args.find("--ui")   # 例: -- --ui lazer(設定の ui_style を、この起動だけ上書きする。確認用の起動の既定は classic)
 	if ui_i >= 0 and args.size() > ui_i + 1:
 		UiSets.override_id = args[ui_i + 1]
 	var ri := args.find("--replay-export")   # 動画の書き出しの子プロセス(親が --write-movie 付きで起動する)。-- --replay-export <ファイル> <軌道のモード> <軌道の秒> --chart <曲の場所>
@@ -662,8 +663,6 @@ func show_title(open_replays := false) -> void:
 	t.multi_requested.connect(show_multi)
 	t.replays_requested.connect(func(): _open_replay_list(t))
 	t.settings_requested.connect(open_settings)
-	if t.has_signal("ui_try_requested"):   # クラシックのタイトルの「新しい UI で遊ぼう」
-		t.ui_try_requested.connect(_try_ui)
 	t.update_requested.connect(func():
 		var p = UiSets.current().make_update()
 		p.setup(updater)
@@ -681,18 +680,6 @@ func _open_replay_list(t) -> void:
 	var p = UiSets.current().make_replays()
 	p.replay_requested.connect(func(name: String): show_replay(name, func(): show_title(true)))
 	t.open_panel(p)
-
-
-## 別の UI セットを試す: 設定の UI の見た目を変えて保存し、タイトルをその見た目で作り直す(幕の切り替えで)。
-## 一度試したら、「新しい UI で遊ぼう」は出さない(設定の「画面」で戻した人に、また勧めない)。
-func _try_ui(ui_id: String) -> void:
-	var st := Settings.load_all()
-	st.ui_style = ui_id
-	st.ui_promo_hidden = true
-	Settings.save_all(st)
-	UiSets.override_id = ""   # 起動オプション --ui の上書きより、選んだものを使う
-	UiSets.current()
-	show_title()
 
 
 func show_menu(pick := false) -> void:
@@ -3954,6 +3941,7 @@ func _smoke_kiai() -> void:
 ##   起動 → タイトル(曲が流れる)→ 遊び方を開閉 → 設定を開閉 → プレイ → 選曲画面 → Esc → タイトル
 ## 開発用: 設定で UI の見た目を切り替えると、いまのタイトルが新しい見た目で作り直される(戻すと、また戻る)。-- --smoke-uiswitch
 func _smoke_uiswitch() -> void:
+	UiSets.override_id = ""   # 開発用の確認の既定(classic)で、設定の切り替えを邪魔しない
 	var original := Settings.load_all()
 	var st := original.duplicate()
 	st.ui_style = "classic"
@@ -3973,24 +3961,6 @@ func _smoke_uiswitch() -> void:
 	close_settings()
 	await get_tree().create_timer(1.0).timeout
 	print("classic: %s (expect title_screen.gd)" % _current.get_script().resource_path.get_file())
-	# クラシックのタイトルの「新しい UI で遊ぼう」: 出ている → 「試してみる」で lazer 風になり、次からは出ない
-	var st2 := Settings.load_all()
-	st2.ui_promo_hidden = false
-	Settings.save_all(st2)
-	show_title()
-	await get_tree().create_timer(1.2).timeout
-	var t = _current
-	print("promo:   shown=%s (expect true)" % str(t._promo != null))
-	t.ui_try_requested.emit("lazer")
-	await get_tree().create_timer(1.2).timeout
-	var st3 := Settings.load_all()
-	print("tried:   %s ui_style=%s promo_hidden=%s (expect lazer_title.gd, lazer, true)" % [_current.get_script().resource_path.get_file(), st3.ui_style, str(st3.ui_promo_hidden)])
-	st3.ui_style = "classic"
-	Settings.save_all(st3)
-	UiSets.current()
-	show_title()
-	await get_tree().create_timer(1.2).timeout
-	print("back:    %s promo_shown=%s (expect title_screen.gd, false)" % [_current.get_script().resource_path.get_file(), str(_current._promo != null)])
 	Settings.restore(original)
 	get_tree().quit()
 

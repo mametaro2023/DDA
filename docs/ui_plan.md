@@ -17,7 +17,7 @@
 | (新規) | `UiStyle` の色・フォントを `set_palette` で差し替え可能に(classic の値は不変)。lazer のあいだは、未作成の部品(遊び方・MOD・終了確認・更新)も lazer の配色で描かれる |
 | P3 土台 | `lazer/lazer_style.gd`(色・フォント・テーマ)、`lazer_chrome.gd`・`lazer_frame.gd`(ツールバー・フッター・背景・側面パネル・トグル・スライダー)、`lazer_button.gd`(斜めのボタン)、`lazer_icons.gd`(線画のアイコン)、`lazer_logo.gd`(ロゴ) |
 | P4 画面 | タイトル・選曲・プレイ(HUD)・リザルト・マルチ(入口とロビー)・設定・遊び方・MOD・確認・更新を lazer 風に。パネルは classic のパネルを継承し、中身の処理はそのままで見た目だけを差し替える(遊び方 = 設定と同じ左の縦長パネル `lazer_howto.gd`、MOD = 下からせり上がる札のシート `lazer_mods.gd`、確認・更新 = 丸いアイコンつきのダイアログ `lazer_dialog.gd` / `lazer_quit.gd` / `lazer_update.gd`)。プレイ中の休憩のカウントダウン・ボスのゲージと WARNING(`lazer_boss_gauge.gd`)・ボーナスタイムも lazer 風 |
-| P5 切り替え | 設定の「画面」に、UI の見た目の選択を追加(選ぶと、タイトル・選曲はすぐ作り直される)。既定は classic(**lazer を既定にする時期は未定**) |
+| P5 切り替え | 設定の「画面」に、UI の見た目の選択を追加(選ぶと、タイトル・選曲はすぐ作り直される)。既定は lazer(設定 `ui_default_migrated` で、旧版の既定のままの人を一度だけ引き継ぐ) |
 | P6 記録・検索・並び替え | `scripts/records.gd`(`user://records.json`)、`SongBrowser` の `view()`(検索・並び替え。記録を使う「ランク」順もある)・`chart_view()`(「難易度」順。曲ではなく譜面ごとに並べる)。lazer 風の選曲に反映(classic の選曲画面には、まだ出していない) |
 
 `UiSet` の契約に `make_howto` / `make_mods` / `make_quit` を追加(`tests/test_ui_contract.gd` が両方の UI セットで確かめる)。マルチ画面の確認パネルは `_make_confirm()` で差し替える。
@@ -252,7 +252,7 @@ UI を持たない。`RefCounted` + signal。画面は購読して描くだけ�
 4. **フォント:** 任せる。方針: 標準フォント + OS のフォールバックを土台にし、あとから同梱を検討する(P3 で判断)。
 5. **背景:** 曲の背景画像を暗く表示する。ぼかしは入れない。
 6. **記録の保存・選曲の検索と並び替え:** 実装する。UI の刷新とは別の仕事として、`SongBrowser` の上に載せる(P6)。
-7. **lazer を既定にする時期:** 未定。当面は classic が既定。
+7. **lazer を既定にする時期:** 既定にした(新しい人は最初から lazer。旧版で classic のまま・宣伝カードを操作していない人は、一度だけ lazer に引き継ぐ)。「新しい UI で遊ぼう」のカードは廃止。classic の削除は、この後の別作業。
 8. **アリーナ:** 縮小しない(拡大率 1.0。位置だけ)。
 9. **ロゴ:** 作り込む(自作ロゴ。osu! のロゴは使わない)。2026-10-04: ゲームの名前を「Danmaku」に決定。副題(DANMAKU DODGER)は廃止し、ロゴは「Danmaku」の文字と、弾幕の扇・自機を描いた円盤に作り直した(`lazer_logo.gd`。クラシックのタイトルも「Danmaku」)。
 

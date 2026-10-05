@@ -3,9 +3,9 @@ extends RefCounted
 ##
 ## ## ゲージ制
 ## 弾に当たっている間は継続ダメージ。ゲージ満タンは GAUGE_DRAIN_TIME(250ms)ぶんの被弾に相当する。
-## ゲージが GAUGE_LOW_THRESHOLD(20%)以下のときは被ダメージが半分になる(連続被弾で 0 になるまで合計約 300ms)。
+## ゲージが GAUGE_LOW_THRESHOLD(20%。MOD「天国」は 35%)以下のときは被ダメージが半分になる(連続被弾で 0 になるまで合計約 300ms。MOD「地獄」では半減しない)。
 ## ゲージが 0 になったらゲームオーバー(練習モードでは 0 でも続行)。
-## 当たっていないときは、ごくわずかに回復する(GAUGE_REGEN /秒)。
+## 当たっていないときは、ごくわずかに回復する(GAUGE_REGEN /秒。MOD「無回復」では回復しない)。
 ##
 ## ## 危険エリア(デバフ)
 ## 盤面を 3×3 の 9 マスに分け、特定の小節ごとに、いくつかのマス(1〜8)が「危険エリア」になる(PatternGen が譜面から決めて、gen.zones で渡す。
@@ -145,7 +145,9 @@ var debug_invincible := false
 var end_time := 0.0
 ## MOD で変わる設定(既定は MOD なし)
 var drain_time := GAUGE_DRAIN_TIME    # ゲージ満タンぶんの被弾時間(秒)
-var low_protect := true               # ゲージ 20% 以下で被ダメージが半分になるか
+var low_protect := true               # ゲージが low_threshold 以下で被ダメージが半分になるか
+var low_threshold := GAUGE_LOW_THRESHOLD   # その境目(MOD「天国」で 35%)
+var regen := true                     # 被弾していないときの自然回復(MOD「無回復」で false)
 var score_base := SCORE_BASE          # ベーススコア(MOD で増える)
 var player_scale := 1.0                # 自機サイズの倍率(MOD)
 var player_r := PLAYER_HIT_R          # 自機の当たり判定半径(= PLAYER_HIT_R × player_scale)
@@ -246,6 +248,8 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 	track_fires = bool(mods.get("dark", false))
 	drain_time = float(mods.get("drain_time", GAUGE_DRAIN_TIME))
 	low_protect = bool(mods.get("low_protect", true))
+	low_threshold = float(mods.get("low_threshold", GAUGE_LOW_THRESHOLD))
+	regen = bool(mods.get("regen", true))
 	score_base = SCORE_BASE * float(mods.get("score_mul", 1.0))
 	player_scale = float(mods.get("player_scale", 1.0)) * PLAYER_SIZE_MUL
 	player_r = PLAYER_HIT_R * player_scale
@@ -363,7 +367,7 @@ func ext_report(contact_s: float, graze_n: int, hit_n: int, extra_s := 0.0, heal
 	hits += maxi(hit_n, 0)
 	if contact_s > 0.0:
 		hit_time += contact_s
-		var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
+		var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= low_threshold) else 1.0
 		var dmg := contact_s / drain_time * factor
 		damage_total += dmg
 		gauge -= dmg
@@ -565,8 +569,8 @@ func _update(now: float, dt: float) -> void:
 		# ダメージは「触れていた時間」と「弾の中を通った距離 ÷ 基準速度」の長いほう(速く動いて抜けても、減りすぎない)
 		var eff_dt := maxf(dt, field.hit_dist / CONTACT_SPEED_REF)
 		var fragile := ZONE_FRAGILE if zone_debuff == "fragile" else 1.0
-		# ゲージが少ないとき(20% 以下)は被ダメージが半分(MOD で無効になる)
-		var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= GAUGE_LOW_THRESHOLD) else 1.0
+		# ゲージが少ないとき(20% 以下。MOD「天国」は 35%)は被ダメージが半分(MOD「地獄」で無効になる)
+		var factor := GAUGE_LOW_FACTOR if (low_protect and gauge <= low_threshold) else 1.0
 		var dmg := eff_dt / drain_time * factor * fragile
 		own_damage += dmg
 		if authority:
@@ -580,7 +584,7 @@ func _update(now: float, dt: float) -> void:
 				contact_extra += extra
 	else:
 		_no_hit_time += dt
-		if not resting and authority and _ext_hit_t <= 0.0:
+		if regen and not resting and authority and _ext_hit_t <= 0.0:
 			gauge = minf(gauge + GAUGE_REGEN * dt, 1.0)
 
 	_update_poison(dt, resting)

@@ -7,9 +7,9 @@ extends "res://scripts/ui/mod_panel.gd"
 const LazerStyle = preload("res://scripts/ui/lazer/lazer_style.gd")
 const LazerButton = preload("res://scripts/ui/lazer/lazer_button.gd")
 
-const SHEET_H := 452.0
+const SHEET_H := 484.0
 const COLS := 4
-const TILE_H := 132.0
+const TILE_H := 148.0
 
 
 func _ready() -> void:
@@ -135,7 +135,7 @@ func _tile(m: Dictionary, on: bool, on_toggle: Callable) -> PanelContainer:
 	var desc := LazerStyle.label("\n".join(effects), 12, LazerStyle.TEXT_DIM)
 	desc.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	desc.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	desc.max_lines_visible = 3
+	desc.max_lines_visible = 4
 	desc.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	v.add_child(desc)
 	var pct := int(round((float(m.get("score_mul", 1.0)) - 1.0) * 100.0))

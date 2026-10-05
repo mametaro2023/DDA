@@ -407,6 +407,7 @@ func _page_mods() -> Control:
 			if not p.begins_with("ベーススコア"):
 				effects.append(p)
 		_para(v, "  /  ".join(effects))
+	_para(v, "「地獄」と「天国」、「加速」と「減速」は、同時に付けられません(片方を付けると、もう片方は外れます)。", UiStyle.TEXT_DIM)
 	return s[0]
 
 

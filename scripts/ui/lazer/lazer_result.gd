@@ -289,7 +289,7 @@ func _update_graph() -> void:
 		item.add_child(dot)
 		item.add_child(LazerStyle.label(str(e.name), 13, LazerStyle.TEXT if bool(e.me) else LazerStyle.TEXT_DIM))
 		_legend.add_child(item)
-	_graph.set_data(g.series, g.t0, g.t1, stats.get("breaks", []), stats.get("hit_log", PackedFloat32Array()), GameSim.GAUGE_LOW_THRESHOLD)
+	_graph.set_data(g.series, g.t0, g.t1, stats.get("breaks", []), stats.get("hit_log", PackedFloat32Array()), float(stats.get("low_line", GameSim.GAUGE_LOW_THRESHOLD)))
 
 
 ## マルチプレイ: 参加者の成績の一覧(順位・WIN の判定は model)。まだ終えていない人は「プレイ中」。

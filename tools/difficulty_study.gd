@@ -3,13 +3,15 @@ extends SceneTree
 ## 避けにくさの目安は、先読みして避けるボット(tests/test_sim.gd と同じ)の被弾時間(練習モードで最後まで走らせる)。
 ##   godot --headless --path . --script tools/difficulty_study.gd -- maps [osz の名前の一部 ...]   譜面ごと: Lv・★・ボットの被弾
 ##   godot --headless --path . --script tools/difficulty_study.gd -- factors                     要素ごと: 1 つずつ変えたときの Lv とボットの変化
-## 出力は CSV ふうの行(先頭が "row," / "factor,")。
+##   godot --headless --path . --script tools/difficulty_study.gd -- mods [dir=<osz のフォルダ>] [part=k/n]   MOD ごと: Lv の変化と、ボットが倒れる回数(ベーススコアの倍率を決める材料)
+## 出力は CSV ふうの行(先頭が "row," / "factor," / "mod,")。
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const Mods = preload("res://scripts/mods.gd")
+const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
 
 const DIRS := [Vector2.ZERO, Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
 	Vector2(1, 1), Vector2(1, -1), Vector2(-1, 1), Vector2(-1, -1)]
@@ -18,7 +20,9 @@ const DT := 1.0 / 60.0
 
 func _init() -> void:
 	var args := OS.get_cmdline_user_args()
-	if args.has("factors"):
+	if args.has("mods"):
+		_mods(args)
+	elif args.has("factors"):
 		_factors()
 	else:
 		var filters: Array = []
@@ -29,11 +33,11 @@ func _init() -> void:
 	quit()
 
 
-func _osz_files() -> Array:
+func _osz_files(dir := "res://") -> Array:
 	var out: Array = []
-	for f in DirAccess.get_files_at("res://"):
+	for f in DirAccess.get_files_at(dir):
 		if f.ends_with(".osz"):
-			out.append(ProjectSettings.globalize_path("res://" + f))
+			out.append(ProjectSettings.globalize_path(dir.path_join(f)))
 	out.sort()
 	return out
 
@@ -189,3 +193,97 @@ func _bot(sim, field, speed: float, horizon: float) -> Vector2:
 			best_score = sc
 			best = d
 	return best
+
+
+## MOD ごと: 全譜面(弾幕 v2)で、MOD を付けたときの Lv の変化(adj の比)と、ボットが倒れる回数(練習モードで走らせ、ゲージが 0 になるたびに満タンへ戻して数える)を比べる。
+## 倒れる回数は、Lv に出ない厳しさ(体力・自然回復・低体力の半減)も含めた、避けにくさの目安。強いボットと弱いボットの 2 つで測る。
+## 最後に "mod_sum," の行で、全譜面の合計(倒れた回数の比・Lv の比の平均)を出す。part=k/n なら、譜面の k 番目の組だけ(並べて走らせる用。合計は手で足す)。
+func _mods(args: Array) -> void:
+	var dir := "res://"
+	var part := 0
+	var parts := 1
+	for a in args:
+		if str(a).begins_with("dir="):
+			dir = str(a).trim_prefix("dir=")
+		elif str(a).begins_with("part="):
+			var kn: PackedStringArray = str(a).trim_prefix("part=").split("/")
+			part = int(kn[0])
+			parts = int(kn[1])
+	var variants := [
+		["base", {}],
+		["rush", {"mods": ["rush"]}],
+		["hell", {"mods": ["hell"]}],
+		["slow", {"mods": ["slow"]}],
+		["heaven", {"mods": ["heaven"]}],
+		["size0.7", {"set": {"size_mul": 0.7}}],
+		["noregen", {"mods": ["noregen"]}],
+	]
+	print("mod,set,version,variant,lv,adj_ratio,strong_deaths,weak_deaths,strong_hit_s,weak_hit_s,play_min")
+	var sums := {}
+	var k := 0
+	for path in _osz_files(dir):
+		var loader := OszLoader.new()
+		if not loader.open(path):
+			continue
+		for bm in loader.difficulties:
+			k += 1
+			if (k - 1) % parts != part:
+				continue
+			var gen := PatternGenV2.generate(bm, {})
+			for v in variants:
+				var p := Mods.params(v[1].get("mods", []))
+				var setp: Dictionary = v[1].get("set", {})
+				for key in setp:
+					p[key] = setp[key]
+					p.ids = ["x"]
+				var g2 := Mods.apply(gen, p)
+				var adj := PatternGen.target_score_for(float(g2.level) + PatternGen.LEVEL_SHIFT) / PatternGen.target_score_for(float(gen.level) + PatternGen.LEVEL_SHIFT)
+				var s := _run_deaths(g2, p, false)
+				var w := _run_deaths(g2, p, true)
+				print("mod,%s,%s,%s,%.2f,%.3f,%d,%d,%.2f,%.2f,%.2f" % [str(path).get_file().substr(0, 14).replace(",", " "), str(bm.version).replace(",", " "), v[0],
+					g2.level, adj, s.deaths, w.deaths, s.hit_s, w.hit_s, s.play_min])
+				var acc: Dictionary = sums.get(v[0], {"n": 0, "adj": 0.0, "sd": 0, "wd": 0, "min": 0.0})
+				acc.n += 1
+				acc.adj += adj
+				acc.sd += s.deaths
+				acc.wd += w.deaths
+				acc.min += s.play_min
+				sums[v[0]] = acc
+	for name in sums:
+		var a: Dictionary = sums[name]
+		print("mod_sum,%s,n=%d,adj_avg=%.3f,strong_deaths=%d,weak_deaths=%d,min=%.1f" % [name, a.n, a.adj / maxf(a.n, 1), a.sd, a.wd, a.min])
+
+
+## ボットで最後まで走らせ(練習モード)、ゲージが 0 になった回数を数える(なるたびに満タンへ戻す)。
+## p は Mods.params の形(体力・自然回復・低体力の半減・自機の大きさが効く)。再生速度は、弾幕の時刻(g2)に入っている。
+func _run_deaths(g2: Dictionary, p: Dictionary, weak: bool) -> Dictionary:
+	var field := BulletField.new()
+	var sim := GameSim.new()
+	var last_t := 0.0
+	for e in g2.events:
+		last_t = maxf(last_t, float(e.t))
+	var end_t := last_t + 2.0
+	var m := p.duplicate()
+	m["practice"] = true
+	sim.setup(field, g2, end_t, true, m)
+	var bot_every := maxi(int(round((0.15 if weak else 0.05) / DT)), 1)
+	var now := 0.0
+	var steps := 0
+	var move := Vector2.ZERO
+	var deaths := 0
+	var first_t := -1.0
+	for e in g2.events:
+		if not e.shots.is_empty():
+			first_t = float(e.t)
+			break
+	while not sim.finished and steps < int((end_t + 10.0) / DT):
+		if steps % bot_every == 0:
+			move = _bot(sim, field, GameSim.PLAYER_SLOW if weak else GameSim.PLAYER_SPEED, 0.3 if weak else 0.18)
+		sim.step(now, DT, move, weak)
+		if sim.gauge <= 0.0:
+			deaths += 1
+			sim.gauge = 1.0
+		steps += 1
+		now += DT
+	field.free()
+	return {"deaths": deaths, "hit_s": sim.hit_time, "play_min": maxf(last_t - maxf(first_t, 0.0), 1.0) / 60.0}

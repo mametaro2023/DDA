@@ -166,7 +166,7 @@ func _draw_hp_bar(_font: Font, bx: float, y: float, g: float) -> void:
 		_hp_node.draw_style_box(LazerStyle.box(Color(1, 1, 1, 0.22), Color(0, 0, 0, 0), 0, 3), Rect2(bx + 3.0, by + 1.5, maxf(fw - 6.0, 0.0), 3.0))   # 上面の艶
 	elif fw > 0.5:
 		_hp_node.draw_rect(Rect2(bx, by + 1.0, fw, h - 2.0), fc)
-	var tx := bx + w * GameSim.GAUGE_LOW_THRESHOLD   # 20% の目印
+	var tx: float = bx + w * (sim.low_threshold if sim != null else GameSim.GAUGE_LOW_THRESHOLD)   # 20%(MOD「天国」は 35%)の目印
 	_hp_node.draw_colored_polygon(PackedVector2Array([Vector2(tx - 4.0, by - 9.0), Vector2(tx + 4.0, by - 9.0), Vector2(tx, by - 3.0)]), Color(1, 1, 1, 0.55))
 	if _fx_regen > 0.02 and fw > h:   # 回復中: 先端に、やわらかい光
 		_hp_node.draw_circle(Vector2(bx + fw, by + h * 0.5), 9.0 * _fx_regen + 3.0, Color(fc.r, fc.g, fc.b, 0.22 * _fx_regen))

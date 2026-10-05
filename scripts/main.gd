@@ -99,6 +99,9 @@ func _ready() -> void:
 	if ri >= 0 and args.size() > ri + 1:
 		Records.enabled = false
 		Replay.enabled = false
+		UiSfx.enabled = bool(first_settings.ui_sound)   # リザルト画面の効果音(数え上げ・ランクの判子など)も、動画に入れる
+		SfxBank.preload_all(["pop", "whistle", "clap", "boom", "tick", "hit", "explosion"])
+		add_child(UiSfx.new())
 		_replay_export_child(str(args[ri + 1]), int(args[ri + 2]) if args.size() > ri + 2 else 1, float(args[ri + 3]) if args.size() > ri + 3 else 3.0,
 			str(args[args.find("--chart") + 1]) if args.has("--chart") and args.size() > args.find("--chart") + 1 else "")
 		return
@@ -787,10 +790,12 @@ func _replay_export_child(path: String, trail_mode: int, trail_sec: float, chart
 	g.replay_export_finished.connect(func(st: Dictionary, music: AudioStreamPlayer):
 		show_result(st, music)   # リザルト画面(ボタンなし)を、数秒撮ってから終わる
 		get_tree().create_timer(RESULT_IN_VIDEO).timeout.connect(func():
+			print("replay-export: UI の効果音 %d 回" % (UiSfx.inst.log.size() if UiSfx.inst != null else -1))
 			Replay.write_progress(1.0)
 			get_tree().quit()))
 	_stop_music()
 	_swap(g)
+	_setup_fade()   # リザルトへ移るときの幕(プレイのときと同じ見え方。始まりは幕なしで、すぐ映す)
 
 
 ## ffmpeg の場所(なければ ""): アプリと同じフォルダに置いたもの → PATH の通ったもの、の順。
@@ -3042,6 +3047,19 @@ func _smoke_replay() -> void:
 	var all_n: int = Replay.list().size()
 	chk.call(lp != null and lp.has_signal("replay_requested") and lp._items.size() == all_n and lp._cards.size() == all_n and all_n >= 3, "「リプレイ」で一覧が開く(%d 件)" % all_n)
 	shot.call("list")
+	# 長い曲名・長い難易度名・MOD が多い行でも、パネルが広がらず、はみ出さない
+	for m in lp._items:
+		m["title"] = "Bonus-men BGM / Bonus-men Clear Fanfare (Extended Version) feat. Somebody Long"
+		m["artist"] = "Koji Kondo"
+		m["diff"] = "TheShadow's Perfect Stacks Expert"
+		m["mods"] = ["hell", "rush", "giant", "dark", "shrink", "boss"]
+	lp._rebuild()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	shot.call("list_long")
+	chk.call(lp._panel.size.x <= 1140.5 and lp._panel.get_global_rect().end.x <= 1280.0, "長い曲名・MOD が多くても、一覧のパネルが画面からはみ出さない(幅 %.0f)" % lp._panel.size.x)
+	lp._items = Replay.list()
+	lp._rebuild()
 	var first_name := str(lp._shown[0].name)
 	lp._toggle_keep(0)
 	chk.call(Replay.kept_names().has(first_name), "「保存」すると、保存済みになる")

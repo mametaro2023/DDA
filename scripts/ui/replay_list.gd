@@ -45,8 +45,8 @@ func _ready() -> void:
 	add_child(_dim)
 
 	_panel = PanelContainer.new()
-	_panel.position = Vector2(150, 36)
-	_panel.size = Vector2(980, 648)
+	_panel.position = Vector2(70, 28)
+	_panel.size = Vector2(1140, 664)
 	_panel.clip_contents = true   # 中身(フォントの幅が広い UI でも)が、パネルの外へ出ないように
 	_panel.add_theme_stylebox_override("panel", UiStyle.box(UiStyle.PANEL, UiStyle.LINE, 1, 8, 0, 0))
 	add_child(_panel)
@@ -189,102 +189,118 @@ func _select(i: int, scroll := false) -> void:
 		_smooth.scroll_to_control(_cards[_sel])
 
 
+## 1 行: [ランク] [曲名 / 作者・難易度 / Lv・MOD(3 段)] [スコア / 被弾 / 日時・長さ] [再生 / 保存・削除]。
+## 文字の多い真ん中の段に幅を回し、長いものは「…」で切る(行の幅は広げない)。
 func _make_row(i: int, m: Dictionary) -> PanelContainer:
 	var have: bool = bool(_have.get(m.md5, false))
-	var card := UiStyle.card(70, func(): _select(i), func(): _play(i))
+	var card := UiStyle.card(84, func(): _select(i), func(): _play(i))
 	var h := HBoxContainer.new()
-	h.add_theme_constant_override("separation", 14)
+	h.add_theme_constant_override("separation", 16)
 	h.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	card.add_child(h)
 	# ランク(失敗は FAIL)
 	var failed: bool = bool(m.failed)
-	var rank := UiStyle.label("FAIL" if failed else str(m.rank), 24 if not failed else 17, UiStyle.DANGER if failed else UiStyle.rank_color(str(m.rank)), true)
-	rank.custom_minimum_size = Vector2(58, 0)
+	var rank := UiStyle.label("FAIL" if failed else str(m.rank), 28 if not failed else 18, UiStyle.DANGER if failed else UiStyle.rank_color(str(m.rank)), true)
+	rank.custom_minimum_size = Vector2(64, 0)
 	rank.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	rank.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	h.add_child(rank)
-	# 曲・難易度・MOD
+	# 曲名 / 作者・難易度 / Lv・MOD
 	var info := VBoxContainer.new()
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	info.add_theme_constant_override("separation", 2)
+	info.alignment = BoxContainer.ALIGNMENT_CENTER
+	info.add_theme_constant_override("separation", 3)
 	info.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	h.add_child(info)
 	var title := UiStyle.label(str(m.title), 17, UiStyle.TEXT if have else UiStyle.TEXT_DIM, true)
 	title.clip_text = true
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	title.tooltip_text = str(m.title)
+	title.mouse_filter = Control.MOUSE_FILTER_PASS
 	info.add_child(title)
-	var sub_clip := Control.new()   # 2 行目(作者・難易度・Lv・MOD)は、長いと切る(行の幅を広げて、パネルからはみ出さないように)
-	sub_clip.clip_contents = true
-	sub_clip.custom_minimum_size = Vector2(0, 22)
-	sub_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	info.add_child(sub_clip)
-	var sub := HBoxContainer.new()
-	sub.add_theme_constant_override("separation", 8)
-	sub.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	sub_clip.add_child(sub)
-	sub.add_child(UiStyle.label(str(m.artist), 12, UiStyle.TEXT_DIM))
-	sub.add_child(UiStyle.label(str(m.diff), 12, UiStyle.ACCENT))
-	sub.add_child(UiStyle.label("Lv %.2f" % float(m.level), 12, UiStyle.level_color(float(m.level))))
+	var by := UiStyle.label("%s  ·  %s" % [str(m.artist), str(m.diff)], 13, UiStyle.TEXT_DIM)
+	by.clip_text = true
+	by.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	info.add_child(by)
+	var tags_clip := Control.new()   # Lv と MOD のタグ(多いときは、右を切る。行の幅は広げない)
+	tags_clip.clip_contents = true
+	tags_clip.custom_minimum_size = Vector2(0, 22)
+	tags_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	info.add_child(tags_clip)
+	var tags := HBoxContainer.new()
+	tags.add_theme_constant_override("separation", 6)
+	tags.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tags_clip.add_child(tags)
+	tags.add_child(UiStyle.label("Lv %.2f" % float(m.level), 13, UiStyle.level_color(float(m.level)), true))
 	for id in m.mods:
 		var mod = Mods.find(str(id))
 		if mod != null and not mod.is_empty():
 			var chip := UiStyle.chip(str(mod.tag), mod.color)
 			chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			sub.add_child(chip)
+			tags.add_child(chip)
 	if not have:
-		sub.add_child(UiStyle.label("曲が見つかりません", 12, UiStyle.DANGER))
-	# スコア・日時
+		tags.add_child(UiStyle.label("曲が見つかりません", 12, UiStyle.DANGER))
+	# スコア / 被弾(失敗はどこまで) / 日時・長さ
 	var sc := VBoxContainer.new()
-	sc.custom_minimum_size = Vector2(128, 0)
+	sc.custom_minimum_size = Vector2(170, 0)
+	sc.alignment = BoxContainer.ALIGNMENT_CENTER
 	sc.add_theme_constant_override("separation", 2)
 	sc.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	h.add_child(sc)
-	var score_l := UiStyle.label(UiStyle.fmt(int(m.score)), 18, UiStyle.TEXT, true)
+	var score_l := UiStyle.label(UiStyle.fmt(int(m.score)), 19, UiStyle.TEXT, true)
 	score_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	sc.add_child(score_l)
 	var sub2 := UiStyle.label(("%d%% まで" % int(round(float(m.progress) * 100.0))) if failed else ("被弾 %d 回" % int(m.hits)), 12, UiStyle.TEXT_DIM)
 	sub2.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	sc.add_child(sub2)
-	var when := VBoxContainer.new()
-	when.custom_minimum_size = Vector2(96, 0)
-	when.add_theme_constant_override("separation", 2)
-	when.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	h.add_child(when)
 	var bias := int(Time.get_time_zone_from_system().get("bias", 0)) * 60
 	var d := Time.get_datetime_dict_from_unix_time(int(m.time) + bias)
-	var date_l := UiStyle.label("%02d/%02d %02d:%02d" % [d.month, d.day, d.hour, d.minute], 13, UiStyle.TEXT_DIM)
-	date_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	when.add_child(date_l)
 	var secs := int(round(float(m.dur)))
-	var dur_l := UiStyle.label("%d:%02d" % [secs / 60, secs % 60], 12, UiStyle.TEXT_FAINT)
-	dur_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	when.add_child(dur_l)
-	# 操作
+	var date_l := UiStyle.label("%02d/%02d %02d:%02d  ·  %d:%02d" % [d.month, d.day, d.hour, d.minute, secs / 60, secs % 60], 12, UiStyle.TEXT_FAINT)
+	date_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	sc.add_child(date_l)
+	# 操作: 大きな「再生」と、その下に小さな「保存」「削除」
+	var act := VBoxContainer.new()
+	act.alignment = BoxContainer.ALIGNMENT_CENTER
+	act.add_theme_constant_override("separation", 4)
+	act.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	h.add_child(act)
 	var play := Button.new()
 	play.text = "再生"
 	play.focus_mode = Control.FOCUS_NONE
-	play.custom_minimum_size = Vector2(64, 34)
+	play.custom_minimum_size = Vector2(140, 34)
 	play.disabled = not have
 	UiStyle.style_primary(play, false, 10, 4)
 	play.pressed.connect(func(): _play(i))
-	h.add_child(play)
+	act.add_child(play)
+	var small := HBoxContainer.new()
+	small.add_theme_constant_override("separation", 4)
+	act.add_child(small)
 	var keep := Button.new()
 	keep.text = "保存済み" if bool(m.keep) else "保存"
 	keep.tooltip_text = "保存しておくと、古いリプレイの自動の整理で消えません"
 	keep.toggle_mode = true
 	keep.set_pressed_no_signal(bool(m.keep))
 	keep.focus_mode = Control.FOCUS_NONE
-	keep.custom_minimum_size = Vector2(70, 34)
+	keep.custom_minimum_size = Vector2(68, 26)
+	keep.add_theme_font_size_override("font_size", 12)
+	keep.add_theme_stylebox_override("normal", UiStyle.box(Color(1, 1, 1, 0.06), UiStyle.LINE, 1, 4, 6, 2))
+	keep.add_theme_stylebox_override("hover", UiStyle.box(Color(1, 1, 1, 0.12), Color(1, 1, 1, 0.28), 1, 4, 6, 2))
+	keep.add_theme_stylebox_override("pressed", UiStyle.box(Color(UiStyle.ACCENT.r, UiStyle.ACCENT.g, UiStyle.ACCENT.b, 0.2), UiStyle.ACCENT, 1, 4, 6, 2))
 	keep.pressed.connect(func(): _toggle_keep(i))
-	h.add_child(keep)
+	small.add_child(keep)
 	var del := Button.new()
-	del.text = "本当に削除" if str(m.name) == _del_name else "削除"
+	var confirming := str(m.name) == _del_name
+	del.text = "本当に削除" if confirming else "削除"
 	del.focus_mode = Control.FOCUS_NONE
-	del.custom_minimum_size = Vector2(80, 34)
-	if str(m.name) == _del_name:
+	del.custom_minimum_size = Vector2(68, 26)
+	del.add_theme_font_size_override("font_size", 12)
+	del.add_theme_stylebox_override("normal", UiStyle.box(Color(1, 1, 1, 0.06), UiStyle.DANGER if confirming else UiStyle.LINE, 1, 4, 6, 2))
+	del.add_theme_stylebox_override("hover", UiStyle.box(Color(1, 1, 1, 0.12), UiStyle.DANGER if confirming else Color(1, 1, 1, 0.28), 1, 4, 6, 2))
+	if confirming:
 		del.add_theme_color_override("font_color", UiStyle.DANGER)
 	del.pressed.connect(func(): _delete(i))
-	h.add_child(del)
+	small.add_child(del)
 	return card
 
 

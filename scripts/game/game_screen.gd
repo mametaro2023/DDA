@@ -5,8 +5,10 @@ extends Node2D
 signal finished(stats: Dictionary, music: AudioStreamPlayer)
 signal quit_requested
 signal retry_requested
-## リプレイ画面から、動画出力を頼む(main が、別のプロセスで書き出す)
-signal replay_export_requested(data: Dictionary, trail_mode: int, trail_sec: float)
+## リプレイ画面から、動画出力を頼む(main が、別のプロセスで書き出す)。opts: {w, h, fps, trail_mode, trail_sec}(空なら、書き出し中の中止)
+signal replay_export_requested(data: Dictionary, opts: Dictionary)
+## 動画出力の子プロセス: リプレイを最後まで流した(main が、続けてリザルト画面を撮る)。stats: リプレイの結果(背景つき)、music: 鳴り続けている曲(クリア。なければ null)
+signal replay_export_finished(stats: Dictionary, music: AudioStreamPlayer)
 
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
@@ -28,6 +30,7 @@ const SpeedStudy = preload("res://scripts/speed_study.gd")
 const Replay = preload("res://scripts/replay.gd")
 const Records = preload("res://scripts/records.gd")
 const ReplayBar = preload("res://scripts/game/replay_bar.gd")
+const ReplayDense = preload("res://scripts/replay_dense.gd")
 
 const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
@@ -117,7 +120,7 @@ var gen: Dictionary
 ## リプレイ(scripts/replay.gd)。ひとり用のプレイは入力を記録して、終わりに保存する。replay_data が空でなければ、プレイではなく再生(setup_replay)。
 var replay_data: Dictionary = {}
 var replay_export := false     # 動画出力の子プロセス: 操作パネルなしで、先頭から 1 倍速で最後まで流して終わる(固定のフレーム時間で動く)
-var replay_trail_mode := 1     # 再生: 自機の軌道 0 = 切 / 1 = 過去 / 2 = 過去 + 未来
+var replay_trail_mode := 1     # 再生: 自機の軌道 0 = 切 / 1 = 出す(過去 replay_trail_sec 秒)
 var replay_trail_sec := 3.0
 var _rec                       # Replay.Recorder(プレイ中の記録係。再生・マルチプレイ・開発用の確認では null)
 var _rp                        # Replay.Player(再生の係。プレイでは null)
@@ -130,6 +133,19 @@ var _rp_audio_key := ""        # 再生の音を合わせ直す目印(止める�
 var _rp_error := ""
 var _rp_progress_t := 0.0
 var _rp_fp := 0                # 弾幕の指紋(組み立てた直後の値。記録と再生で同じかを確かめる)
+var _rp_scrub_resume := false  # 体力グラフのドラッグ中は止めて、離したら続ける
+var _rp_hits := PackedFloat32Array()   # 被弾した時刻(「前の・次の被弾」へ飛ぶ)
+var _rp_verified := false      # 最後まで流して、記録の結果と合っているかを確かめた
+var _rp_state_l: Label         # 左のパネルの「再生中 / 停止中」
+var _rp_dense                  # 追加のキーフレームを、裏で作る係(飛ぶときの待ちを減らす。replay_dense.gd)
+var _view_l := 0.0             # 画面の左右の端(この画面の座標。再生で画面を縮めても、背景・赤みは画面いっぱいに出す)
+var _view_r := 1280.0
+var _view_b := 720.0
+var _rp_stage_k := -1.0
+var replay_seek_budget_ms := 10.0   # 飛ぶときの計算を、1 フレームに使ってよい時間(これを超えるぶんは、次のフレームへ)
+var _rp_seek_to := -1.0          # 飛んでいる途中の目標(-1 = 飛んでいない)
+var _rp_seek_from := 0.0
+var _rp_seek_t0 := 0
 var _mods: Dictionary   # 付けた MOD の効果(Mods.params)
 var _rate := 1.0        # 譜面の再生速度(MOD)
 
@@ -264,6 +280,10 @@ func is_paused() -> bool:
 ## ひとり用だけ(マルチプレイは止められない)。終わりの演出・ゲームオーバー・すでにポーズ中は何もしない。開発用の自動操作(--smoke / --prof / --shot)も対象外。
 func _notification(what: int) -> void:
 	if what != NOTIFICATION_APPLICATION_FOCUS_OUT:
+		return
+	if not replay_data.is_empty():   # 再生: 別のウィンドウへ移ったら、止める(動画の書き出しの子プロセスは、止めない)
+		if _rp != null and not replay_export and _rp_playing and not _dev_run():
+			_replay_set_playing(false)
 		return
 	if _mp != null or _menu_open() or _dead or _end_timer >= 0.0 or _outro_t >= 0.0 or not is_inside_tree() or not replay_data.is_empty():
 		return
@@ -527,6 +547,8 @@ func _arrive() -> void:
 
 func _exit_tree() -> void:
 	_alive -= 1
+	if _rp_dense != null:
+		_rp_dense.stop()   # 裏のスレッドを止めて、終わるのを待つ
 	if _alive <= 0:   # リトライで次のプレイ画面がすでに始まっているときは、触らない(マウスの捕まえを外してしまい、自機と独自カーソルが両方出る)
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN   # OS のカーソルは、どの画面でも隠したまま(アプリ独自のカーソルを出す。cursor_overlay.gd)
 	if net != null and _mp != null:
@@ -564,6 +586,16 @@ func _build_hud() -> void:
 	UiStyle.tween(_center_label, "scale", Vector2(1.3, 1.3), Vector2.ONE, 0.55, 0.25, Tween.TRANS_BACK)
 
 
+## 再生: いつの・どんな結果のプレイか(左のパネルに出す)。戻り値: {when, result, failed}
+func _replay_info() -> Dictionary:
+	var st: Dictionary = replay_data.get("stats", {})
+	var failed := bool(st.get("failed", false))
+	var bias := int(Time.get_time_zone_from_system().get("bias", 0)) * 60   # 保存は UTC の秒なので、この PC の時刻へ
+	var d := Time.get_datetime_dict_from_unix_time(int(replay_data.get("time", 0)) + bias)
+	var res := "GAME OVER" if failed else "CLEAR  %s" % GameSim.rank_of(false, int(st.get("hits", 0)), float(st.get("score", 0.0)), float(st.get("score_base", 1000000.0)))
+	return {"when": "%04d/%02d/%02d %02d:%02d" % [d.year, d.month, d.day, d.hour, d.minute], "result": res, "failed": failed}
+
+
 ## 左パネル(幅 160): 曲情報・Lv(MOD 適用後)・付けた MOD。
 func _build_left_panel() -> void:
 	var col := VBoxContainer.new()
@@ -573,6 +605,18 @@ func _build_left_panel() -> void:
 	col.add_theme_constant_override("separation", 3)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(col)
+	if not replay_data.is_empty() and not replay_export:   # 再生: 「リプレイ」であることと、いつの・どんな結果のプレイかを、いちばん上に出す(動画には入れない)
+		var info := _replay_info()
+		var chip := UiStyle.chip("REPLAY", UiStyle.ACCENT)
+		chip.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		col.add_child(chip)
+		col.add_child(UiStyle.label(info.when, 11, UiStyle.TEXT_FAINT))
+		col.add_child(UiStyle.label(info.result, 12, Color(1.0, 0.45, 0.48) if info.failed else UiStyle.TEXT_DIM, true))
+		_rp_state_l = UiStyle.label("", 12, UiStyle.ACCENT, true)   # 再生中 / 停止中(速さも)
+		col.add_child(_rp_state_l)
+		var gap0 := Control.new()
+		gap0.custom_minimum_size = Vector2(0, 6)
+		col.add_child(gap0)
 	for spec in [[bm.artist, 12, UiStyle.TEXT_DIM, false], [bm.title, 16, UiStyle.TEXT, true], [bm.version, 13, UiStyle.ACCENT, false]]:
 		var l := UiStyle.label(spec[0], spec[1], spec[2], spec[3])
 		l.custom_minimum_size = Vector2(134, 0)
@@ -1285,8 +1329,8 @@ func _draw_low_vignette() -> void:
 		var a := (0.36 if layer == 0 else 0.34) * v
 		var c0 := Color(edge.r, edge.g, edge.b, a)
 		var c1 := Color(edge.r, edge.g, edge.b, 0.0)
-		_hud.draw_polygon(PackedVector2Array([Vector2(0, 0), Vector2(lw, 0), Vector2(lw, 720), Vector2(0, 720)]), PackedColorArray([c0, c1, c1, c0]))
-		_hud.draw_polygon(PackedVector2Array([Vector2(1280 - lw, 0), Vector2(1280, 0), Vector2(1280, 720), Vector2(1280 - lw, 720)]), PackedColorArray([c1, c0, c0, c1]))
+		_hud.draw_polygon(PackedVector2Array([Vector2(_view_l, 0), Vector2(_view_l + lw, 0), Vector2(_view_l + lw, _view_b), Vector2(_view_l, _view_b)]), PackedColorArray([c0, c1, c1, c0]))
+		_hud.draw_polygon(PackedVector2Array([Vector2(_view_r - lw, 0), Vector2(_view_r, 0), Vector2(_view_r, _view_b), Vector2(_view_r - lw, _view_b)]), PackedColorArray([c1, c0, c0, c1]))
 
 
 ## 体力バーの層(自機が近づくと、この層ごと薄くなる)。
@@ -2217,7 +2261,7 @@ func _save_replay(st: Dictionary) -> void:
 	var meta := {"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version,
 		"settings": {"mods": _mods.ids.duplicate(), "density_mul": float(settings.get("density_mul", 1.0))},
 		"cond": _study_cond, "fp": _rp_fp}
-	Replay.prune(Records.replay_names())
+	Replay.prune(Records.replay_names(), 1)
 	var name := Replay.save_async(Replay.make_data(rec, meta, st))
 	if name != "":
 		st["replay"] = name
@@ -2231,43 +2275,89 @@ func _init_replay() -> void:
 	_set_ship_in(1.0)
 	_center_label.visible = false
 	if _rp_fp != int(replay_data.get("fp", -1)) or (replay_data.get("frames") as PackedFloat64Array).size() < Replay.STRIDE:
-		_rp_error = "このバージョンでは再生できません(弾幕が記録と違います)"
+		var made := str(replay_data.get("app", "?"))
+		var now_v := str(ProjectSettings.get_setting("application/config/version", "?"))
+		_rp_error = "このバージョンでは再生できません\n(弾幕が記録と違います。記録: v%s / いま: v%s)" % [made, now_v]
 		_center_label.text = _rp_error
 		_center_label.visible = true
 		_center_label.add_theme_font_size_override("font_size", 22)
-		get_tree().create_timer(3.0).timeout.connect(func(): quit_requested.emit())
+		_center_label.size.y = 90.0
+		get_tree().create_timer(3.5).timeout.connect(func(): quit_requested.emit())
 		return
 	_rp = Replay.Player.new(sim, field, replay_data.frames, replay_data.keys)
 	_rt = _rp.start_time()
 	_now = _rt
 	_sim_t = _rt
-	for v in [_view_under, _view_over]:
-		v.trail_pts = replay_data.get("trail", PackedVector2Array())
-		v.trail_ts = replay_data.get("trail_t", PackedFloat64Array())
-		v.trail_mode = replay_trail_mode
-		v.trail_sec = replay_trail_sec
+	_rp_hits = (replay_data.get("stats", {}) as Dictionary).get("hit_log", PackedFloat32Array())
+	_view_under.trail_pts = replay_data.get("trail", PackedVector2Array())   # 軌道は、下の層(弾の下)にだけ描く
+	_view_under.trail_ts = replay_data.get("trail_t", PackedFloat64Array())
+	_view_under.hit_ts = _rp_hits
+	_replay_apply_trail()
 	if replay_export:
 		CursorOverlay.hide_in(Rect2(0, 0, 1280, 720))
 		return
+	_rp_dense = ReplayDense.new()   # まだ見ていない秒へ飛ぶときの待ちを減らす: 裏で別のシムを流して、0.5 秒おきの状態を作っておく
+	_rp.cache = _rp_dense
+	_rp_dense.start(bm, settings, _study_cond, false, replay_data.frames, replay_data.keys, sim, field)
 	_rp_bar = ReplayBar.new()
+	add_child(_rp_bar)
 	_rp_bar.setup(replay_data, _rp.end_time())
-	_rp_bar.play_pressed.connect(func(): _replay_set_playing(not _rp_playing))
+	_rp_bar.play_pressed.connect(func(): _replay_set_playing(not _rp_playing, true))
 	_rp_bar.restart_pressed.connect(func():
 		_replay_seek(_rp.start_time())
-		_replay_set_playing(true))
+		_replay_set_playing(true)
+		_osd("最初から"))
+	_rp_bar.end_pressed.connect(func():
+		_replay_seek(_rp.end_time())
+		_osd("最後へ"))
 	_rp_bar.seek_requested.connect(_replay_seek)
-	_rp_bar.skip_requested.connect(func(d: float): _replay_seek(_rt + d))
-	_rp_bar.speed_selected.connect(_replay_set_speed)
-	_rp_bar.trail_mode_pressed.connect(_replay_cycle_trail_mode)
-	_rp_bar.trail_len_pressed.connect(_replay_cycle_trail_len)
-	_rp_bar.export_pressed.connect(func(): replay_export_requested.emit(replay_data, replay_trail_mode, replay_trail_sec))
+	_rp_bar.scrub_started.connect(func():
+		_rp_scrub_resume = _rp_playing
+		if _rp_playing:
+			_replay_set_playing(false))
+	_rp_bar.scrub_ended.connect(func():
+		if _rp_scrub_resume and not _rp.at_end():
+			_replay_set_playing(true)
+		_rp_scrub_resume = false)
+	_rp_bar.skip_requested.connect(func(d: float): _replay_skip(d))
+	_rp_bar.hit_jump_requested.connect(_replay_jump_hit)
+	_rp_bar.speed_selected.connect(func(s: float): _replay_set_speed(s, false))
+	_rp_bar.trail_toggled.connect(_replay_toggle_trail)
+	_rp_bar.export_requested.connect(_replay_request_export)
 	_rp_bar.close_pressed.connect(_replay_close)
-	add_child(_rp_bar)
+	_replay_layout(1.0)
 	_replay_sync_bar()
+
+
+## 再生: 画面の大きさ。k = 0 で元の大きさ、1 で、操作パネルのぶん縮める。背景・赤みは、画面いっぱいに保つ。
+func _replay_layout(k: float) -> void:
+	_rp_stage_k = k
+	var s := lerpf(1.0, ReplayBar.DOCK_SCALE, k)
+	scale = Vector2(s, s)
+	position = Vector2(640.0 * (1.0 - s), 0.0)
+	_view_l = -position.x / s
+	_view_r = (1280.0 - position.x) / s
+	_view_b = 720.0 / s
+	for n in _bg_nodes:
+		n.position = Vector2(_view_l, 0.0)
+		n.size = Vector2(_view_r - _view_l, _view_b)
+	_hud.queue_redraw()
+
+
+func _osd(text: String) -> void:
+	if _rp_bar != null:
+		_rp_bar.osd(text)
 
 
 ## 1 フレームぶん: 再生の時計を進め、記録を流してシムを進め、音を合わせる(プレイ中の「曲クロック → _step_sim」の代わり)。
 func _replay_tick(delta: float) -> void:
+	if _rp_bar != null:
+		var k: float = _rp_bar.stage_ease()
+		if not is_equal_approx(k, _rp_stage_k):
+			_replay_layout(k)
+	if _rp_seek_to >= 0.0:   # 飛んでいる最中: 続きを計算するだけ(再生は、終わってから)
+		_replay_seek_tick()
+		return
 	if _dead:   # ゲームオーバーの演出(曲のテープストップと同じ割合で、弾の時間も遅くなって止まる)
 		var dt_game := delta * _tape_speed()
 		_now += dt_game
@@ -2280,9 +2370,15 @@ func _replay_tick(delta: float) -> void:
 	_hit_any = false
 	_hit_started = false
 	if _rp_playing and not _rp.at_end():
-		var target := minf(_rt + delta * _rp_speed, _rp.end_time())
+		var step_t := delta * _rp_speed
+		if _audio.playing and not replay_export:   # 曲が鳴っているあいだは、時計を、音のほうへゆっくり寄せる(プレイ中の _advance_clock と同じ。映像と曲がずれていかない)
+			var err: float = _replay_audio_time() - (_rt + step_t)
+			if absf(err) < CLOCK_RESYNC * 3.0 * maxf(_rp_speed, 1.0):
+				step_t = maxf(step_t + err * clampf(delta * CLOCK_PULL, 0.0, 1.0), 0.0)
+		var target := minf(_rt + step_t, _rp.end_time())
 		var done: bool = _rp.advance_to(target, true, 0.0 if replay_export else 9.0)
 		_rt = target if done else _rp.t   # 倍速で間に合わないときは、時計をシムに合わせて遅らせる
+		_rp.cache_here()   # 通ったところも、飛ぶときの出発点として覚える
 		_hit_any = _rp.hit_any
 		_hit_started = _rp.hit_started
 		if absf(_rp_speed - 1.0) < 0.01:   # 効果音は、ふつうの速さのときだけ
@@ -2291,37 +2387,60 @@ func _replay_tick(delta: float) -> void:
 	if _rp_playing and not _rp.at_end() and _rp.next_start() > _rt + 0.05:   # 記録のない区間(スキップしたイントロ): 時計を、次の記録まで飛ばす
 		_rt = _rp.next_start()
 	_now = _rt
-	if _rp.at_end() and _rp_playing and not sim.failed:
-		_replay_set_playing(false)
+	if _rp.at_end():
+		_replay_verify()
+		if _rp_playing and not sim.failed and not replay_export:
+			_replay_set_playing(false)
 	if replay_export:
 		_replay_export_tick(delta)
 	_replay_audio()
 	_replay_sync_bar()
 
 
-## 動画出力の子プロセス: 最後に着いてから、少し(クリアは 2 秒、ゲームオーバーは演出のぶん)撮って終わる。
+## 曲の位置から求めた、いまのゲームの時刻(撃破 MOD の周の分も足す)。
+func _replay_audio_time() -> float:
+	var loop_off: float = float(sim.loop_index(_rt)) * sim.loop_len if sim.loop_len > 0.0 else 0.0
+	return _audio.get_playback_position() / _rate + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency() \
+		+ float(settings.get("offset_ms", 0)) / 1000.0 + loop_off
+
+
+## 動画出力の子プロセス: 最後に着いたら、少し余韻を撮って(クリアは HUD がフェードし、ゲームオーバーは演出のぶん)、リザルトへ(main が撮る)。
 func _replay_export_tick(delta: float) -> void:
 	CursorOverlay.hide_in(Rect2(0, 0, 1280, 720))
 	_rp_progress_t += delta
 	if _rp_progress_t >= 0.5:
 		_rp_progress_t = 0.0
-		Replay.write_progress(clampf(_rt / maxf(_rp.end_time(), 0.001), 0.0, 1.0))
-	if _rp.at_end():
-		_rp_ended_t = maxf(_rp_ended_t, 0.0) + delta
-		if _rp_ended_t >= ((END_DELAY_FAIL + 0.6) if sim.failed else 2.0):
-			Replay.write_progress(1.0)
-			get_tree().quit()
+		Replay.write_progress(0.9 * clampf((_rt - _rp.start_time()) / maxf(_rp.end_time() - _rp.start_time(), 0.001), 0.0, 1.0))   # 残りの 1 割はリザルト
+	if not _rp.at_end() or _rp_ended_t < -1.5:
+		return
+	_rp_ended_t = maxf(_rp_ended_t, 0.0) + delta
+	if not sim.failed and _outro_t < 0.0 and _rp_ended_t >= 1.0:
+		_begin_outro()   # クリア: プレイのときと同じく、背景を残して HUD・アリーナが消えていく
+	var tail := (END_DELAY_FAIL + 0.6) if sim.failed else 1.0 + OUTRO_TIME
+	if _rp_ended_t >= tail:
+		_rp_ended_t = -2.0   # 1 度だけ
+		var st: Dictionary = (replay_data.get("stats", {}) as Dictionary).duplicate()
+		st["bg"] = _bg_tex
+		st["video"] = true   # リザルトは、ボタンなしで見せる
+		var music: AudioStreamPlayer = null
+		if not sim.failed and _audio.playing:   # クリア: 鳴っている曲を、そのままリザルトへ(プレイのときと同じ)
+			music = _audio
+			remove_child(_audio)
+		replay_export_finished.emit(st, music)
 
 
-## 再生の音: ふつう・半分・2 倍の速さだけ、曲を鳴らす(音程が変わる)。止めた・飛んだ・それ以外の速さのときは、止める。
+## 再生の音: どの速さでも曲を鳴らす(速さに合わせて音程も変わる)。止めた・飛んでいる・最後まで流したときは止める。
+## 曲の長さを過ぎたところでは鳴らさない(鳴らし直すと、曲の頭から鳴ってしまう)。
 func _replay_audio() -> void:
-	var speed_ok := absf(_rp_speed - 1.0) < 0.01 or absf(_rp_speed - 0.5) < 0.01 or absf(_rp_speed - 2.0) < 0.01
-	var want: bool = _rp_playing and speed_ok and _rt >= 0.0 and not _rp.at_end() and not _dead
+	var song_t: float = _rt - (float(sim.loop_index(_rt)) * sim.loop_len if sim.loop_len > 0.0 else 0.0)   # 撃破: 周ごとに、曲は頭へ戻る
+	var song_len: float = _audio.stream.get_length() / _rate if _audio.stream != null else 1.0e9
+	if replay_export and _rp.at_end() and not sim.failed:
+		return   # 動画のクリア: 曲は、そのままリザルトまで鳴らし続ける
+	var want: bool = _rp_playing and _rt >= 0.0 and not _rp.at_end() and not _dead and song_t < song_len - 0.05
 	if not want:
 		if _audio.playing:
 			_audio.stop()
 		return
-	var song_t: float = _rt - (float(sim.loop_index(_rt)) * sim.loop_len if sim.loop_len > 0.0 else 0.0)   # 撃破: 周ごとに、曲は頭へ戻る
 	_audio.pitch_scale = _rate * _rp_speed
 	_audio.volume_db = 0.0
 	if not _audio.playing:
@@ -2332,7 +2451,16 @@ func _replay_audio() -> void:
 			_audio.seek(maxf(song_t, 0.0) * _rate)
 
 
-func _replay_set_playing(on: bool) -> void:
+## 最後まで流した(飛んだ)ときに、結果が記録と合っているかを確かめる。ずれていたら、注意を出す(版の違いで、動きが変わったとき)。
+func _replay_verify() -> void:
+	if _rp_verified or _rp_bar == null:
+		return
+	_rp_verified = true
+	if not Replay.verify(sim, replay_data.get("stats", {})):
+		_rp_bar.set_warning("再現にずれがあります(この版で、判定や弾の動きが変わったかもしれません)。見えているものは、記録と少し違う可能性があります")
+
+
+func _replay_set_playing(on: bool, announce := false) -> void:
 	if _rp == null:
 		return
 	if on and _rp.at_end() and not _dead:
@@ -2340,33 +2468,103 @@ func _replay_set_playing(on: bool) -> void:
 	_rp_playing = on
 	if not on and _audio.playing:
 		_audio.stop()
+	if announce:
+		_osd("再生" if on else "停止")
 	_replay_sync_bar()
 
 
-func _replay_set_speed(s: float) -> void:
-	_rp_speed = s
-	if _audio.playing:
-		_audio.stop()   # 次のフレームで、新しい速さで鳴らし直す
+## 速さを変える(0.25〜8 倍の好きな値)。曲は止めずに、次のフレームで音の速さを合わせる(スライダーを動かしても途切れない)。
+func _replay_set_speed(s: float, announce := true) -> void:
+	_rp_speed = clampf(s, ReplayBar.SPEED_MIN, ReplayBar.SPEED_MAX)
+	if announce:
+		_osd("%.2fx" % _rp_speed)
 	_replay_sync_bar()
 
 
-## 時刻 t へ飛ぶ(前へも後ろへも)。直前のキーフレームから再計算するので、少し(長くても 1 秒ほど)かかることがある。
+## 秒数だけ、いまの位置から動く(OSD つき)。
+func _replay_skip(d: float) -> void:
+	_replay_seek(_rt + d)
+	_osd("%+d秒" % int(d))
+
+
+## 前の・次の被弾の少し前へ飛ぶ(死因・避けそこねの確認)。
+func _replay_jump_hit(dir: int) -> void:
+	const LEAD := 1.5   # 被弾のこれだけ前から見せる(避けそこねた前後が分かるように)
+	var cur := _rt
+	var idx := -1
+	if dir > 0:
+		for i in range(_rp_hits.size()):
+			if float(_rp_hits[i]) - LEAD > cur + 0.05:
+				idx = i
+				break
+	else:
+		for i in range(_rp_hits.size() - 1, -1, -1):
+			if float(_rp_hits[i]) - LEAD < cur - 0.3:
+				idx = i
+				break
+	if idx < 0:
+		_osd("これより後の被弾はありません" if dir > 0 else "これより前の被弾はありません")
+		return
+	_replay_seek(maxf(float(_rp_hits[idx]) - LEAD, _rp.start_time()))
+	_osd("被弾 %d / %d" % [idx + 1, _rp_hits.size()])
+
+
+## 時刻 t へ飛ぶ(前へも後ろへも)。直前のキーフレームへ戻して、そこから目標までを、数フレームに分けて計算する(1 フレームに replay_seek_budget_ms ミリ秒まで。
+## 画面は止まらず、時間がかかるときは「読み込み中」を出す)。新しく飛ぶように頼まれたら、そちらに切り替える。
 func _replay_seek(t: float) -> void:
 	if _rp == null:
 		return
 	if _dead:
 		_replay_undo_death()
-	_rp.seek(t)
+	if _rp_seek_to < 0.0:
+		_rp_seek_t0 = Time.get_ticks_usec()
+		_rp_seek_from = _rp.t
+	_rp.seek_begin(t)
 	_rt = clampf(t, _rp.start_time(), _rp.end_time())   # 記録のない区間(スキップしたイントロ)へ飛んだときは、その手前の状態のまま、時計だけ進む
 	_now = _rt
+	_rp_seek_to = _rt
+	_rp_seek_from = minf(_rp_seek_from, _rp.t)
 	_hit_any = false
 	_hit_started = false
 	if _audio.playing:
 		_audio.stop()
+	_replay_seek_step(3.0)   # 近いときは、ここで終わる(待ちは出ない)
+	_replay_sync_bar()
+
+
+## 飛ぶ途中の計算を、budget_ms ミリ秒ぶん進める(0 なら最後まで)。終わったら true。
+func _replay_seek_step(budget_ms: float) -> bool:
+	if _rp_seek_to < 0.0:
+		return true
+	if not _rp.advance_to(_rp_seek_to, false, budget_ms):
+		return false
+	_rp_seek_to = -1.0
 	_replay_snap_hud()
 	if sim.failed:
 		_begin_death(false)   # 最後まで飛んだ: ゲームオーバーの演出をもう一度
+	if _rp.at_end():
+		_replay_verify()
 	_refresh()
+	if _rp_bar != null:
+		_rp_bar.set_loading(false, 1.0)
+		_rp_bar.set_seek_cost(float(Time.get_ticks_usec() - _rp_seek_t0) / 1000.0)
+	return true
+
+
+## 飛ぶのを、その場で最後まで済ませる(確認用)。
+func _replay_seek_now(t: float) -> void:
+	_replay_seek(t)
+	_replay_seek_step(0.0)
+	_replay_sync_bar()
+
+
+## 飛んでいる最中の 1 フレーム: 計算を進めて、途中の状態を見せ、時間がかかっていれば「読み込み中」を出す。
+func _replay_seek_tick() -> void:
+	if not _replay_seek_step(replay_seek_budget_ms):
+		var span := maxf(_rp_seek_to - _rp_seek_from, 0.001)
+		if _rp_bar != null and float(Time.get_ticks_usec() - _rp_seek_t0) > 70000.0:   # 70 ms を超えたら出す(一瞬で済む飛びでは、出さない)
+			_rp_bar.set_loading(true, clampf((_rp.t - _rp_seek_from) / span, 0.0, 1.0))
+		_refresh()
 	_replay_sync_bar()
 
 
@@ -2406,22 +2604,28 @@ func _replay_undo_death() -> void:
 	_rp.force_restore = true   # 演出で弾を進めたので、キーフレームから戻す
 
 
-func _replay_cycle_trail_mode() -> void:
-	replay_trail_mode = (replay_trail_mode + 1) % 3
-	_replay_apply_trail()
+# --- 動画出力 ---
+
+func _replay_request_export(opts: Dictionary) -> void:
+	var o := opts.duplicate()
+	if not o.is_empty():
+		o["trail_mode"] = replay_trail_mode
+		o["trail_sec"] = replay_trail_sec
+	replay_export_requested.emit(replay_data, o)
 
 
-func _replay_cycle_trail_len() -> void:
-	var lens := [1.0, 3.0, 5.0, 10.0]
-	var i := lens.find(replay_trail_sec)
-	replay_trail_sec = lens[(i + 1) % lens.size()]
+# --- 軌道(過去 3 秒。出す / 出さない だけ) ---
+
+func _replay_toggle_trail() -> void:
+	replay_trail_mode = 0 if replay_trail_mode > 0 else 1
 	_replay_apply_trail()
+	_osd("軌道: 表示" if replay_trail_mode > 0 else "軌道: 非表示")
 
 
 func _replay_apply_trail() -> void:
-	for v in [_view_under, _view_over]:
-		v.trail_mode = replay_trail_mode
-		v.trail_sec = replay_trail_sec
+	_view_under.trail_mode = 1 if replay_trail_mode > 0 else 0
+	_view_under.trail_sec = replay_trail_sec
+	_view_over.trail_mode = 0
 	_replay_sync_bar()
 
 
@@ -2436,12 +2640,23 @@ func set_export_status(text: String) -> void:
 		_rp_bar.set_export_status(text)
 
 
-func _replay_sync_bar() -> void:
+## 書き出しが終わった(path: できたファイル。空なら失敗)。
+func set_export_done(path: String, text: String) -> void:
 	if _rp_bar != null:
-		_rp_bar.set_state(_rp_playing, _rp_speed, _rt, replay_trail_mode, replay_trail_sec)
+		_rp_bar.set_export_done(path, text)
 
 
-## 再生のキー操作。Space = 再生/停止 / ← → = 5 秒(Shift で 1 秒、Ctrl で 15 秒)戻る・進む / , . = 1 コマ / [ ] = 速さ / T = 軌道 / Y = 軌道の長さ / H = パネルを隠す / Home End / Esc = 閉じる
+func _replay_sync_bar() -> void:
+	if _rp_state_l != null:
+		var txt := "停止中" if not _rp_playing else ("再生中" if is_equal_approx(_rp_speed, 1.0) else "再生中  %.2fx" % _rp_speed)
+		if txt != _rp_state_l.text:
+			_rp_state_l.text = txt
+			_rp_state_l.modulate.a = 0.6 if not _rp_playing else 1.0
+	if _rp_bar != null:
+		_rp_bar.set_state(_rp_playing, _rp_speed, _rt, replay_trail_mode > 0)
+
+
+## 再生のキー操作(一覧は ReplayBar.HELP_LINES)。
 func _replay_key(event: InputEventKey) -> void:
 	if _rp == null:
 		if event.keycode == KEY_ESCAPE:
@@ -2451,35 +2666,57 @@ func _replay_key(event: InputEventKey) -> void:
 	match event.keycode:
 		KEY_SPACE:
 			if not event.echo:
-				_replay_set_playing(not _rp_playing)
+				_replay_set_playing(not _rp_playing, true)
 		KEY_ESCAPE:
-			_replay_close()
+			if not _rp_bar.dismiss_popups():
+				_replay_close()
 		KEY_LEFT:
-			_replay_seek(_rt - step)
+			_replay_skip(-step)
 		KEY_RIGHT:
-			_replay_seek(_rt + step)
+			_replay_skip(step)
 		KEY_HOME:
 			_replay_seek(_rp.start_time())
+			_osd("最初へ")
 		KEY_END:
 			_replay_seek(_rp.end_time())
+			_osd("最後へ")
+		KEY_PAGEUP:
+			_replay_jump_hit(-1)
+		KEY_PAGEDOWN:
+			_replay_jump_hit(1)
 		KEY_COMMA:
 			_replay_set_playing(false)
 			_replay_seek(_rp.prev_frame_time())
 		KEY_PERIOD:
 			_replay_set_playing(false)
-			if _rp.step_frame():
+			if _rp_seek_to < 0.0 and _rp.step_frame():
 				_rt = _rp.t
 				_now = _rt
 				_hit_any = _rp.hit_any
 				_replay_sync_bar()
-		KEY_BRACKETLEFT, KEY_BRACKETRIGHT:
+		KEY_BRACKETLEFT, KEY_BRACKETRIGHT:   # 区切りのよい速さ(0.25 / 0.5 / 1 / 2 / 4 / 8)へ
+			var up := event.keycode == KEY_BRACKETRIGHT
+			var next := _rp_speed
 			var speeds: Array = ReplayBar.SPEEDS
-			var i := speeds.find(_rp_speed)
-			i = clampi((i if i >= 0 else 2) + (-1 if event.keycode == KEY_BRACKETLEFT else 1), 0, speeds.size() - 1)
-			_replay_set_speed(speeds[i])
+			for i in range(speeds.size()):
+				var s: float = speeds[i if up else speeds.size() - 1 - i]
+				if (up and s > _rp_speed + 0.001) or (not up and s < _rp_speed - 0.001):
+					next = s
+					break
+			_replay_set_speed(next)
 		KEY_H:
-			_rp_bar.pinned_hidden = not _rp_bar.pinned_hidden   # 操作パネルを隠す・出す
+			_rp_bar.pinned_hidden = not _rp_bar.pinned_hidden   # 操作パネルを隠す・出す(プレイ画面が、元の大きさへ戻る)
 		KEY_T:
-			_replay_cycle_trail_mode()
-		KEY_Y:
-			_replay_cycle_trail_len()
+			_replay_toggle_trail()
+		KEY_F1, KEY_SLASH, KEY_QUESTION:
+			_rp_bar.toggle_help()
+
+
+## 再生中、プレイ画面をクリックすると、再生 / 停止(操作パネルの上のクリックは、ここへ来ない)。
+func _unhandled_input(event: InputEvent) -> void:
+	if _rp == null or _rp_bar == null:
+		return
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if _rp_bar.dismiss_popups():
+			return
+		_replay_set_playing(not _rp_playing, true)

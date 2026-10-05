@@ -73,9 +73,9 @@ static func impact(host: Control, big: Label, at: Vector2, accent: Color, tier: 
 			UiFx.burst(host, at, a, 34 if tier == 3 else 28, 640.0, 1.0, 5.0, 160.0, 1.9)
 			UiFx.burst(host, at, gold, 22 if tier == 3 else 14, 150.0, 1.8, 2.4, -70.0, 0.9)   # ゆっくり舞い上がる光の粒
 			if tier == 3:
-				host.get_tree().create_timer(0.12).timeout.connect(func():
-					if host.is_inside_tree():
-						UiFx.ring(host, at, gold, 30.0, 300.0, 0.9, 3.0))   # 2 つ目の衝撃波
+				var second := host.create_tween()   # host に結び付いた待ち(host が消えたら、一緒に消える)
+				second.tween_interval(0.12)
+				second.tween_callback(func(): UiFx.ring(host, at, gold, 30.0, 300.0, 0.9, 3.0))   # 2 つ目の衝撃波
 			UiSfx.play("stamp", 1.0)
 			UiSfx.play("confirm", 1.5 if tier == 3 else 1.3, 0.7)   # 明るい響き
 			glow_behind(big, a, 0.55 if tier == 3 else 0.4)

@@ -138,6 +138,58 @@ func _test_roundtrip(label: String, bm, mods: Array, seed_n: int) -> void:
 	sk.seek(8.0)
 	sk.advance_to(1.0e9)
 	_check(_digest(sk.sim, sk.field) == played.digest, "%s: シークのあとの続きも、最後の状態が同じ" % label)
+	# 6) フレームの途中のステップで止まりながら進めても(遅い再生・秒数へ飛ぶ)、最後は同じ。止めたところで、コマ送りも続けられる
+	var fine := _player_for(bm, mods, rec)
+	var tt: float = fine.start_time()
+	var stopped_mid := 0
+	while tt < fine.end_time() and not fine.sim.finished:
+		tt += 0.0037
+		fine.advance_to(tt)
+		if fine.sub > 0:
+			stopped_mid += 1
+	fine.advance_to(1.0e9)
+	_check(stopped_mid > 100 and _digest(fine.sim, fine.field) == played.digest, "%s: フレームの途中で何度も止めながら進めても、最後の状態が同じ(途中で止まった回数 %d)" % [label, stopped_mid])
+	var half := _player_for(bm, mods, rec)
+	half.advance_to(half.start_time() + 6.0037)
+	var was_sub: int = half.sub
+	var prev_t: float = half.prev_frame_time()
+	half.step_frame()
+	half.advance_to(1.0e9)
+	_check(_digest(half.sim, half.field) == played.digest and prev_t <= half.start_time() + 6.0037, "%s: 途中で止めたあと、コマ送り(残りのステップ)で続けても同じ(止めたステップ %d)" % [label, was_sub])
+	# 7) 結果の確認(版が変わってずれたとき、見つけられる)
+	_check(Replay.verify(p.sim, {"hits": sim.hits, "graze": sim.graze, "score": sim.score}) and not Replay.verify(p.sim, {"hits": sim.hits + 1, "graze": sim.graze, "score": sim.score}), "%s: 記録の結果と合っていれば true、1 つでもずれていれば false" % label)
+	# 8) 追加のキーフレーム(裏で 1 秒おきに作る)を使って飛んでも、先頭から通した状態と同じ。待ちは、5 秒おきの記録だけのときより短い
+	var dense = load("res://scripts/replay_dense.gd").new()
+	dense.start(bm, {"mods": mods, "density_mul": 1.0}, "", false, rec.frames, rec.keys, sk.sim, sk.field)
+	var waited := 0
+	while not dense.done and waited < 120000:
+		OS.delay_msec(50)
+		waited += 50
+	dense.stop()
+	var key_bytes: int = var_to_bytes(rec.keys[rec.keys.size() - 1].s).size()
+	print("      追加のキーフレーム %d 個を %.1f 秒で作った(1 個 %d バイト)" % [dense.count(), float(waited) / 1000.0, key_bytes])
+	_check(dense.done and dense.count() >= int((sk.end_time() - sk.start_time()) * 2.0) - 6 and key_bytes < 60000, "%s: 追加のキーフレームが 0.5 秒おきにできる(%d 個。1 個 %d バイトに縮めてある)" % [label, dense.count(), key_bytes])
+	var dp := _player_for(bm, mods, rec)
+	dp.cache = dense
+	var ok2 := true
+	var bad2 := ""
+	for tm in [20.4, 7.3, 33.7, 12.2]:
+		var tgt2: float = clampf(tm, dp.start_time(), dp.end_time())
+		var t1 := Time.get_ticks_usec()
+		dp.seek(tgt2)
+		var cost_dense := Time.get_ticks_usec() - t1
+		var ref2 := _player_for(bm, mods, rec)
+		ref2.advance_to(tgt2, false)
+		var plain := _player_for(bm, mods, rec)
+		var t2 := Time.get_ticks_usec()
+		plain.seek(tgt2)
+		var cost_plain := Time.get_ticks_usec() - t2
+		print("      seek %.1f: 追加あり %.0f ms / なし %.0f ms" % [tgt2, float(cost_dense) / 1000.0, float(cost_plain) / 1000.0])
+		if _digest(dp.sim, dp.field) != _digest(ref2.sim, ref2.field):
+			ok2 = false
+			bad2 = "%.1f" % tgt2
+			break
+	_check(ok2, "%s: 追加のキーフレームから飛んだ状態が、先頭から通した状態と同じ %s" % [label, bad2])
 	# 5) 記録を使った再計算の速さ(目安)
 	var t0 := Time.get_ticks_msec()
 	var sp := _player_for(bm, mods, rec)
@@ -194,6 +246,12 @@ func _test_files(bm) -> void:
 	q.advance_to(10.0, false)
 	_check(_digest(p.sim, p.field) == _digest(q.sim, q.field), "ファイルから読んだキーフレームへのシークも同じ")
 	_check(Replay.load_file("no_such_file.rpl").is_empty(), "ないファイルは空の辞書")
+	# 一覧・保存(「保存」したものは、整理で消えず、件数にも入れない)
+	var listed := Replay.list()
+	_check(listed.size() == 1 and str(listed[0].name) == name and str(listed[0].md5) == bm.md5 and int(listed[0].score) == 123 and not bool(listed[0].keep), "一覧に、要約(曲・スコア)が出る")
+	_check(FileAccess.file_exists(Replay.dir.path_join(Replay.INDEX_FILE)), "一覧の控え(index.json)ができる")
+	Replay.set_kept(name, true)
+	_check(Replay.kept_names().has(name) and bool(Replay.list()[0].keep), "「保存」すると、保存済みになる")
 	# 壊れたファイル・別の版
 	var bad := FileAccess.open(Replay.dir.path_join("bad.rpl"), FileAccess.WRITE)
 	bad.store_string("not a replay")
@@ -207,11 +265,19 @@ func _test_files(bm) -> void:
 	Replay.prune(["1000_dummy.rpl"])
 	var left := 0
 	for n in DirAccess.get_files_at(Replay.dir):
-		if str(n).ends_with(".rpl"):
+		if str(n).ends_with(".rpl") and str(n) != name:   # 保存済みは数えない
 			left += 1
 	_check(left == Replay.KEEP, "整理すると %d 件になる(いま %d 件)" % [Replay.KEEP, left])
 	_check(FileAccess.file_exists(Replay.dir.path_join("1000_dummy.rpl")), "守る指定のファイルは、古くても消さない")
 	_check(not FileAccess.file_exists(Replay.dir.path_join("1001_dummy.rpl")), "守らない古いものは消える")
+	_check(FileAccess.file_exists(Replay.dir.path_join(name)), "保存済みは、古くても整理で消えない")
+	var left2 := 0
+	for n in DirAccess.get_files_at(Replay.dir):
+		if str(n).ends_with(".rpl") and str(n) != name:
+			left2 += 1
+	_check(left2 == Replay.KEEP, "保存済みは、件数に入れない(ほかが %d 件残る)" % left2)
+	Replay.remove(name)
+	_check(not FileAccess.file_exists(Replay.dir.path_join(name)) and not Replay.kept_names().has(name), "消すと、保存済みの印も消える")
 	for n in DirAccess.get_files_at(Replay.dir):
 		DirAccess.remove_absolute(Replay.dir.path_join(n))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(Replay.dir))

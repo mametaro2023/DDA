@@ -36,6 +36,21 @@ func _build_left_panel() -> void:
 	col.add_theme_constant_override("separation", 8)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(col)
+	if not replay_data.is_empty() and not replay_export:   # 再生: 「リプレイ」であることと、いつの・どんな結果のプレイか・再生中 / 停止中(動画には入れない)
+		var ri := _replay_info()
+		var rc := _card(0.82)
+		col.add_child(rc)
+		var rv := VBoxContainer.new()
+		rv.add_theme_constant_override("separation", 3)
+		rv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rc.add_child(rv)
+		var rp := LazerStyle.pill("REPLAY", LazerStyle.PINK, 13)
+		rp.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		rv.add_child(rp)
+		rv.add_child(LazerStyle.label(ri.when, 11, LazerStyle.TEXT_MUTE))
+		rv.add_child(LazerStyle.label(ri.result, 12, Color(1.0, 0.45, 0.48) if ri.failed else LazerStyle.TEXT_DIM, true))
+		_rp_state_l = LazerStyle.label("", 12, LazerStyle.PINK, true)
+		rv.add_child(_rp_state_l)
 	var info := _card(0.82, true)
 	col.add_child(info)
 	var v := VBoxContainer.new()

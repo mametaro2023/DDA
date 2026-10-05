@@ -8,11 +8,20 @@ const FIELD_SKIP := ["_mm_halo", "_mm_color", "_mm_core", "_mm_ring", "_mats", "
 	"halo", "soft", "vis_center", "vis_r0", "vis_r1"]
 ## ボスの _breaks は GameSim.breaks と同じ配列(複製すると切り離される)。_anchors / _t0s / _track は、周回で後ろへ伸びるだけ
 const BOSS_SKIP := ["_breaks", "_rng", "_anchors", "_t0s", "_track"]
+## 弾 1 発ごとの配列(長さは MAX_BULLETS で固定)。写すときは、弾の数(count)ぶんだけにして、戻すときに元の長さへ戻す(キーフレームが 100 分の 1 ほどになる。count より後ろは使われない)
+const FIELD_PER_BULLET := ["pos", "vel", "rad", "col", "colf", "grace", "turn", "grazed", "kind", "age", "pa", "pb", "pc", "tscale", "wtgt"]
 
 
 ## いまのシム・弾・ボスの状態を、そのまま写し取る(あとで restore で戻せる)。
 static func snapshot(sim, field: Node2D) -> Dictionary:
-	var s := {"sim": _capture(sim, SIM_SKIP), "field": _capture(field, FIELD_SKIP),
+	var fc := _capture(field, FIELD_SKIP)
+	var cnt: int = field.count
+	var caps := {}
+	for k in FIELD_PER_BULLET:
+		if fc.has(k) and fc[k].size() > cnt:
+			caps[k] = fc[k].size()
+			fc[k] = fc[k].slice(0, cnt)
+	var s := {"sim": _capture(sim, SIM_SKIP), "field": fc, "caps": caps,
 		"ev_n": sim.events.size(), "giz_n": sim.gizmos.size(), "brk_n": sim.breaks.size()}
 	if sim.boss != null:
 		var b = sim.boss
@@ -40,17 +49,43 @@ static func restore(sim, field: Node2D, s: Dictionary) -> void:
 	sim.breaks.resize(int(s.brk_n))
 	_apply(sim, s.sim)
 	_apply(field, s.field)
+	var caps: Dictionary = s.get("caps", {})   # 数だけに縮めて写した配列は、元の長さへ戻す
+	for k in caps:
+		var a = field.get(k)
+		a.resize(int(caps[k]))
+		field.set(k, a)
+
+
+## 写す変数の名前の一覧(クラスごとに 1 度だけ作る)。get_property_list は、裏のスレッドから呼ぶと落ちるので、裏で使う前に warm で主スレッドで作っておく。
+static var _names := {}
+
+
+static func _names_for(obj: Object, skip: Array) -> Array:
+	var key := "%s|%s" % [obj.get_script().resource_path, ",".join(skip)]
+	if not _names.has(key):
+		var list: Array = []
+		for p in obj.get_property_list():
+			if (int(p.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE) != 0 and not skip.has(p.name):
+				list.append(str(p.name))
+		_names[key] = list
+	return _names[key]
+
+
+## 変数の名前の一覧を、主スレッドで作っておく(あとで、裏のスレッドが snapshot を呼べるように)。
+static func warm(sim, field: Node2D) -> void:
+	_names_for(sim, SIM_SKIP)
+	_names_for(field, FIELD_SKIP)
+	if sim.boss != null:
+		_names_for(sim.boss, BOSS_SKIP)
 
 
 static func _capture(obj: Object, skip: Array) -> Dictionary:
 	var out := {}
-	for p in obj.get_property_list():
-		if (int(p.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE) == 0 or skip.has(p.name):
-			continue
-		var v = obj.get(p.name)
+	for name in _names_for(obj, skip):
+		var v = obj.get(name)
 		if v is Object or v is Callable or v is Signal or v is RID:
 			continue
-		out[p.name] = _copy(v)
+		out[name] = _copy(v)
 	return out
 
 

@@ -71,3 +71,8 @@ func make_mods() -> Control:
 ## 確認パネル(既定の文言は「ゲームを終了しますか？」。setup で変える)
 func make_quit() -> Control:
 	return null
+
+
+## リプレイの一覧パネル(signal closed / signal replay_requested(name))
+func make_replays() -> Control:
+	return null

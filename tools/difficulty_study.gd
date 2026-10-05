@@ -4,7 +4,8 @@ extends SceneTree
 ##   godot --headless --path . --script tools/difficulty_study.gd -- maps [osz の名前の一部 ...]   譜面ごと: Lv・★・ボットの被弾
 ##   godot --headless --path . --script tools/difficulty_study.gd -- factors                     要素ごと: 1 つずつ変えたときの Lv とボットの変化
 ##   godot --headless --path . --script tools/difficulty_study.gd -- mods [dir=<osz のフォルダ>] [part=k/n]   MOD ごと: Lv の変化と、ボットが倒れる回数(ベーススコアの倍率を決める材料)
-## 出力は CSV ふうの行(先頭が "row," / "factor," / "mod,")。
+##   godot --headless --path . --script tools/difficulty_study.gd -- elastic [jobs=12] [minlv=0]  弾数・弾の大きさの効き(並列。下の _elastic)
+## 出力は CSV ふうの行(先頭が "row," / "factor," / "mod," / "el,")。
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
@@ -24,6 +25,8 @@ func _init() -> void:
 		_mods(args)
 	elif args.has("factors"):
 		_factors()
+	elif args.has("elastic"):
+		_elastic(args)
 	else:
 		var filters: Array = []
 		for a in args:
@@ -287,3 +290,190 @@ func _run_deaths(g2: Dictionary, p: Dictionary, weak: bool) -> Dictionary:
 		now += DT
 	field.free()
 	return {"deaths": deaths, "hit_s": sim.hit_time, "play_min": maxf(last_t - maxf(first_t, 0.0), 1.0) / 60.0}
+
+
+# --- 弾の数と大きさの効き(elastic): 並列で走らせる ---
+## 弾数・弾サイズ・自機サイズを少しずつ変え、ボットの被弾がどれだけ増えるかから「効き」(弾性 = ln(被弾の比) / ln(変えた倍率))を求める。
+## 弾の大きさは、危険半径(弾 + 自機の当たり判定)の比で数える。Lv の計算は「弾数 ^1 × 危険半径 ^SIZE_EXP」なので、
+## 危険半径の効き ÷ 弾数の効き が、ボットに合う SIZE_EXP の目安になる。弾幕は v2(いまの初期状態)。
+##   godot --headless --path . --script tools/difficulty_study.gd -- elastic [jobs=12] [dir=<osz のフォルダ>] [minlv=0]
+## jobs > 1 なら、自分を jobs 個の子プロセスとして起動し(part=k/n out=<ファイル>)、終わったら全部を集計する。
+## ボットは決まった動きなので、開始位置を SEEDS 通りにずらして、同じ条件を複数回走らせる。
+const ELASTIC_VARIANTS := [
+	["base", {}],
+	["count1.25", {"count_mul": 1.25}],
+	["count1.5", {"count_mul": 1.5}],
+	["size1.25", {"size_mul": 1.25}],
+	["size1.5", {"size_mul": 1.5}],
+	["player1.5", {"player_scale": 1.5}],
+]
+const SEEDS := [Vector2.ZERO, Vector2(-90, 0), Vector2(90, -20)]
+
+
+func _elastic(args: Array) -> void:
+	var dir := "res://"
+	var jobs := 1
+	var part := 0
+	var parts := 1
+	var out := ""
+	var minlv := 0.0
+	for a in args:
+		var s := str(a)
+		if s.begins_with("dir="):
+			dir = s.trim_prefix("dir=")
+		elif s.begins_with("jobs="):
+			jobs = int(s.trim_prefix("jobs="))
+		elif s.begins_with("minlv="):
+			minlv = float(s.trim_prefix("minlv="))
+		elif s.begins_with("out="):
+			out = s.trim_prefix("out=")
+		elif s.begins_with("part="):
+			var kn: PackedStringArray = s.trim_prefix("part=").split("/")
+			part = int(kn[0])
+			parts = int(kn[1])
+	if jobs > 1 and out == "":
+		_elastic_parent(dir, jobs, minlv)
+		return
+	var lines: Array = []
+	var k := 0
+	for path in _osz_files(dir):
+		var loader := OszLoader.new()
+		if not loader.open(path):
+			continue
+		for bm in loader.difficulties:
+			k += 1
+			if (k - 1) % parts != part:
+				continue
+			var gen := PatternGenV2.generate(bm, {})
+			if float(gen.level) < minlv:
+				continue
+			gen["zones"] = []   # 特殊エリアは Lv に入っていないので外す
+			var r0 := PatternGen.danger_radius(float(gen.size))
+			for v in ELASTIC_VARIANTS:
+				var p := Mods.params([])
+				for key in v[1]:
+					p[key] = v[1][key]
+				if not (v[1] as Dictionary).is_empty():
+					p.ids = ["x"]
+				var g2 := Mods.apply(gen, p) if not (v[1] as Dictionary).is_empty() else gen
+				g2["zones"] = []
+				var r1 := PatternGen.danger_radius(float(gen.size) * float(p.size_mul), PatternGen.PLAYER_HIT_R * float(p.player_scale))
+				for si in range(SEEDS.size()):
+					for weak in [false, true]:
+						var res := _run_bot_at(g2, p, weak, SEEDS[si])
+						lines.append("el,%s,%s,%.2f,%s,%d,%s,%.4f,%.4f,%.3f" % [str(path).get_file().substr(0, 14).replace(",", " "), str(bm.version).replace(",", " "),
+							gen.level, v[0], si, "weak" if weak else "strong", res.hit_s, res.play_min, r1 / r0])
+	if out != "":
+		var f := FileAccess.open(out, FileAccess.WRITE)
+		f.store_string("\n".join(lines) + "\n")
+		f.close()
+	else:
+		_elastic_report(lines)
+
+
+func _elastic_parent(dir: String, jobs: int, minlv: float) -> void:
+	var exe := OS.get_executable_path()
+	var tmp := OS.get_temp_dir().path_join("danmaku_elastic").replace("\\", "/")
+	DirAccess.make_dir_recursive_absolute(tmp)
+	var pids: Array = []
+	var files: Array = []
+	var t0 := Time.get_ticks_msec()
+	for j in range(jobs):
+		var f := tmp.path_join("part%d.csv" % j)
+		if FileAccess.file_exists(f):
+			DirAccess.remove_absolute(f)
+		files.append(f)
+		pids.append(OS.create_process(exe, ["--headless", "--path", ProjectSettings.globalize_path("res://"), "--script", "res://tools/difficulty_study.gd", "--",
+			"elastic", "dir=" + dir, "minlv=%f" % minlv, "part=%d/%d" % [j, jobs], "out=" + f]))
+	while true:
+		var running := 0
+		for pid in pids:
+			if int(pid) > 0 and OS.is_process_running(int(pid)):
+				running += 1
+		if running == 0:
+			break
+		OS.delay_msec(500)
+	var lines: Array = []
+	for f in files:
+		if FileAccess.file_exists(f):
+			for l in FileAccess.get_file_as_string(f).split("\n"):
+				if l.begins_with("el,"):
+					lines.append(l)
+	print("elastic: %d 本の結果(%d 並列、%.0f 秒)" % [lines.size(), jobs, (Time.get_ticks_msec() - t0) / 1000.0])
+	_elastic_report(lines)
+
+
+## 集計: 変えたもの・ボットごとに、全譜面・全開始位置の被弾時間を足して、基準(base)との比を出す(被弾 0 の譜面があっても割れない)。
+## 被弾の比 → 弾性。弾数は倍率、弾・自機の大きさは危険半径の比(譜面ごとに違うので、平均)で割る。
+func _elastic_report(lines: Array) -> void:
+	for l in lines:
+		print(l)
+	var sum := {}     # "variant|bot" → 被弾時間の合計
+	var rr := {}      # variant → [危険半径の比の合計, 数]
+	var maps := {}
+	for l in lines:
+		var c: PackedStringArray = str(l).split(",")
+		var key := c[4] + "|" + c[6]
+		sum[key] = float(sum.get(key, 0.0)) + float(c[7])
+		var a: Array = rr.get(c[4], [0.0, 0])
+		a[0] += float(c[9])
+		a[1] += 1
+		rr[c[4]] = a
+		maps[c[1] + c[2]] = true
+	print("elastic_sum: 譜面 %d" % maps.size())
+	var mult := {"count1.25": 1.25, "count1.5": 1.5}
+	for bot in ["strong", "weak"]:
+		var base := float(sum.get("base|" + bot, 0.0))
+		var e_count := []
+		for v in ELASTIC_VARIANTS:
+			var name: String = v[0]
+			if name == "base":
+				continue
+			var ratio := float(sum.get(name + "|" + bot, 0.0)) / maxf(base, 1e-6)
+			var x: float = mult.get(name, 0.0)
+			var by := "弾数"
+			if x == 0.0:
+				x = float(rr[name][0]) / maxf(float(rr[name][1]), 1.0)
+				by = "危険半径"
+			var el := log(maxf(ratio, 1e-6)) / log(x)
+			if by == "弾数":
+				e_count.append(el)
+			print("elastic_sum,%s,%s,被弾の比 %.3f,%s ×%.3f,弾性 %.2f" % [bot, name, ratio, by, x, el])
+		var ec := 0.0
+		for e in e_count:
+			ec += float(e) / e_count.size()
+		for name in ["size1.25", "size1.5", "player1.5"]:
+			var x := float(rr[name][0]) / maxf(float(rr[name][1]), 1.0)
+			var ratio := float(sum.get(name + "|" + bot, 0.0)) / maxf(base, 1e-6)
+			print("elastic_fit,%s,%s,SIZE_EXP の目安 %.2f(危険半径の弾性 %.2f ÷ 弾数の弾性 %.2f。いまは %.2f)" % [bot, name, (log(maxf(ratio, 1e-6)) / log(x)) / maxf(ec, 1e-6), log(maxf(ratio, 1e-6)) / log(x), ec, PatternGen.SIZE_EXP])
+
+
+## _run_bot と同じ。開始位置を offset だけずらし、被弾時間(秒)と遊んだ分数を返す。p: Mods.params の形(自機の大きさが効く)。
+func _run_bot_at(gen: Dictionary, p: Dictionary, weak: bool, offset: Vector2) -> Dictionary:
+	var field := BulletField.new()
+	var sim := GameSim.new()
+	var last_t := 0.0
+	for e in gen.events:
+		last_t = maxf(last_t, float(e.t))
+	var end_t := last_t + 2.0
+	var m := p.duplicate()
+	m["practice"] = true
+	sim.setup(field, gen, end_t, true, m)
+	sim.player_pos = (sim.player_pos + offset).clamp(Vector2(12, 12), GameSim.ARENA - Vector2(12, 12))
+	var bot_every := maxi(int(round((0.15 if weak else 0.05) / DT)), 1)
+	var now := 0.0
+	var steps := 0
+	var move := Vector2.ZERO
+	var first_t := -1.0
+	for e in gen.events:
+		if not e.shots.is_empty():
+			first_t = float(e.t)
+			break
+	while not sim.finished and steps < int((end_t + 10.0) / DT):
+		if steps % bot_every == 0:
+			move = _bot(sim, field, GameSim.PLAYER_SLOW if weak else GameSim.PLAYER_SPEED, 0.3 if weak else 0.18)
+		sim.step(now, DT, move, weak)
+		steps += 1
+		now += DT
+	field.free()
+	return {"hit_s": sim.hit_time, "play_min": maxf(last_t - maxf(first_t, 0.0), 1.0) / 60.0}

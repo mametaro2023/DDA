@@ -50,6 +50,7 @@ const LEAD_IN := 1.5
 ## イントロのスキップ: 最初のノーツの SKIP_LEAD 秒前まで進める。進む幅が SKIP_MIN_GAIN 秒未満なら出さない
 const SKIP_LEAD := 1.5
 const SKIP_MIN_GAIN := 1.0
+const SOFT_CAPTURE_MAX := 60.0   # スキップのあと、掛け直した直後に受ける 1 回の移動量の上限(px)。それより大きいのは、中央への移動とみなして捨てる
 ## 表示スコアのイージング: 目標値との差を毎秒この割合で詰める ease-out(1/RATE 秒ほどで大半が追いつく)
 const SCORE_EASE_RATE := 9.0
 ## ゲームオーバーから結果画面へ移るまでの秒数(曲のテープストップ 1.7 秒・弾が消えるのを待ってから)
@@ -170,6 +171,7 @@ var _debuff_l: Label              # 危険エリアのデバフの名前(左の�
 var _debuff_shown := ""
 var _arrived := false             # 自機が現れて、操作が渡ったか
 var _mouse_capture_ms := 0
+var _mouse_capture_soft := false  # 掛け直した直後の小さな移動も受ける(_capture_mouse の soft)
 var _dead := false
 var _hit_glow := 0.0  # 被弾中の赤み(なめらかに減衰。点滅させない)
 var _fx_regen := 0.0       # 体力バー先端の演出: 回復中の度合い(0..1。なめらかに出入り)
@@ -1421,9 +1423,11 @@ func _on_window_focus_in() -> void:
 		_capture_mouse()
 
 
-func _capture_mouse() -> void:
+## soft: 掛け直した直後も、小さな移動は受ける(スキップのあと。カーソルはもう自機の位置にあり、中央への移動で飛ぶ心配がないので、200 ms の間、自機が止まらないように)。
+func _capture_mouse(soft := false) -> void:
 	# カーソルを隠して移動量だけを受け取る(自機とカーソルがずれない)
 	_mouse_accum = Vector2.ZERO
+	_mouse_capture_soft = soft
 	_mouse_capture_ms = Time.get_ticks_msec()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -1585,7 +1589,7 @@ func _update_skip_button() -> void:
 	elif not can and _skip_free:
 		_skip_free = false
 		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
-		_capture_mouse()
+		_capture_mouse(true)
 	if _ship_is_cursor():   # 自機が動ける範囲の中では、独自カーソルを出さない(自機とカーソルが 2 つ並ばない)。小型化で範囲の外にあるボタンへは、自機が届かないので、外ではカーソルを出す
 		var m: float = GameSim.PLAYER_MARGIN * sim.player_scale
 		CursorOverlay.hide_in(Rect2(ARENA_POS + sim.move_rect.position + Vector2(m, m), sim.move_rect.size - Vector2(m, m) * 2.0))
@@ -1840,7 +1844,7 @@ func _input(event: InputEvent) -> void:
 		return
 	if _mouse_mode and not _guiding and not _paused and not _mp_menu and not _dead and (_mp == null or _mp.started) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventMouseMotion:
 		# モード切替直後の初期イベント(カーソルの中央移動)は無視する
-		if Time.get_ticks_msec() - _mouse_capture_ms > 200:
+		if Time.get_ticks_msec() - _mouse_capture_ms > 200 or (_mouse_capture_soft and event.relative.length() < SOFT_CAPTURE_MAX):
 			_mouse_accum += event.relative
 
 

@@ -56,7 +56,7 @@ func _ensure_page(i: int) -> void:
 	var holder: Control = _pages[i]
 	if holder.get_child_count() > 0:
 		return
-	var page: Control = [_page_intro, _page_controls, _page_score, _page_mods, _page_multi, _page_songs][i].call()
+	var page: Control = call(PAGE_BUILDERS[i])
 	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	holder.add_child(page)
 
@@ -127,14 +127,14 @@ func _head(v: VBoxContainer, text: String) -> void:
 
 
 ## 「キー … 内容」の 1 行: 左にうす札の見出し、右に説明。
-func _row(v: VBoxContainer, key: String, text: String) -> void:
+func _row(v: VBoxContainer, key: String, text: String, key_color := Color(0, 0, 0, 0)) -> void:
 	var row := PanelContainer.new()
 	row.add_theme_stylebox_override("panel", LazerStyle.box(Color(1, 1, 1, 0.035), Color(0, 0, 0, 0), 0, 10, 14, 9))
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var h := HBoxContainer.new()
 	h.add_theme_constant_override("separation", 16)
 	row.add_child(h)
-	var k := LazerStyle.label(key, 15, LazerStyle.PINK, true)
+	var k := LazerStyle.label(key, 15, key_color if key_color.a > 0.0 else LazerStyle.PINK, true)
 	k.custom_minimum_size = Vector2(180, 0)
 	k.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	k.size_flags_vertical = Control.SIZE_SHRINK_BEGIN   # 説明が何行でも、見出しは 1 行目の高さに

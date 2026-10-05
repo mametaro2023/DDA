@@ -8,6 +8,7 @@ extends Node
 ## 読み込んだテクスチャは、最近使った MEM_MAX 曲ぶんだけ覚えておく。
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
+const ChartCache = preload("res://scripts/chart_cache.gd")
 
 const META_PATH := "user://song_art.json"
 const THUMB_DIR := "user://thumbs"
@@ -16,10 +17,15 @@ const MEM_MAX := 160
 const VERSION := 1
 
 static var inst: Node
+## true の間は、新しい作業を始めず、結果の受け取り・保存もしない(プレイ中。別スレッドの解析や、メインでの画像の変換・保存が、プレイ中の画面を止めることがあるため)。
+## 終わっていない作業は、プレイを離れてから続く。main が、画面の種類が変わるたびに設定する。
+static var paused := false
 
 static var _meta := {}          # 識別子 → {diffs, img}
+static var _levels := {}        # 識別子 → {tag(弾幕の作り方の版の印。ChartCache.stamp_tag), v1: {譜面の識別子: Lv}, v2: {...}}(MOD なしの Lv。難易度順・難易度の表示に使う)
 static var _meta_loaded := false
 static var _meta_dirty := false
+static var _levels_dirty := false
 static var _tex := {}           # 識別子 → Texture2D(null = 画像なし)
 static var _order: Array = []   # 覚えている順(古い順)
 static var _queue: Array = []   # [{key, path}](先頭から処理)
@@ -50,6 +56,8 @@ static func _load_meta() -> void:
 	f.close()
 	if d is Dictionary and int(d.get("v", 0)) == VERSION and d.get("songs") is Dictionary:
 		_meta = d.songs
+		if d.get("levels") is Dictionary:
+			_levels = d.levels
 
 
 ## すでに分かっている難易度の一覧(なければ空)。[[譜面の識別子, 難易度名, 推定★], ...](易しい順)
@@ -57,6 +65,29 @@ static func diffs_of(key: String) -> Array:
 	_load_meta()
 	var m = _meta.get(key)
 	return m.diffs if m is Dictionary else []
+
+
+## 曲 key の、MOD なしの Lv を残す(弾幕の作り方 v2 / v1 ごと)。測ったときの弾幕の作り方の版(ChartCache.stamp_tag)も添える(版が変わったら、古い値は使わない)。
+static func set_levels(key: String, v2: bool, levels: Dictionary) -> void:
+	_load_meta()
+	var tag := ChartCache.stamp_tag()
+	var e: Dictionary = _levels.get(key, {})
+	if str(e.get("tag", tag)) != tag:   # 前の版の値は、捨てる
+		e = {}
+	e["tag"] = tag
+	e["v2" if v2 else "v1"] = levels
+	_levels[key] = e
+	_levels_dirty = true
+
+
+## 曲 key の、譜面 chart_id の、MOD なしの Lv(まだ・版が違うときは -1)。
+static func level_of(key: String, chart_id: String, v2: bool) -> float:
+	_load_meta()
+	var e = _levels.get(key)
+	if not (e is Dictionary) or str(e.get("tag", "")) != ChartCache.stamp_tag():
+		return -1.0
+	var t = e.get("v2" if v2 else "v1")
+	return float((t as Dictionary).get(chart_id, -1.0)) if t is Dictionary else -1.0
 
 
 ## 曲の長さ(秒。いちばん長い譜面の、最初のノーツから最後までの長さ)。まだ分からない・読めなかった曲は -1。
@@ -151,6 +182,8 @@ static func _touch(key: String) -> void:
 
 
 func _process(delta: float) -> void:
+	if paused:
+		return
 	if not _busy and not _queue.is_empty():
 		var job: Dictionary = _queue.pop_front()
 		_busy = true
@@ -186,14 +219,15 @@ func _process(delta: float) -> void:
 			for cb in _waiting.get(key, []):
 				_call_back(cb, info)
 			_waiting.erase(key)
-	if _meta_dirty:
+	if _meta_dirty or _levels_dirty:
 		_save_t += delta
-		if _save_t > 1.0:   # まとめて保存する
+		if _save_t > (1.0 if _meta_dirty else 10.0):   # まとめて保存する(Lv だけが増えたときは、間を長く: 曲が多いと、保存は主スレッドで数十 ms かかる)
 			_save_t = 0.0
 			_meta_dirty = false
+			_levels_dirty = false
 			var f := FileAccess.open(META_PATH, FileAccess.WRITE)
 			if f != null:
-				f.store_string(JSON.stringify({"v": VERSION, "songs": _meta}))
+				f.store_string(JSON.stringify({"v": VERSION, "songs": _meta, "levels": _levels}))
 				f.close()
 
 

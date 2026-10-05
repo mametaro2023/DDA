@@ -13,6 +13,8 @@ signal song_loaded(res: Dictionary)
 signal song_load_failed(error: String, bad: int)
 ## MOD で弾幕の作り方(v1 / v2)が変わったので、同じ曲を読み直し始めた(終わると song_loaded。res.reload = true)。画面は読み込み中の見た目にする
 signal song_reloading
+## 選んでいる曲の、k 番の譜面の弾幕(発射の一覧を含む全部)が、そろった(統計だけだった弾幕が、プレイに使える形になった)。画面は、プレイを押せるようにする
+signal gen_ready(k: int)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
@@ -21,6 +23,7 @@ const Settings = preload("res://scripts/settings.gd")
 const Mods = preload("res://scripts/mods.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
 const Records = preload("res://scripts/records.gd")
+const SongArt = preload("res://scripts/song_art.gd")
 const ChartCache = preload("res://scripts/chart_cache.gd")
 
 ## 設定の辞書(画面と同じものを共有する。mods・last_song・last_diff を読み書きする)
@@ -50,6 +53,8 @@ var auto_sel_idx := -1          # 自動で選んだ曲の番号(その曲のま
 var _restore_key := ""          # 一覧を作り直す間、選んでいた曲(足し直されたときに、選択を戻す)
 var _reload_keep := ""          # 弾幕の作り方が変わって読み直すとき: 選んでいた難易度の version(空なら、ふつうの選曲)
 var _closed := false
+var _full_pending := {}         # 発射の一覧を用意している譜面の番号(ensure_full)
+static var loading_now := false   # 曲を読み込み中か(裏の準備は、この間は待つ)
 static var _pruned := false     # 保存した譜面の整理(ChartCache.prune)を、もうしたか(起動のあと 1 回)
 
 
@@ -131,7 +136,14 @@ func rescan() -> Dictionary:
 ## osu! の Songs の、索引ができた曲を、budget_us マイクロ秒まで一覧に足す(毎フレーム呼ぶ)。
 ## 返す辞書: {added(足した), select(この番号の曲を選ぶ。-1 = なし), restored(一覧を作り直す前に選んでいた曲を、song_sel に戻した)}
 func pump(budget_us := 4000) -> Dictionary:
-	var out := {"added": false, "select": -1, "restored": false}
+	var out := {"added": false, "select": -1, "restored": false, "prepped": false}
+	_prep_mutex.lock()
+	var got: Array = _prep_out
+	_prep_out = []
+	_prep_mutex.unlock()
+	for r in got:   # 裏の準備ができた曲の Lv を、SongArt に残す(難易度順・難易度の表示に使う)
+		SongArt.set_levels(str(r.key), bool(r.v2), r.levels)
+		out.prepped = true
 	if SongLibrary.osu_dir == "" or _osu_gen != SongLibrary.osu_gen:
 		return out
 	var t0 := Time.get_ticks_usec()
@@ -358,15 +370,22 @@ func select_song(i: int) -> bool:
 	song_sel = i
 	job += 1
 	job_pending = true
+	loading_now = true
 	_reload_keep = ""
 	song_changing.emit(old, i)
 	_start_job(songs[i].path)
 	return true
 
 
-## MOD で弾幕の作り方(v1 / v2)が変わったか(変わっていたら、reload_for_style で読み直す)。
+## MOD で弾幕の作り方(v1 / v2)が変わった・弾幕を変える MOD で全譜面の発射の一覧が要るようになったか(そうなら、reload_for_style で読み直す)。
 func needs_style_reload() -> bool:
-	return loader != null and bool(Mods.params(settings.mods).gen_v2) != gens_v2
+	if loader == null:
+		return false
+	var p := Mods.params(settings.mods)
+	if bool(p.gen_v2) != gens_v2:
+		return true
+	# 統計だけの弾幕に、弾幕を変える MOD(加速・弾数など)を付けた: Lv を測り直すのに、全譜面の発射の一覧が要るので、読み直す
+	return not Mods.pattern_neutral(p) and gens.any(func(g): return ChartCache.is_stub(g))
 
 
 ## 同じ曲を、今の弾幕の作り方で読み直す(選んでいた難易度はそのまま。弾幕は作り方ごとに覚えているので、戻すときは速い)。
@@ -378,6 +397,7 @@ func reload_for_style() -> void:
 		_reload_keep = " "
 	job += 1
 	job_pending = true
+	loading_now = true
 	song_reloading.emit()
 	_start_job(songs[song_sel].path)
 
@@ -423,6 +443,7 @@ func _on_load_done(res: Dictionary) -> void:
 			_release_gens_later(res.gens)   # 捨てる弾幕の解放も、別スレッドで(曲を次々に選んだとき、画面が止まらない)
 		return
 	job_pending = false
+	loading_now = false
 	if not res.ok:
 		_reload_keep = ""
 		var bad := song_sel
@@ -434,6 +455,9 @@ func _on_load_done(res: Dictionary) -> void:
 	_release_gens_later(gens)
 	gens = res.gens
 	gens_v2 = bool(res.get("v2", false))
+	_full_pending.clear()
+	if song_sel >= 0 and song_sel < songs.size() and res.get("levels") is Dictionary:
+		SongArt.set_levels(str(songs[song_sel].md5), gens_v2, res.levels)   # 測った Lv を残す(難易度順・難易度の表示に使う)
 	full_audio = res.audio_full
 	full_audio_file = str(res.audio_file)
 	# 曲を移ったときは、前に選んでいた難易度に Lv がいちばん近いものを選ぶ(Lv 7 を遊んでいる人が、曲を変えるたびに易しい譜面に戻らない)。最初の 1 回は 3 番目
@@ -461,6 +485,7 @@ func _on_load_done(res: Dictionary) -> void:
 				diff_sel = k4
 		_reload_keep = ""
 	song_loaded.emit(res)
+	ensure_full(diff_sel)   # 選んでいる譜面の発射の一覧(統計だけのとき)を、裏で用意する
 	if needs_style_reload():   # 読み込んでいるあいだに、弾幕 v2 の入り切りが変わっていた
 		reload_for_style()
 
@@ -480,6 +505,7 @@ func select_diff(i: int) -> int:
 	i = clampi(i, 0, ratings.size() - 1)
 	var old := diff_sel
 	diff_sel = i
+	ensure_full(i)
 	return old
 
 
@@ -492,9 +518,14 @@ func selected_level() -> float:
 
 # --- プレイへ渡す ---
 
-## 始められるか(曲を読み込み終わっていて、難易度を選んでいる)。
+## 始められるか(曲を読み込み終わっていて、難易度を選んでいて、その譜面の発射の一覧がそろっている)。
 func can_start() -> bool:
-	return loader != null and diff_sel >= 0 and not job_pending
+	return loader != null and diff_sel >= 0 and not job_pending and diff_sel < gens.size() and not ChartCache.is_stub(gens[diff_sel])
+
+
+## 選んでいる譜面の発射の一覧を、まだ待っているか(統計だけで、用意の途中)。
+func waiting_full() -> bool:
+	return loader != null and diff_sel >= 0 and diff_sel < gens.size() and ChartCache.is_stub(gens[diff_sel])
 
 
 ## 選んだ曲・難易度を設定に覚えさせる(次に選曲画面を開いたとき、この状態で開く)。
@@ -512,6 +543,118 @@ func launch_info() -> Dictionary:
 	if full_audio != null and bm.audio_filename == full_audio_file:
 		pre["audio"] = full_audio
 	return {"loader": loader, "bm": bm, "settings": settings, "pre": pre, "level": float(ratings[diff_sel].level)}
+
+
+# --- 発射の一覧を、あとから用意する(統計だけで開いた曲) ---
+
+## 選んでいる曲の k 番の譜面が統計だけ(stub)なら、発射の一覧を、別スレッドで用意する(保存してあれば読み、なければ作って保存する)。
+## できたら gen_ready が出る(それまで can_start は false)。用意の途中に曲が変わったら、結果は捨てる。
+func ensure_full(k: int) -> void:
+	if loader == null or song_sel < 0 or song_sel >= songs.size() or k < 0 or k >= gens.size() or not ChartCache.is_stub(gens[k]) or _full_pending.has(k):
+		return
+	_full_pending[k] = true
+	var from_loader = loader
+	var path := str(songs[song_sel].path)
+	var bm = loader.difficulties[k]
+	var v2 := gens_v2
+	var me: WeakRef = weakref(self)
+	WorkerThreadPool.add_task(func():
+		var full := full_gen_for(path, bm, v2, true)
+		var target: Object = me.get_ref()
+		if target != null:
+			target._on_full_done.call_deferred(k, full, from_loader))
+
+
+func _on_full_done(k: int, full: Dictionary, from_loader) -> void:
+	if _closed or loader != from_loader or k >= gens.size():
+		return
+	_full_pending.erase(k)
+	if not ChartCache.is_stub(gens[k]):
+		return
+	gens[k] = full
+	gen_ready.emit(k)
+
+
+# --- 全曲の難易度を、あらかじめ裏で用意する ---
+## 保存(ChartCache)の統計がない曲を、別スレッドで 1 曲ずつ処理して(解析 → 全難易度の弾幕 → 統計を保存)、全曲の Lv をそろえる。
+## 曲の読み込み中・プレイ中は待つ。結果は pump が受け取って、SongArt に Lv を残す。進み具合は prep_progress。
+
+static var _prep_mutex := Mutex.new()
+static var _prep_out: Array = []       # できた曲の結果 [{key, v2, levels}](pump が受け取る)
+static var _prep_running := false
+static var _prep_done := 0
+static var _prep_total := 0
+static var _prep_stop := false
+static var _prep_failed := {}          # 読めなかった曲(パス)。何度も試さない
+
+
+## 準備を始める(統計のない曲があれば)。始めたら true。すでに動いている・全部そろっているときは false。
+func start_prep(v2: bool) -> bool:
+	if _prep_running or not ChartCache.enabled:
+		return false
+	var todo: Array = []
+	for sg in songs:
+		if not ChartCache.has_stats(str(sg.path), v2) and not _prep_failed.has(str(sg.path)):
+			todo.append([str(sg.path), str(sg.md5)])
+	if todo.is_empty():
+		return false
+	_prep_mutex.lock()
+	_prep_running = true
+	_prep_stop = false
+	_prep_done = 0
+	_prep_total = todo.size()
+	_prep_mutex.unlock()
+	WorkerThreadPool.add_task(Callable(get_script(), "_prep_loop").bind(todo, v2), false, "chart prep")
+	return true
+
+
+## 準備を止める(画面を離れるとき)。処理中の 1 曲は、そのまま終わる。
+static func stop_prep() -> void:
+	_prep_stop = true
+
+
+## 準備の進み具合 {running, done, total}。
+static func prep_progress() -> Dictionary:
+	_prep_mutex.lock()
+	var out := {"running": _prep_running, "done": _prep_done, "total": _prep_total}
+	_prep_mutex.unlock()
+	return out
+
+
+static func _prep_loop(todo: Array, v2: bool) -> void:
+	for e in todo:
+		while (SongArt.paused or loading_now) and not _prep_stop:   # プレイ中・曲の読み込み中は、譲る
+			OS.delay_msec(150)
+		if _prep_stop:
+			break
+		var levels := prep_song(str(e[0]), v2)
+		_prep_mutex.lock()
+		if not levels.is_empty():
+			_prep_out.append({"key": str(e[1]), "v2": v2, "levels": levels})
+		else:
+			_prep_failed[str(e[0])] = true
+		_prep_done += 1
+		_prep_mutex.unlock()
+		OS.delay_msec(40)   # 続けざまに走らせず、ほかの作業(画面・音)に譲る
+	_prep_mutex.lock()
+	_prep_running = false
+	_prep_mutex.unlock()
+
+
+## 1 曲の統計を作って保存する(別スレッドで動く)。戻り値: 譜面の識別子 → Lv(読めない曲は空)。曲の読み込み(load_song)と同じ並び・同じ中身。
+static func prep_song(path: String, v2: bool) -> Dictionary:
+	var l = OszLoader.new()
+	if not l.open(path):
+		return {}
+	var first = l.difficulties[0]
+	var made := _generate_all(l, v2, false)   # 1 スレッド(画面・音に、できるだけ響かないように)
+	var gens: Array = made.gens
+	ChartCache.save_stats(path, v2, {"bms": l.difficulties.map(func(b): return b.to_meta()), "stubs": gens.map(func(g): return ChartCache.stub_of(g)), "first_md5": str(first.md5)})
+	var levels := {}
+	for k in range(gens.size()):
+		levels[str(l.difficulties[k].md5)] = float(gens[k].level)
+	l.close()
+	return levels
 
 
 # --- 読み込み(別スレッドで動く部分) ---
@@ -558,25 +701,29 @@ func debug_regen() -> void:
 
 
 ## (別スレッドで動く)曲を開いて、難易度ごとの弾幕・難易度(MOD 適用後)・背景画像・試聴用の音声まで作る。画面には触らない。
-static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
+## 保存(ChartCache)の統計があれば、譜面の解析も弾幕の生成もしない: 弾幕は「統計」だけ(stub。発射の一覧はない)で、難易度の表示には足りる。
+## 発射の一覧は、選んだ譜面の分だけ、あとから ensure_full が作る(保存してあれば読む)。
+## want_full = true、または、弾幕を変える MOD(加速・弾数・弾速・弾の大きさ・自機の大きさ)を付けているときは、全譜面の発射の一覧を用意する
+## (保存した発射の一覧があればそれを読み、なければ作る。このときの分は保存しない。Lv を測り直すのに、全譜面の発射の一覧が要るため)。
+static func load_song(path: String, mod_params: Dictionary, want_full := false) -> Dictionary:
 	if not _pruned:   # 保存した譜面(ChartCache)が増えすぎていたら、起動のあと 1 回だけ、別のスレッドで古いものを捨てる
 		_pruned = true
 		WorkerThreadPool.add_task(ChartCache.prune)
 	var v2 := bool(mod_params.get("gen_v2", false))   # MOD「弾幕 v2」: 弾幕の作り方が違うので、覚えておくのも別(v1 / v2 の両方を覚える)
-	# 保存してあれば(ChartCache)、譜面の解析も弾幕の生成もしない。ふつうは、ここで終わる(曲の入れものを開いて、音と画像を読むだけ)
+	var need_all := want_full or not Mods.pattern_neutral(mod_params)
 	var l = OszLoader.new()
 	var first = null
 	var gens_out: Array = []
-	var from_disk := false
-	var saved := ChartCache.load_entry(path, v2)
+	var from_stats := false
+	var saved := ChartCache.load_stats(path, v2)
 	if not saved.is_empty() and l.open_cached(path, saved.bms):
-		gens_out = saved.gens
 		for bm in l.difficulties:
 			if str(bm.md5) == str(saved.get("first_md5", "")):
 				first = bm
 		if first == null:
 			first = l.difficulties[0]
-		from_disk = true
+		from_stats = true
+		gens_out = saved.stubs
 	else:
 		l = OszLoader.new()
 		if not l.open(path):
@@ -585,36 +732,35 @@ static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	var image: Image = l.load_image_data(first.background) if first.background != "" else null
 	if image != null and image.get_width() > 1280:   # 背景は 1280×720 の画面に出すだけ。大きい画像は、ここ(別スレッド)で縮めて、テクスチャにする負担を減らす
 		image.resize(1280, maxi(int(round(1280.0 * image.get_height() / image.get_width())), 1), Image.INTERPOLATE_BILINEAR)
-	# Danmaku 難易度(Lv。MOD なしの状態)の低い順に並べ替える(保存したものは、並べ終わっている)
-	# 弾幕の生成が読み込みの大半(1 難易度で 20〜200 ms)。保存していない曲は、ここで作り(直近 GEN_CACHE_MAX 曲はメモリにも覚える)、保存する。
-	# 作るときは、難易度どうしが独立なので並列に作る(generate は共有の状態を持たない)。MOD の適用は別(下の ratings)なので、MOD を変えても使える
-	if not from_disk:
+	var key := "%s|%d|%d|%s" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path), "v2" if v2 else "v1"]   # ファイルが差し替わったら別物
+	if not from_stats:
+		# 保存していない曲: 全難易度の弾幕を作る(直近 GEN_CACHE_MAX 曲はメモリにも覚える)。作ったら、統計を保存する(次からは、解析も生成もしない)
 		var diffs: Array = l.difficulties
-		var key := "%s|%d|%d|%s" % [path, SongLibrary.file_size(path), FileAccess.get_modified_time(path), "v2" if v2 else "v1"]   # ファイルが差し替わったら別物
 		var cached := _gen_cache_get(key, diffs.size())
 		if not cached.is_empty():
 			var order: Array = cached.order
 			l.difficulties = order.map(func(i): return diffs[i])
 			gens_out = cached.gens
 		else:
-			var made: Array = []
-			made.resize(diffs.size())
-			if diffs.size() > 1:
-				var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = make_gen(diffs[i], v2), diffs.size())
-				WorkerThreadPool.wait_for_group_task_completion(gid)
-			else:
-				made[0] = make_gen(diffs[0], v2)
-			var pairs: Array = []
-			for i in range(diffs.size()):
-				pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
-			# 並びは表示する Lv の低い順(同じなら本家★)。生の密度(rating.score)では、弾速が AR で変わる弾幕 v2 で Lv と順が食い違う
-			pairs.sort_custom(func(a, b): return a.g.level < b.g.level if not is_equal_approx(a.g.level, b.g.level) else a.g.stars < b.g.stars)
-			l.difficulties = pairs.map(func(q): return q.bm)
-			gens_out = pairs.map(func(q): return q.g)
-			_gen_cache_put(key, pairs.map(func(q): return q.i), gens_out)
-		# 次からは、解析も生成もせずに読めるように、保存する(Lv 順に並んだあとの状態で)
-		ChartCache.save_entry(path, v2, {"bms": l.difficulties.map(func(b): return b.to_meta()), "gens": gens_out, "first_md5": str(first.md5)})
+			var made := _generate_all(l, v2, true)
+			gens_out = made.gens
+			_gen_cache_put(key, made.order, gens_out)
+		ChartCache.save_stats(path, v2, {"bms": l.difficulties.map(func(b): return b.to_meta()), "stubs": gens_out.map(func(g): return ChartCache.stub_of(g)), "first_md5": str(first.md5)})
+	elif need_all:
+		# 統計から開いたが、発射の一覧が全譜面ぶん要る: メモリに覚えていればそれ、なければ、保存した発射の一覧か、その場で作る
+		var key_all := key + "|all"
+		var n: int = l.difficulties.size()
+		var cached_all := _gen_cache_get(key_all, n)
+		if not cached_all.is_empty():
+			gens_out = cached_all.gens
+		else:
+			gens_out = _full_all(path, l.difficulties, v2)
+			_gen_cache_put(key_all, range(n), gens_out)
+	# Danmaku 難易度(Lv。MOD なしの状態)の低い順に並んでいる(保存したものは、並べ終わっている)
 	var ratings_out: Array = gens_out.map(func(g): return PatternGen.summary(Mods.apply(g, mod_params)))
+	var levels := {}   # 譜面の識別子 → MOD なしの Lv(SongArt に残して、難易度順・難易度の表示に使う)
+	for k in range(gens_out.size()):
+		levels[str(l.difficulties[k].md5)] = float(gens_out[k].level)
 	var audio: AudioStream = l.load_audio(first.audio_filename)
 	var from := maxf(first.preview_time / 1000.0, 0.0)
 	var full: AudioStream = audio
@@ -622,7 +768,51 @@ static func load_song(path: String, mod_params: Dictionary) -> Dictionary:
 	if cropped != null:   # MP3 の途中から流すと、探す処理で数十 ms 止まる。あらかじめ、その位置から始まる音声にしておく
 		audio = cropped
 		from = 0.0
-	return {"ok": true, "loader": l, "gens": gens_out, "v2": v2, "ratings": ratings_out, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
+	return {"ok": true, "loader": l, "gens": gens_out, "v2": v2, "ratings": ratings_out, "levels": levels, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
+
+
+## 全難易度の弾幕を作って、Lv(同じなら本家★)の低い順に並べる。l.difficulties も同じ並びにする。戻り値: {gens, order(元の並びでの番号)}。
+## parallel = true なら、難易度どうしが独立なので、並列に作る(generate は共有の状態を持たない)。MOD の適用は別なので、MOD を変えても使える。
+static func _generate_all(l, v2: bool, parallel: bool) -> Dictionary:
+	var diffs: Array = l.difficulties
+	var made: Array = []
+	made.resize(diffs.size())
+	if parallel and diffs.size() > 1:
+		var gid := WorkerThreadPool.add_group_task(func(i: int): made[i] = make_gen(diffs[i], v2), diffs.size())
+		WorkerThreadPool.wait_for_group_task_completion(gid)
+	else:
+		for i in range(diffs.size()):
+			made[i] = make_gen(diffs[i], v2)
+	var pairs: Array = []
+	for i in range(diffs.size()):
+		pairs.append({"i": i, "bm": diffs[i], "g": made[i]})
+	# 並びは表示する Lv の低い順(同じなら本家★)。生の密度(rating.score)では、弾速が AR で変わる弾幕 v2 で Lv と順が食い違う
+	pairs.sort_custom(func(a, b): return a.g.level < b.g.level if not is_equal_approx(a.g.level, b.g.level) else a.g.stars < b.g.stars)
+	l.difficulties = pairs.map(func(q): return q.bm)
+	return {"gens": pairs.map(func(q): return q.g), "order": pairs.map(func(q): return q.i)}
+
+
+## 譜面 bm の弾幕(発射の一覧を含む全部)。保存した発射の一覧があればそれを読み、なければ作る(save = true なら、作ったものを保存する)。別スレッドで動く。
+static func full_gen_for(path: String, bm, v2: bool, save := true) -> Dictionary:
+	var id := str(bm.md5)
+	var g := ChartCache.load_events(path, id, v2)
+	if g.is_empty():
+		g = make_gen(bm, v2)
+		if save:
+			ChartCache.save_events(path, id, v2, g)
+	return g
+
+
+## 全譜面の弾幕(発射の一覧を含む全部)を並列に用意する(保存はしない)。diffs = 並びが決まった譜面。
+static func _full_all(path: String, diffs: Array, v2: bool) -> Array:
+	var out: Array = []
+	out.resize(diffs.size())
+	if diffs.size() > 1:
+		var gid := WorkerThreadPool.add_group_task(func(i: int): out[i] = full_gen_for(path, diffs[i], v2, false), diffs.size())
+		WorkerThreadPool.wait_for_group_task_completion(gid)
+	elif diffs.size() == 1:
+		out[0] = full_gen_for(path, diffs[0], v2, false)
+	return out
 
 
 ## MP3 の、from 秒あたりから始まる音声(データの途中から切り出す。MP3 は、途中からでも読み始められる)。MP3 でない・先頭のとき・長さが分からないときは null。

@@ -44,6 +44,8 @@ const INDENT := 44.0          # 行の左の余白(閉じているとき)
 const INDENT_HOVER := 30.0
 const INDENT_SEL := 6.0       # 選んでいる行は、左へせり出す
 const MARGIN_R := 26.0        # 行の右の余白
+const BULGE := 30.0           # 一覧の真ん中あたりの行は、上下の端の行より、左へこれだけせり出す(px。選んでいる行は、いつも最大にせり出している)
+const BULGE_RATE := 14.0      # せり出しの動きの速さ(大きいほど速く追いつく)
 const CHART_FILL_MAX := 160   # 難易度順で、中身を持っておく行の数(超えたら、古いものから手放す)
 const CHART_FILL_PER_FRAME := 6   # 難易度順で、1 フレームに中身を作る行の数
 const CHART_REBUILD_MS := 800     # 難易度を集めている間、並びを作り直す間隔(ミリ秒)
@@ -98,10 +100,13 @@ var _chart_want := ""            # 押した譜面の識別子(別の曲だっ�
 var _chart_center_pending := false   # 選んでいる曲を読み込み終わったら、その譜面を一覧の真ん中へ
 var _meta_asked := {}            # 難易度を集めるよう頼んだ曲(曲の識別子)
 var _len_asked := {}             # 長さを集めるよう頼んだ曲
+var _prep_check_at := 0          # 全曲の難易度の準備を、最後に確かめた時刻
 var _charts_dirty := false       # 集めた難易度が増えた(並びを作り直す)
 var _charts_at := 0              # 難易度順の並びを最後に作った時刻
 ## 一覧の上端・下端の余白(伸び縮みする)。スクロールでは打ち消せない高さの変化(上端・下端にいるとき)を、いったんここで受け止めて、
 ## あとから、止まった状態から加速するばねで、なめらかに戻す(閉じる一覧が大きくても、行がガクッと動かない)
+var _bulge_dirty := true          # 行のせり出しを、計算し直すか(一覧の並び・高さが変わった)
+var _bulge_scroll := -1          # 最後に計算したときのスクロールの位置
 var _head: Control
 var _tail: Control
 var _head_extra := 0.0
@@ -141,7 +146,11 @@ var _rec_card: Control            # 左下: 選んだ難易度のローカル記
 var _rec_rows: Array = []         # 記録の行(records.gd の 1 件ずつ)
 var _rec_hover := -1              # マウスが乗っている、再生ボタンのある記録の行
 var _search: LineEdit
-var _sort_btns: Array = []
+var _sort_btns: Array = []        # 並び替えの選択肢のボタン(メニューの中)
+var _sort_btn: Button             # 並び替えのボタン(押すと、選択肢が開く)
+var _sort_menu: PanelContainer    # 並び替えの選択肢
+const SORT_W := 190.0             # 並び替えのボタンの幅
+const SORT_X := 1280.0 - 20.0 - SORT_W
 var _no_match: Label              # 検索に合う曲がないとき
 var _empty_box: Control
 var _play_btn: Button
@@ -161,6 +170,7 @@ func _ready() -> void:
 	browser.song_loaded.connect(_on_song_loaded)
 	browser.song_load_failed.connect(_on_song_load_failed)
 	browser.song_reloading.connect(func(): _set_loading(true))   # 弾幕 v2 の入り切りで、同じ曲を読み直している
+	browser.gen_ready.connect(_on_gen_ready)   # 統計だけで開いた曲の、選んだ譜面の発射の一覧がそろった
 	browser.sort_mode = str(settings.get("song_sort", "title"))
 	browser.charts_of = _charts_of
 	browser.length_of = func(i: int) -> float: return SongArt.length_of(str(_songs[i].md5))
@@ -174,6 +184,7 @@ func _ready() -> void:
 	_build_empty()
 	_build_footer()
 	_build_footer_buttons()
+	_build_sort_menu()   # ほかの部品より前に出すので、最後に作る
 	_audio = AudioStreamPlayer.new()
 	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.volume_db = -6.0
@@ -198,6 +209,7 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	NowPlaying.clear(_audio)
+	SongBrowser.stop_prep()   # 全曲の難易度を用意する裏の作業は、画面を離れたら止める(次に開いたとき、続きから)
 	browser.close()   # 画面を離れたあとに届く、曲の読み込みの結果は捨てる
 
 
@@ -366,35 +378,111 @@ func _build_search() -> void:
 	_search.text_changed.connect(func(t: String):
 		browser.query = t
 		_apply_view())
+	# 検索の入力欄を広く取り、並び替えは 1 つのボタン(押すと、下に選択肢が開く)にまとめる(ボタンを 6 つ並べると、窮屈だった)
+	_place(_search, 624, 50, SORT_X - 624.0 - 14.0, 36)
+	_sort_btn = Button.new()
+	_sort_btn.toggle_mode = true
+	_sort_btn.focus_mode = Control.FOCUS_NONE
+	_sort_btn.add_theme_font_size_override("font_size", 14)
+	_sort_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_sort_btn.add_theme_constant_override("h_separation", 6)
+	_sort_btn.pressed.connect(_toggle_sort_menu)
+	_place(_sort_btn, SORT_X, 50, SORT_W, 36)
+	var chev := Control.new()   # 右端の「v」(開く印)
+	chev.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	chev.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chev.draw.connect(func():
+		var cx := chev.size.x - 18.0
+		var cy := chev.size.y * 0.5 + (2.0 if not _sort_btn.button_pressed else -2.0)
+		var d := 4.0 if not _sort_btn.button_pressed else -4.0
+		chev.draw_polyline(PackedVector2Array([Vector2(cx - 5.0, cy - d * 0.5), Vector2(cx, cy + d * 0.5), Vector2(cx + 5.0, cy - d * 0.5)]), LazerStyle.TEXT_DIM, 2.0, true))
+	_sort_btn.add_child(chev)
+	_sort_btn.set_meta("chev", chev)
+	_refresh_sort_btn()
+
+
+## 並び替えの選択肢(押すと、並び替えのボタンの下に開く)。ほかの部品より前に出す必要があるので、画面の部品が全部できたあとに作る。
+func _build_sort_menu() -> void:
+	_sort_menu = PanelContainer.new()
+	_sort_menu.add_theme_stylebox_override("panel", LazerStyle.box(Color(LazerStyle.PANEL_DARK.r, LazerStyle.PANEL_DARK.g, LazerStyle.PANEL_DARK.b, 0.98), LazerStyle.PINK, 1, 12, 6, 6))
+	_sort_menu.visible = false
+	_sort_menu.mouse_filter = Control.MOUSE_FILTER_STOP
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	_sort_menu.add_child(v)
 	var group := ButtonGroup.new()
-	var widths: Array = []
-	var total := 0.0
-	for m in SongBrowser.SORT_MODES:   # 並び替えのボタンは右に寄せ、残りの幅を入力欄にする
-		var bw := LazerStyle.font().get_string_size(str(m[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 22.0
-		widths.append(bw)
-		total += bw + 6.0
-	var x := 1280.0 - 20.0 - total + 6.0
-	_place(_search, 624, 50, x - 624.0 - 12.0, 36)
 	for m in SongBrowser.SORT_MODES:
 		var b := Button.new()
 		b.text = str(m[1])
 		b.toggle_mode = true
 		b.button_group = group
 		b.focus_mode = Control.FOCUS_NONE
-		b.add_theme_font_size_override("font_size", 14)
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.custom_minimum_size = Vector2(SORT_W - 12.0, 36)
+		b.add_theme_font_size_override("font_size", 15)
+		b.add_theme_stylebox_override("normal", LazerStyle.box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 8, 12, 0))
+		b.add_theme_stylebox_override("hover", LazerStyle.box(Color(1, 1, 1, 0.08), Color(0, 0, 0, 0), 0, 8, 12, 0))
+		b.add_theme_stylebox_override("pressed", LazerStyle.box(Color(LazerStyle.PINK.r, LazerStyle.PINK.g, LazerStyle.PINK.b, 0.22), Color(0, 0, 0, 0), 0, 8, 12, 0))
+		b.add_theme_stylebox_override("hover_pressed", LazerStyle.box(Color(LazerStyle.PINK.r, LazerStyle.PINK.g, LazerStyle.PINK.b, 0.32), Color(0, 0, 0, 0), 0, 8, 12, 0))
+		b.add_theme_color_override("font_pressed_color", LazerStyle.PINK)
+		b.add_theme_color_override("font_hover_pressed_color", LazerStyle.PINK)
 		b.set_pressed_no_signal(browser.sort_mode == m[0])
 		var mode_id: String = m[0]
-		b.pressed.connect(func():
-			if browser.sort_mode == mode_id:
-				return
-			browser.sort_mode = mode_id
-			settings.song_sort = mode_id
-			Settings.save_all(settings)
-			_apply_view(true))
-		var w: float = widths[_sort_btns.size()]
-		_place(b, x, 50, w, 36)
-		x += w + 6.0
+		b.pressed.connect(func(): _pick_sort(mode_id))
+		v.add_child(b)
 		_sort_btns.append(b)
+	_sort_menu.position = Vector2(SORT_X, 90)
+	_sort_menu.size = Vector2(SORT_W, 0)
+	add_child(_sort_menu)
+
+
+## 並び替えのボタンの文字(いまの並び方)。
+func _refresh_sort_btn() -> void:
+	if _sort_btn == null:
+		return
+	var name := ""
+	for m in SongBrowser.SORT_MODES:
+		if m[0] == browser.sort_mode:
+			name = str(m[1])
+	_sort_btn.text = "並び替え  %s" % name
+	for k in range(_sort_btns.size()):
+		_sort_btns[k].set_pressed_no_signal(SongBrowser.SORT_MODES[k][0] == browser.sort_mode)
+
+
+func _toggle_sort_menu() -> void:
+	if _sort_menu == null:
+		return
+	if _sort_menu.visible:
+		_close_sort_menu()
+		return
+	_sort_menu.visible = true
+	_sort_btn.set_pressed_no_signal(true)
+	(_sort_btn.get_meta("chev") as Control).queue_redraw()
+	UiSfx.play("open")
+	if UiStyle.animate:
+		_sort_menu.pivot_offset = Vector2(SORT_W, 0)
+		UiStyle.tween(_sort_menu, "modulate:a", 0.0, 1.0, 0.14)
+		UiStyle.tween(_sort_menu, "scale", Vector2(0.96, 0.9), Vector2.ONE, 0.18)
+
+
+func _close_sort_menu() -> void:
+	if _sort_menu == null or not _sort_menu.visible:
+		return
+	_sort_menu.visible = false
+	_sort_btn.set_pressed_no_signal(false)
+	(_sort_btn.get_meta("chev") as Control).queue_redraw()
+
+
+## 並び方を選んだ(メニューの項目から)。
+func _pick_sort(mode_id: String) -> void:
+	_close_sort_menu()
+	if browser.sort_mode == mode_id:
+		return
+	browser.sort_mode = mode_id
+	settings.song_sort = mode_id
+	Settings.save_all(settings)
+	_refresh_sort_btn()
+	_apply_view(true)
 
 
 ## 検索・並び替えを、行に反映する(行は曲ごとに作ってあり、見せるものと順番だけを変える)。難易度の一覧は、選んだ曲のすぐ下へ。
@@ -456,11 +544,28 @@ func _apply_view(sorted := false, keep_scroll := false) -> void:
 ## まだ難易度が分かっていない曲は、裏で 1 曲ずつ集めて(SongArt.request_meta)、分かった曲から並びに加わる。
 ## 押すと、その曲を読み込んでその難易度を選び、選んでいる譜面をもう一度押すと開始。↑↓ は 1 譜面ずつ、← → は同じ曲の隣の難易度。
 
+## 譜面の Lv(MOD なし): 裏の準備・読み込みで測ったもの(SongArt に残してある)→ この起動で読み込んで測ったもの → 推定の★(est)、の順に使う。
+func _lv_best(md5: String, chart_id: String, est: float) -> float:
+	var lv := SongArt.level_of(md5, chart_id, _style_v2())
+	return lv if lv >= 0.0 else float(_lv_seen.get(chart_id, est))
+
+
+## 測った Lv(推定ではない値)か。
+func _lv_measured(md5: String, chart_id: String) -> bool:
+	return SongArt.level_of(md5, chart_id, _style_v2()) >= 0.0 or _lv_seen.has(chart_id)
+
+
+## いまの MOD での弾幕の作り方が v2(初期状態)か。
+func _style_v2() -> bool:
+	return bool(Mods.params(settings.mods).gen_v2)
+
+
 ## 難易度順の並びに使う、曲 i の譜面 [[譜面の識別子, 難易度名, Lv], ...](browser.charts_of)。
 func _charts_of(i: int) -> Array:
 	var out: Array = []
-	for d in SongArt.diffs_of(str(_songs[i].md5)):
-		out.append([str(d[0]), str(d[1]), float(_lv_seen.get(str(d[0]), d[2]))])
+	var md5 := str(_songs[i].md5)
+	for d in SongArt.diffs_of(md5):
+		out.append([str(d[0]), str(d[1]), _lv_best(md5, str(d[0]), float(d[2]))])
 	return out
 
 
@@ -561,7 +666,7 @@ func _make_chart_holder(c: Dictionary) -> Control:
 	card.mouse_exited.connect(func():
 		card.set_meta("hover", false)
 		_style_chart(key, true))
-	var holder := UiStyle.wrap_card(card, ROW_H)
+	var holder := UiStyle.wrap_card(_bulge_wrap(card), ROW_H)
 	card.offset_right = -MARGIN_R
 	holder.set_meta("chart", key)
 	holder.set_meta("card", card)
@@ -702,7 +807,7 @@ func _refresh_chart_lv(md5: String) -> void:
 		if not is_instance_valid(h):
 			continue
 		var c: Dictionary = h.get_meta("info")
-		c["lv"] = snappedf(float(_lv_seen.get(str(c.id), c.lv)), 0.01)
+		c["lv"] = snappedf(_lv_best(md5, str(c.id), float(c.lv)), 0.01)
 		_set_chart_lv(h, c)
 
 
@@ -938,7 +1043,7 @@ func _intro() -> void:
 func _set_loading(on: bool) -> void:
 	_dim_detail(on)
 	if _play_btn != null:
-		_play_btn.disabled = on or _loader == null
+		_play_btn.disabled = on or _loader == null or browser.waiting_full()
 		_play_btn.queue_redraw()
 
 
@@ -970,8 +1075,9 @@ func _sync_empty() -> void:
 		_stats.visible = not _songs.is_empty()
 		_rec_card.visible = not _songs.is_empty()
 		_search.visible = not _songs.is_empty()
-		for b in _sort_btns:
-			b.visible = not _songs.is_empty()
+		_sort_btn.visible = not _songs.is_empty()
+		if _songs.is_empty():
+			_close_sort_menu()
 
 
 # --- 曲の検出 ---
@@ -1070,7 +1176,7 @@ func _make_row(i: int, animate: bool) -> void:
 			UiSfx.play("hover", 1.0)
 		_restyle_song(i))
 	card.mouse_exited.connect(func(): card.set_meta("hover", false); _restyle_song(i))
-	var holder := UiStyle.wrap_card(card, ROW_H)
+	var holder := UiStyle.wrap_card(_bulge_wrap(card), ROW_H)
 	card.offset_right = -MARGIN_R
 	holder.visible = not _was_chart   # 難易度順のあいだは、曲の行は出さない
 	_box.add_child(holder)
@@ -1120,9 +1226,21 @@ func _center_selected() -> void:
 	_smooth.center_on_control(_rows[want], true)
 
 
+## 全曲の難易度を用意する裏の作業を、始める(統計のない曲があるとき。曲が増えたときのために、数秒おきに確かめる)。曲の読み込み・プレイ中は、裏の作業が待つ。
+func _start_prep_soon() -> void:
+	var now := Time.get_ticks_msec()
+	if now - _prep_check_at < 4000 or _songs.is_empty():
+		return
+	_prep_check_at = now
+	browser.start_prep(_style_v2())
+
+
 ## osu! の Songs の曲を、少しずつ一覧に足す(毎フレーム)。前回の曲が見つかったら、そこを選ぶ。
 func _pump_osu() -> void:
 	var r := browser.pump(3000)
+	if bool(r.prepped):   # 裏の準備で Lv が分かった曲が増えた: 難易度順・長さ順の並びに加える(ときどき、まとめて)
+		_charts_dirty = true
+	_start_prep_soon()
 	if bool(r.added) or _song_cards.size() < _songs.size():
 		_sync_cards(3.0)
 	if bool(r.restored) or int(r.select) >= 0:
@@ -1145,15 +1263,65 @@ func _pump_progress() -> void:
 		return
 	_progress_at = now
 	var pr := browser.osu_progress()
-	var mine := _status.text.begins_with("osu! の曲")
+	var mine := _status.text.begins_with("osu! の曲") or _status.text.begins_with("難易度を準備")
+	var prep := SongBrowser.prep_progress()
 	if bool(pr.running) and (_status.text == "" or mine):
 		_status.text = "osu! の曲を準備しています… %d / %d" % [int(pr.done), int(pr.total)]
 		_status.add_theme_color_override("font_color", LazerStyle.TEXT_MUTE)
 		_sync_empty()
+	elif bool(prep.running) and (_status.text == "" or mine):   # 全曲の難易度を、裏で用意している(曲の読み込み・プレイ中は止まる)
+		_status.text = "難易度を準備しています… %d / %d" % [int(prep.done), int(prep.total)]
+		_status.add_theme_color_override("font_color", LazerStyle.TEXT_MUTE)
 	elif mine:
 		_status.text = ""
 		_status.add_theme_color_override("font_color", LazerStyle.RED)
 		_sync_empty()
+
+
+## 行のカードを、せり出し用の入れものに入れる(入れものの左端だけを動かして、右端は動かさない。カードの横のずれ(選択・ホバー)とは別に動くため、重ならない)。
+func _bulge_wrap(card: Control) -> Control:
+	var wrap := Control.new()
+	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wrap.set_meta("bulge", true)
+	card.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	wrap.add_child(card)
+	return wrap
+
+
+## 一覧の真ん中あたりの行を、左へ少しせり出させる(上下の端の行ほど右へ引っ込み、真ん中でいちばん左へ出る。なだらかな弧)。
+## 選んでいる行は、いつも最大にせり出している(せり出しは、毎フレーム少しずつ目標へ近づく: スクロール・選び直しで、行が跳ばない)。
+func _update_bulge(delta: float) -> void:
+	_bulge_dirty = false
+	var sv := _scroll.scroll_vertical
+	_bulge_scroll = sv
+	var page := _scroll.size.y
+	var mid := float(sv) + page * 0.5
+	var half := page * 0.5 + ROW_H
+	var sel: Control = null
+	if _was_chart:
+		sel = _chart_holders.get(_chart_sel) if _chart_sel != "" else null
+	elif _song_sel >= 0 and _song_sel < _rows.size():
+		sel = _rows[_song_sel]
+	var k := 1.0 - exp(-BULGE_RATE * minf(delta, 0.05))
+	for c in _box.get_children():
+		if not (c is Control) or not c.visible or c.get_child_count() == 0:
+			continue
+		var y: float = (c as Control).position.y
+		if y > float(sv) + page + ROW_H * 2.0:
+			break
+		if y + (c as Control).size.y < float(sv) - ROW_H * 2.0:
+			continue
+		var wrap: Control = c.get_child(0)
+		if not wrap.has_meta("bulge"):
+			continue
+		var t := clampf(absf(y + (c as Control).size.y * 0.5 - mid) / half, 0.0, 1.0)
+		var want := 0.0 if c == sel else BULGE * t * t * (3.0 - 2.0 * t)   # 端で最大 BULGE(右へ引っ込む)、真ん中で 0
+		var cur := wrap.offset_left
+		if absf(want - cur) > 0.05:
+			wrap.offset_left = lerpf(cur, want, k) if UiStyle.animate else want
+			_bulge_dirty = true   # まだ目標に届いていない: 次のフレームも続ける
+		elif cur != want:
+			wrap.offset_left = want
 
 
 ## 行の中身を作る: 背景の画像・暗くする帯・文字と難易度の色の札・最高ランク・縁。
@@ -1249,7 +1417,7 @@ func _dot_colors(i: int) -> Array:
 			out.append(LazerStyle.level_color(float(r.base_level)))
 		return out
 	for d in SongArt.diffs_of(str(_songs[i].md5)):
-		out.append(LazerStyle.level_color(float(_lv_seen.get(str(d[0]), d[2]))))
+		out.append(LazerStyle.level_color(_lv_best(str(_songs[i].md5), str(d[0]), float(d[2]))))
 	return out
 
 
@@ -1309,6 +1477,8 @@ func _process(delta: float) -> void:
 	super._process(delta)
 	_pump_osu()
 	_release_spacers(delta)
+	if _scroll != null and (_bulge_dirty or _scroll.scroll_vertical != _bulge_scroll):
+		_update_bulge(delta)
 	_art_t += delta
 	if _art_t > 0.2:
 		_art_t = 0.0
@@ -1549,8 +1719,9 @@ func _diff_items() -> Array:
 			var bm = _loader.difficulties[k]
 			items.append([str(bm.md5), str(bm.version), float(_ratings[k].level), true])
 	else:
-		for d in SongArt.diffs_of(str(_songs[_song_sel].md5)):
-			items.append([str(d[0]), str(d[1]), float(_lv_seen.get(str(d[0]), d[2])), _lv_seen.has(str(d[0]))])
+		var sd5 := str(_songs[_song_sel].md5)
+		for d in SongArt.diffs_of(sd5):
+			items.append([str(d[0]), str(d[1]), _lv_best(sd5, str(d[0]), float(d[2])), _lv_measured(sd5, str(d[0]))])
 	return items
 
 
@@ -1681,6 +1852,7 @@ func _scroll_to_selection() -> void:
 ## 一覧の並び(高さ・順番)が変わった直後(描く前に呼ばれる): 選んでいる曲の行が、画面の同じ位置に残るように、スクロールをずらす
 ## (上の一覧が閉じても、選んだ行がガクッと動かない)。並び替えの直後なら、行を前の見た目の位置から新しい位置へ滑らせる。
 func _on_box_sorted() -> void:
+	_bulge_dirty = true   # 並び・高さが変わった: 行のせり出しを計算し直す
 	var applied := 0
 	var anchor: Control = _rows[_song_sel] if _song_sel >= 0 and _song_sel < _rows.size() else null
 	if _was_chart:   # 難易度順: 選んでいる譜面の行を、基準にする
@@ -1869,11 +2041,19 @@ func _rate_all() -> void:
 	browser.rate_all()
 
 
+## 選んだ譜面の発射の一覧がそろった(統計だけで開いた曲)。プレイを押せるようにして、左の情報(イベント数)も入れ直す。
+func _on_gen_ready(k: int) -> void:
+	if k == _diff_sel:
+		_set_loading(_job_pending)
+		_update_detail()
+
+
 func _select_diff(i: int) -> void:
 	var old := browser.select_diff(i)
 	if old == -2:
 		return
 	i = _diff_sel
+	_set_loading(_job_pending)   # 発射の一覧を用意している間は、プレイを押せない
 	if old != i:
 		UiSfx.play("select", 1.35 * UiSfx.scale_pitch(float(i % 6) / 5.0, 1.0))
 	_style_diffs()
@@ -1931,7 +2111,7 @@ func _update_detail() -> void:
 		["最大弾数", clampf(float(r.peak) / BAR_MAX, 0.0, 1.0), "%d 発" % int(r.peak)],
 		["弾速", clampf(float(r.speed) / SPEED_MAX, 0.0, 1.0), "%d px/s" % int(round(float(r.speed)))],
 	]
-	_stat_note = "弾径 %.1f      イベント %d      長さ %d:%02d      本家★≈%.2f" % [float(r.size), _gens[_diff_sel].events.size(), secs / 60, secs % 60, float(r.stars)]
+	_stat_note = "弾径 %.1f      イベント %d      長さ %d:%02d      本家★≈%.2f" % [float(r.size), int(_gens[_diff_sel].get("n_events", (_gens[_diff_sel].events as Array).size() if _gens[_diff_sel].has("events") else 0)), secs / 60, secs % 60, float(r.stars)]
 	_stat_k = 0.0 if UiStyle.animate and is_inside_tree() else 1.0
 	if _stat_k < 1.0:
 		var t := _stats.create_tween()
@@ -2119,6 +2299,13 @@ func _lists_active() -> bool:
 func _input(event: InputEvent) -> void:
 	if _options != null or _mod_panel != null or _launching:
 		return
+	if _sort_menu != null and _sort_menu.visible:   # 並び替えのメニューが開いている: 外のクリック・Esc で閉じる
+		if event is InputEventMouseButton and event.pressed and not _sort_menu.get_global_rect().has_point(event.global_position) and not _sort_btn.get_global_rect().has_point(event.global_position):
+			_close_sort_menu()
+		elif event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+			_close_sort_menu()
+			get_viewport().set_input_as_handled()
+			return
 	if event is InputEventMouseButton and event.pressed and _search.has_focus() and not _search.get_global_rect().has_point(event.global_position):
 		_search.release_focus()   # 入力欄の外をクリックしたら、入力を終える(矢印キーなどが、また曲の選択に使える)
 	if not (event is InputEventKey and event.pressed):
@@ -2231,10 +2418,14 @@ func debug_search(text: String) -> void:
 
 
 ## 並び替えを指定する(曲名 / アーティスト / 追加順)。
+## 並び替えのメニューを開いた状態にする(見た目の確認用)。
+func debug_sort_menu() -> void:
+	_toggle_sort_menu()
+
+
 func debug_sort(mode: String) -> void:
 	browser.sort_mode = mode
-	for k in range(_sort_btns.size()):
-		_sort_btns[k].set_pressed_no_signal(SongBrowser.SORT_MODES[k][0] == mode)
+	_refresh_sort_btn()
 	_apply_view(true)
 
 

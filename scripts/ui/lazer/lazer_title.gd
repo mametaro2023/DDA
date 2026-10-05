@@ -17,6 +17,7 @@ const LazerLogo = preload("res://scripts/ui/lazer/lazer_logo.gd")
 const Volume = preload("res://scripts/volume.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
+const Playlist = preload("res://scripts/playlist.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const Settings = preload("res://scripts/settings.gd")
 
@@ -95,9 +96,10 @@ func _ready() -> void:
 	_audio = AudioStreamPlayer.new()
 	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.volume_db = -40.0
-	_audio.finished.connect(_play_random)
+	_audio.finished.connect(_on_music_end)
 	add_child(_audio)
-	_play_random.call_deferred()
+	NowPlaying.set_play_cb(self, _play_playlist_path)   # プレイリストの曲を流すのも、この画面の仕事
+	_start_music.call_deferred()
 	if bool(update_info.get("newer", false)):
 		show_update(update_info)
 
@@ -156,6 +158,7 @@ func _close_overlay() -> void:
 # --- ランダムな曲 ---
 
 var _picking := false   # 曲を別スレッドで読み込んでいる途中
+var _pick_seq := 0      # 読み込みの依頼の番号(新しい依頼が来たら、前の依頼の結果は捨てる)
 
 
 ## ランダムな曲(と、その中のランダムな譜面)を選んで、背景にして流す。直前と同じ曲は避ける。
@@ -168,7 +171,43 @@ func _play_random() -> void:
 		_on_picked(AttractBackdrop.new().pick(_last_path))
 		return
 	_picking = true
-	AttractBackdrop.pick_async(_last_path, _on_picked)   # 選び方は scripts/attract_backdrop.gd(classic のタイトルと共通)。読み込みは別スレッド
+	_pick_seq += 1
+	var seq := _pick_seq
+	AttractBackdrop.pick_async(_last_path, func(r: Dictionary): if seq == _pick_seq: _on_picked(r))   # 選び方は scripts/attract_backdrop.gd(classic のタイトルと共通)。読み込みは別スレッド
+
+
+## 最初の曲: プレイリストを流している最中なら、その曲。そうでなければ、ランダムな曲。
+func _start_music() -> void:
+	var cur := Playlist.current()
+	if not cur.is_empty():
+		_play_playlist_path(str(cur.path))
+	else:
+		_play_random()
+
+
+## 曲が終わった: プレイリストの次の曲(流していなければ、ランダムな曲)。
+func _on_music_end() -> void:
+	if Playlist.is_active():
+		NowPlaying.step(1, true)
+	else:
+		_play_random()
+
+
+## プレイリストの曲を、頭から流す(上のプレイヤーが、プレイリストから呼ぶ)。読めなかったら、次の曲へ。
+func _play_playlist_path(path: String) -> void:
+	if _leaving or not is_inside_tree():
+		return
+	_picking = true
+	_pick_seq += 1
+	var seq := _pick_seq
+	AttractBackdrop.load_path_async(path, func(r: Dictionary):
+		if seq != _pick_seq:
+			return
+		if r.is_empty():
+			_picking = false
+			NowPlaying.play_failed()
+			return
+		_on_picked(r))
 
 
 func _on_picked(pick: Dictionary) -> void:
@@ -180,13 +219,14 @@ func _on_picked(pick: Dictionary) -> void:
 	_audio.stream = pick.stream
 	_audio.volume_db = -40.0
 	var start: float = pick.start
-	NowPlaying.set_track(_audio, str(pick.get("title", "")), str(pick.get("artist", "")), start, func(): _audio.seek(start), _play_random)   # 上のプレイヤー: 前 = 頭から聴き直す・次 = 別のランダムな曲
+	NowPlaying.set_track(_audio, str(pick.get("title", "")), str(pick.get("artist", "")), start, func(): _audio.seek(start), _play_random, str(pick.path))   # 上のプレイヤー: 前 = 頭から聴き直す・次 = 別のランダムな曲
 	_audio.play(start)
 	UiStyle.tween(_audio, "volume_db", -40.0, MUSIC_DB, 1.6)   # 曲は、ふわっと入る
 
 
 func _exit_tree() -> void:
 	NowPlaying.clear(_audio)
+	NowPlaying.clear_play_cb(self)
 
 
 ## 曲を小さくして止める。

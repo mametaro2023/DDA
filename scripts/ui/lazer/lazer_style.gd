@@ -107,6 +107,15 @@ static func title_color(title: String) -> Color:
 	return Color.from_hsv(float(h % 360) / 360.0, 0.55, 0.9)
 
 
+## 1 行に入りきらない文字は、後ろを「…」にして、max_w に収める(draw_string で描く文字用)。
+static func fit(f: Font, text: String, size: int, max_w: float) -> String:
+	if f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x <= max_w:
+		return text
+	while text.length() > 1 and f.get_string_size(text + "…", HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > max_w:
+		text = text.left(text.length() - 1)
+	return text + "…"
+
+
 static func box(bg: Color, border := Color(0, 0, 0, 0), border_w := 0, radius := 8, mh := 0.0, mv := 0.0) -> StyleBoxFlat:
 	return UiStyle.box(bg, border, border_w, radius, mh, mv)
 

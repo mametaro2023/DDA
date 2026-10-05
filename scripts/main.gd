@@ -28,6 +28,11 @@ const Replay = preload("res://scripts/replay.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const Volume = preload("res://scripts/volume.gd")
 const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
+const Playlist = preload("res://scripts/playlist.gd")
+const Profile = preload("res://scripts/profile.gd")
+const LazerPlayer = preload("res://scripts/ui/lazer/lazer_player.gd")
+const LazerPlaylist = preload("res://scripts/ui/lazer/lazer_playlist.gd")
+const LazerProfile = preload("res://scripts/ui/lazer/lazer_profile.gd")
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
 const Updater = preload("res://scripts/updater.gd")
 const UPDATE_RECHECK_SEC := 1800.0   # 起動したままの間、新しいバージョンを確かめ直す間隔(GitHub の API は、1 時間に 60 回まで)
@@ -46,6 +51,7 @@ var _current: Node
 var _kind := ""                    # いまの画面の種類(画面の kind。"title" / "menu" / "multi" / "game" / "result")。クラスでは判定しない(UI セットで中身が変わる)
 var _ui_layer: CanvasLayer         # 設定・選択のパネルを、画面の上に重ねる層
 var _settings_panel: Control       # 開いている設定パネル(どの画面からでも開ける。プレイ中は除く)
+var _aux_panel: Control            # 開いているプレイリスト・プロフィールのパネル(上のツールバーから開く。設定と同じく、どの画面からでも開ける)
 var _settings_dict: Dictionary = {}
 var _ui_before := ""               # 設定を開いたときの UI の見た目(閉じたとき、変わっていたら、いまの画面を作り直す)
 var _settings_btn: Button          # 画面の右上の「設定」(タイトル・選曲画面は、自分で設定を開く入口を持つので出さない)
@@ -77,6 +83,8 @@ func _ready() -> void:
 	UserDirMigrate.run()   # アプリの名前を変えたので、前の名前のユーザーデータ(設定・曲・記録)を移す(残っていなければ何もしない)
 	if OS.has_feature("template"):   # 書き出した版: 前の名前(DDA.osz)で「プログラムから開く」に登録していたら、新しい名前へ移す
 		FileAssoc.migrate_legacy(OS.get_executable_path())
+	NowPlaying.on_open_playlist = open_playlist   # 上のツールバーのプレイヤー・名前から開くパネル
+	Profile.open_cb = open_profile
 	var first_settings := Settings.load_all()
 	Volume.init_from(first_settings)
 	SongLibrary.apply_osu_settings(first_settings)   # osu! の Songs フォルダを使う設定のとき、その場所(スクリーンショット・動作確認の起動でも同じ)
@@ -85,6 +93,7 @@ func _ready() -> void:
 		var a_s := str(a)
 		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
 			Records.enabled = false
+			Playlist.file_path = "user://dev_playlists.json"   # 確認用の起動は、使う人のプレイリストを書き換えない
 	var hi := args.find("--hitch")   # 開発用: 長いフレームを記録する。例: -- --hitch 25 --smoke-ui
 	if hi >= 0:
 		var hl := HitchLog.new()
@@ -195,6 +204,9 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-carousel"):
 		_smoke_carousel()
+		return
+	if args.has("--smoke-player"):
+		_smoke_player()
 		return
 	if args.has("--prof-ui"):
 		_prof_ui()
@@ -469,6 +481,7 @@ func _swap(n: Node, instant := false) -> void:
 
 
 func _swap_now(n: Node) -> void:
+	close_aux()
 	close_settings()   # 画面が変わるときは、開いている設定は閉じる
 	if _current != null:
 		_current.queue_free()
@@ -520,7 +533,7 @@ func _update_settings_button() -> void:
 	# 設定の入口を、画面が自分で持っているとき(own_settings_button)は、ここでは出さない(lazer 風の画面は、ツールバーの歯車を持つ)
 	var own_v = _current.get("own_settings_button") if _current != null else null
 	var own: bool = own_v == true
-	_settings_btn.visible = _current != null and not own and _kind != "game" and _kind != "title" and _kind != "menu" and _settings_panel == null
+	_settings_btn.visible = _current != null and not own and _kind != "game" and _kind != "title" and _kind != "menu" and _settings_panel == null and _aux_panel == null
 
 
 ## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=曲 4=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
@@ -551,6 +564,44 @@ func open_settings(section := 0) -> void:
 	if _current.has_method("on_overlay"):
 		_current.on_overlay(true, p)
 	_current.set_process_input(false)   # 開いている間、下の画面は Esc や矢印に反応しない(パネルより先にキーを受け取ってしまうため)
+	_update_settings_button()
+
+
+## プレイリストのパネルを開く(上のツールバーのプレイヤーの「≡」)。
+func open_playlist() -> void:
+	_open_aux(LazerPlaylist.new())
+
+
+## 名前とアイコンを変えるパネルを開く(上のツールバーの右端の名前)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
+func open_profile() -> void:
+	if _current == null:
+		return
+	var p := LazerProfile.new()
+	var st = _current.get("settings")
+	p.setup(st if st is Dictionary else Settings.load_all())
+	_open_aux(p)
+
+
+func _open_aux(p: Control) -> void:
+	if _aux_panel != null or _settings_panel != null or _current == null or _kind == "game":
+		p.free()
+		return
+	_setup_ui_layer()
+	_ui_layer.add_child(p)
+	_aux_panel = p
+	p.closed.connect(close_aux)
+	_current.set_process_input(false)   # 開いている間、下の画面は Esc や矢印に反応しない(設定パネルと同じ)
+	_update_settings_button()
+
+
+func close_aux() -> void:
+	if _aux_panel == null:
+		return
+	var p := _aux_panel
+	_aux_panel = null
+	if is_instance_valid(_current):
+		_current.set_process_input(true)
+	p.queue_free()
 	_update_settings_button()
 
 
@@ -1026,6 +1077,54 @@ func _dev_osz(path: String) -> String:
 	return str(found[0]) if not found.is_empty() else path
 
 
+## 開発用: 上のツールバーから開くパネルを開いた状態にする。--shot title|menu out.png playlist [pick] [play] / profile [heart] / seekhot
+## playlist: 見つかった曲から、確認用のプレイリスト(dev_playlists.json。使う人のものは書き換えない)を作って開く。pick = 曲を探す表示 / play = 流し始める
+func _shot_aux(extra: Array) -> void:
+	if extra.has("playlist"):
+		await get_tree().create_timer(1.0).timeout
+		DirAccess.remove_absolute(Playlist.file_path)
+		Playlist.reset()
+		Playlist.ensure_loaded()
+		var paths := SongLibrary.find_all()
+		var a := Playlist.create("お気に入り")
+		Playlist.create("作業用 BGM")
+		Playlist.selected = a
+		for p in paths.slice(0, 5):
+			var info := SongLibrary.info(str(p))
+			if bool(info.get("ok", false)):
+				Playlist.add(a, str(p), str(info.title), str(info.artist))
+		if extra.has("play"):
+			NowPlaying.play_playlist(a, 1)
+			await get_tree().create_timer(2.5).timeout
+		open_playlist()
+		await get_tree().create_timer(0.6).timeout
+		if extra.has("pick") and _aux_panel != null:
+			_aux_panel._picking = true
+			_aux_panel._build_right()
+			await get_tree().create_timer(1.5).timeout
+	if extra.has("seekhot"):   # プレイヤーの線にマウスを乗せた状態(飛ぶ先の時刻)
+		await get_tree().create_timer(2.0).timeout
+		for c in _current.find_children("*", "Control", true, false):
+			if c.get_script() == LazerPlayer:
+				c._bar_hover = true
+				c._hover_f = 0.4
+				c._hot = 1.0
+				c._hover = -1
+		await get_tree().create_timer(0.3).timeout
+	if extra.has("profile"):
+		await get_tree().create_timer(0.8).timeout
+		open_profile()
+		await get_tree().create_timer(0.3).timeout
+		if _aux_panel != null:
+			if extra.has("heart"):
+				_aux_panel._name = "Mami"
+				_aux_panel._color = 1
+				_aux_panel._glyph = "heart"
+				_aux_panel._edit.text = "Mami"
+				_aux_panel._refresh()
+			await get_tree().create_timer(0.6).timeout
+
+
 func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 	match kind:
 		"title":
@@ -1048,6 +1147,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				FpsOverlay.enabled = true
 				add_child(FpsOverlay.new())
 				await get_tree().create_timer(1.2).timeout
+			await _shot_aux(extra)
 		"menu":
 			show_menu()
 			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
@@ -1076,6 +1176,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 					_current.debug_sort_menu()
 				if str(e).begins_with("sort=") and _current.has_method("debug_sort"):
 					_current.debug_sort(str(e).trim_prefix("sort="))
+			await _shot_aux(extra)
 		"cursor":
 			show_menu()   # 独自カーソル(押せるもの・ふつうの場所)。例: --shot cursor out.png hover|idle
 			var cu := CursorOverlay.new()
@@ -1681,6 +1782,145 @@ func _smoke_sfx() -> void:
 
 
 ## 開発用: 起動したままの間に見つかった新しいバージョンの知らせを確かめる(知らせるだけ・同じ版は 1 度だけ・プレイ中は離れてから・自動更新はしない)。-- --smoke-updatenotice
+## 開発用: 上のプレイヤー(線を押して飛ぶ・プレイリストの順送り・曲が終わったときの次の曲)と、プロフィールの変更を、実際の画面で確かめる。
+## -- --ui lazer --smoke-player   (設定は、終わりに元へ戻す。プレイリストは dev_playlists.json)
+func _smoke_player() -> void:
+	var original := Settings.load_all()
+	var fails := 0
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			fails += 1
+	add_child(UiSfx.new())
+	DirAccess.remove_absolute(Playlist.file_path)
+	Playlist.reset()
+	Playlist.ensure_loaded()
+	show_title()
+	var t0 := Time.get_ticks_msec()
+	while not NowPlaying.is_playing() and Time.get_ticks_msec() - t0 < 20000:
+		await get_tree().process_frame
+	chk.call(NowPlaying.is_playing(), "タイトルの曲が流れている(%s)" % NowPlaying.title)
+	var pl: Control = null
+	for c in _current.find_children("*", "Control", true, false):
+		if c.get_script() == LazerPlayer:
+			pl = c
+	chk.call(pl != null, "ツールバーにプレイヤーがある")
+	if pl == null:
+		get_tree().quit(1)
+		return
+	var mouse := func(pos: Vector2, pressed: bool):
+		var e := InputEventMouseButton.new()
+		e.button_index = MOUSE_BUTTON_LEFT
+		e.pressed = pressed
+		e.position = pos
+		pl._gui_input(e)
+	# 1. 線を押して飛ぶ(半分のところ)
+	var total := NowPlaying.length()
+	var bx: float = LazerPlayer.TEXT_X
+	var bw: float = LazerPlayer.W - LazerPlayer.TEXT_X - 8.0
+	mouse.call(Vector2(bx + bw * 0.5, 30.0), true)
+	mouse.call(Vector2(bx + bw * 0.5, 30.0), false)
+	await get_tree().create_timer(0.4).timeout
+	chk.call(total > 10.0 and absf(NowPlaying.position() - total * 0.5) < 1.5, "線の真ん中を押すと、曲の半分(%.1f 秒)へ飛ぶ(いま %.1f 秒)" % [total * 0.5, NowPlaying.position()])
+	# 2. 線をドラッグして、離したところへ飛ぶ(ドラッグの間は飛ばない)
+	var before := NowPlaying.position()
+	mouse.call(Vector2(bx + bw * 0.2, 30.0), true)
+	var mv := InputEventMouseMotion.new()
+	mv.position = Vector2(bx + bw * 0.8, 30.0)
+	pl._gui_input(mv)
+	await get_tree().process_frame
+	chk.call(absf(NowPlaying.position() - before) < 1.0, "ドラッグの途中では、まだ飛ばない")
+	mouse.call(Vector2(bx + bw * 0.8, 30.0), false)
+	await get_tree().create_timer(0.4).timeout
+	chk.call(absf(NowPlaying.position() - total * 0.8) < 1.5, "離したところ(8 割)へ飛ぶ(いま %.1f / %.1f 秒)" % [NowPlaying.position(), total])
+	# 3. プレイリスト: 3 曲を入れて、流し始める → 次へ → 曲が終わったら次へ
+	var paths := SongLibrary.find_all()
+	var li := Playlist.create("テスト")
+	for p in paths:
+		if Playlist.lists[li].tracks.size() >= 3:
+			break
+		var info := SongLibrary.info(str(p))
+		if bool(info.get("ok", false)):
+			Playlist.add(li, str(p), str(info.title), str(info.artist))
+	var tracks: Array = Playlist.lists[li].tracks
+	chk.call(tracks.size() >= 2, "確認に使える曲が 2 曲以上ある(%d 曲)" % tracks.size())
+	if tracks.size() >= 2:
+		chk.call(NowPlaying.play_playlist(li, 0), "プレイリストを流し始められる")
+		t0 = Time.get_ticks_msec()
+		while (NowPlaying.title != str(tracks[0].title) or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t0 < 20000:
+			await get_tree().process_frame
+		chk.call(NowPlaying.title == str(tracks[0].title) and NowPlaying.path == str(tracks[0].path), "1 曲目が流れる(%s)" % NowPlaying.title)
+		chk.call(NowPlaying.position() < 3.0, "頭から流れる(%.1f 秒)" % NowPlaying.position())
+		mouse.call(Vector2(LazerPlayer.BTN_X[2], 20.0), true)   # 「次」
+		t0 = Time.get_ticks_msec()
+		while (NowPlaying.title != str(tracks[1].title) or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t0 < 20000:
+			await get_tree().process_frame
+		chk.call(NowPlaying.title == str(tracks[1].title), "次へ: 2 曲目へ進む(%s)" % NowPlaying.title)
+		if tracks.size() >= 3:
+			var l2 := NowPlaying.length()
+			NowPlaying.seek_to(1.0 - 1.2 / l2)   # 終わりの 1 秒ほど手前へ
+			t0 = Time.get_ticks_msec()
+			while (NowPlaying.title != str(tracks[2].title) or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t0 < 15000:
+				await get_tree().process_frame
+			chk.call(NowPlaying.title == str(tracks[2].title), "曲が終わると、自然に次の曲へ進む(%s)" % NowPlaying.title)
+		Playlist.stop()
+	# 4. 選曲画面でも、同じように流れる(一覧の中のその曲が選ばれ、頭から流れる)
+	if tracks.size() >= 2:
+		show_menu()
+		t0 = Time.get_ticks_msec()
+		while (not NowPlaying.is_playing() or _kind != "menu") and Time.get_ticks_msec() - t0 < 30000:
+			await get_tree().process_frame
+		chk.call(NowPlaying.can_play_playlist(), "選曲画面でも、プレイリストを流せる")
+		NowPlaying.play_playlist(li, 0)
+		t0 = Time.get_ticks_msec()
+		while (NowPlaying.title != str(tracks[0].title) or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t0 < 30000:
+			await get_tree().process_frame
+		chk.call(NowPlaying.title == str(tracks[0].title) and str(_current._songs[_current._song_sel].path) == str(tracks[0].path), "選曲: 1 曲目が選ばれて流れる(%s)" % NowPlaying.title)
+		chk.call(NowPlaying.position() < 3.0 and Playlist.is_active(), "選曲: 頭から流れる(%.1f 秒)・プレイリストは続いている" % NowPlaying.position())
+		NowPlaying.step(1)
+		t0 = Time.get_ticks_msec()
+		while (NowPlaying.title != str(tracks[1].title) or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t0 < 30000:
+			await get_tree().process_frame
+		chk.call(NowPlaying.title == str(tracks[1].title), "選曲: 次へ進む(%s)" % NowPlaying.title)
+		if tracks.size() >= 3:
+			var l3 := NowPlaying.length()
+			NowPlaying.seek_to(1.0 - 1.2 / l3)
+			t0 = Time.get_ticks_msec()
+			while (NowPlaying.title != str(tracks[2].title) or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t0 < 20000:
+				await get_tree().process_frame
+			chk.call(NowPlaying.title == str(tracks[2].title), "選曲: 曲が終わると、次の曲へ進む(%s)" % NowPlaying.title)
+		var other := -1   # プレイリストに入っていない曲を、手で選ぶ: プレイリストの流しは止まる
+		for k in range(_current._songs.size()):
+			if Playlist.index_of(li, str(_current._songs[k].path)) < 0:
+				other = k
+				break
+		if other >= 0:
+			_current._select_song(other)
+			t0 = Time.get_ticks_msec()
+			while Playlist.is_active() and Time.get_ticks_msec() - t0 < 15000:
+				await get_tree().process_frame
+			chk.call(not Playlist.is_active(), "選曲: プレイリストにない曲を選ぶと、プレイリストの流しは止まる")
+		Playlist.stop()
+	# 5. プロフィール: パネルを開いて、名前・図柄を変えて保存
+	open_profile()
+	await get_tree().create_timer(0.5).timeout
+	chk.call(_aux_panel != null, "名前を押すと、プロフィールのパネルが開く")
+	if _aux_panel != null:
+		_aux_panel._edit.text = "テスト太郎"
+		_aux_panel._edit.text_changed.emit("テスト太郎")
+		_aux_panel._color = 3
+		_aux_panel._glyph = "star"
+		_aux_panel._save()
+		await get_tree().create_timer(0.6).timeout
+		var st: Dictionary = _current.settings
+		chk.call(_aux_panel == null and str(st.player_name) == "テスト太郎" and str(st.player_icon) == "3:star", "保存すると、設定に入る(%s / %s)" % [str(st.player_name), str(st.player_icon)])
+		chk.call(str(Settings.load_all().player_icon) == "3:star", "ファイルにも保存される")
+	Settings.restore(original)
+	DirAccess.remove_absolute(Playlist.file_path)
+	print("smoke-player: ", "OK" if fails == 0 else "%d FAILED" % fails)
+	get_tree().quit(1 if fails > 0 else 0)
+
+
 func _smoke_updatenotice() -> void:
 	var original := Settings.load_all()
 	var st := {"fails": 0}

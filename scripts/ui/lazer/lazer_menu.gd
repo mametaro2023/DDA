@@ -28,6 +28,7 @@ const Replay = preload("res://scripts/replay.gd")
 const Volume = preload("res://scripts/volume.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
+const Playlist = preload("res://scripts/playlist.gd")
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const LazerMarquee = preload("res://scripts/ui/lazer/lazer_marquee.gd")
 const SongArt = preload("res://scripts/song_art.gd")
@@ -159,6 +160,7 @@ var _dialog: FileDialog
 var _options: Control            # 開いている設定パネル(main が持つ。開いている間だけ設定される)
 var _mod_panel: Control          # 開いている MOD パネル
 var _launching := false
+var _pl_wait := false   # プレイリストの曲を選んで、読み込みを待っている
 var _intro_nodes: Array = []
 var _cards_gen := 0
 
@@ -188,7 +190,9 @@ func _ready() -> void:
 	_audio = AudioStreamPlayer.new()
 	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
 	_audio.volume_db = -6.0
+	_audio.finished.connect(_on_preview_end)
 	add_child(_audio)
+	NowPlaying.set_play_cb(self, _play_playlist_path)   # プレイリストの曲を流すのも、この画面の仕事(一覧の中のその曲を選ぶ)
 	_dialog = FileDialog.new()
 	_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -202,6 +206,9 @@ func _ready() -> void:
 	_rebuild_song_cards()
 	if not _songs.is_empty():
 		var first := browser.last_song_index()
+		var pl_cur := Playlist.current()
+		if not pl_cur.is_empty() and browser.index_of_path(str(pl_cur.path)) >= 0:   # プレイリストを流している最中に開いた: その曲を選んで、続けて流す
+			first = browser.index_of_path(str(pl_cur.path))
 		_select_song(first)
 		browser.auto_sel_idx = first
 		_center_selected()
@@ -209,6 +216,7 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	NowPlaying.clear(_audio)
+	NowPlaying.clear_play_cb(self)
 	SongBrowser.stop_prep()   # 全曲の難易度を用意する裏の作業は、画面を離れたら止める(次に開いたとき、続きから)
 	browser.close()   # 画面を離れたあとに届く、曲の読み込みの結果は捨てる
 
@@ -1975,6 +1983,9 @@ func _on_song_changing(old: int, i: int) -> void:
 
 ## 曲を読み込めなかった(browser から)。選択は前の曲に戻してある。
 func _on_song_load_failed(error: String, bad: int) -> void:
+	if _pl_wait:   # プレイリストの曲が読めなかった: 次の曲へ
+		_pl_wait = false
+		NowPlaying.play_failed()
 	_chart_want = ""
 	_set_status(error)
 	_restyle_song(bad)
@@ -2030,9 +2041,15 @@ func _on_song_loaded(res: Dictionary) -> void:
 	if res.audio != null:
 		await get_tree().process_frame   # 札を作る処理と、同じフレームにしない(音の開始も、少し時間がかかる)
 		if int(res.job) == browser.job and is_inside_tree():
-			_audio.stream = res.audio
-			NowPlaying.set_track(_audio, str(_songs[_song_sel].title), str(_songs[_song_sel].artist), float(res.audio_from), _player_step.bind(-1), _player_step.bind(1))   # 上のプレイヤー: 前・次 = 一覧の前後の曲
-			_audio.play(float(res.audio_from))
+			_pl_wait = false
+			Playlist.note_song(str(_songs[_song_sel].path))   # プレイリストを流している最中なら、入っている曲はその位置へ・入っていない曲なら流しを止める
+			var head := Playlist.is_active() and res.audio_full != null   # プレイリストの曲は、試聴の位置ではなく、頭から流す
+			_audio.stream = res.audio_full if head else res.audio
+			var from := 0.0 if head else float(res.audio_from)
+			NowPlaying.set_track(_audio, str(_songs[_song_sel].title), str(_songs[_song_sel].artist), from, _player_step.bind(-1), _player_step.bind(1), str(_songs[_song_sel].path))   # 上のプレイヤー: 前・次 = 一覧の前後の曲
+			if not head and res.audio_full != res.audio:
+				NowPlaying.set_full(res.audio_full, float(res.audio_offset))
+			_audio.play(from)
 
 
 # --- 難易度 ---
@@ -2280,6 +2297,30 @@ func _close_mods() -> void:
 ## MOD パネルに出す、選択中の難易度の MOD 適用後 Lv(難易度がなければ -1)。
 func _mod_level() -> float:
 	return browser.selected_level()
+
+
+## 試聴が終わった: プレイリストを流している最中なら、次の曲へ。
+func _on_preview_end() -> void:
+	if Playlist.is_active() and not _launching:
+		NowPlaying.step(1, true)
+
+
+## プレイリストの曲を流す(上のプレイヤーが、プレイリストから呼ぶ)。一覧の中のその曲を選ぶ(選んだ曲は、頭から流れる)。なければ、次の曲へ。
+func _play_playlist_path(path: String) -> void:
+	if _launching:
+		return
+	var i := browser.index_of_path(path)
+	if i < 0:
+		NowPlaying.play_failed()
+		return
+	if i == _song_sel and _loader != null and not _job_pending and _audio.stream != null:   # もう選んでいる曲: 選び直しでは流れ直さないので、ここで頭から流す
+		var full: AudioStream = browser.full_audio if browser.full_audio != null else _audio.stream
+		_audio.stream = full
+		NowPlaying.set_track(_audio, str(_songs[i].title), str(_songs[i].artist), 0.0, _player_step.bind(-1), _player_step.bind(1), str(_songs[i].path))
+		_audio.play(0.0)
+		return
+	_pl_wait = true
+	_select_song(i)
 
 
 ## 上のプレイヤーの前の曲・次の曲: 表示している一覧の中で、前後の曲を選ぶ。

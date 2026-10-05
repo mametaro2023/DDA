@@ -23,7 +23,8 @@ const DEFAULTS := {
 	"check_update": true, # 起動時に、新しいバージョンがないか確認する
 	"auto_update": true,  # 新しいバージョンが見つかったら、自動でダウンロードして入れ替える(check_update が入のとき。書き出した版のみ)
 	"last_auto_update": "", # 最後に自動更新を始めたバージョン(同じバージョンで繰り返し更新し続けないための印)
-	"player_name": "",    # マルチプレイでの表示名(空なら初回に自動で決める)
+	"player_name": "",    # マルチプレイでの表示名(空なら初回に自動で決める。右上のプレイヤー名を押して変えられる)
+	"player_icon": "",    # プレイヤーのアイコン(scripts/profile.gd。空なら既定)
 	"replay_save": true, # ひとりで遊んだプレイを、リプレイとして自動で保存する(scripts/replay.gd。直近 30 件。記録に載ったものは残す)
 	"speed_study": false, # 弾速の実験に参加する(scripts/speed_study.gd。ひとりで遊ぶとき、弾速などを変えた弾幕で遊び、結果を user://speed_study.csv に記録する)
 	"song_sort": "title", # 選曲の並び順(song_browser.gd の SORT_MODES の id。lazer 風の選曲画面)

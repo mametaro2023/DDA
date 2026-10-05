@@ -5,6 +5,7 @@ const LazerStyle = preload("res://scripts/ui/lazer/lazer_style.gd")
 const LazerIcons = preload("res://scripts/ui/lazer/lazer_icons.gd")
 const LazerButton = preload("res://scripts/ui/lazer/lazer_button.gd")
 const LazerPlayer = preload("res://scripts/ui/lazer/lazer_player.gd")
+const LazerProfileChip = preload("res://scripts/ui/lazer/lazer_profile_chip.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 
 const TOOLBAR_H := 40.0
@@ -47,7 +48,7 @@ static func build_backdrop(host: Control) -> Dictionary:
 	return {"holder": holder, "layers": layers, "drift": drift}
 
 
-## 上のツールバー: 左に設定の歯車と、いまの場所(パンくず。最後が現在地)、右に流れている曲のプレイヤー・時計・プレイヤー名。返す辞書: {node, clock(時計の Label)}
+## 上のツールバー: 左に設定の歯車と、いまの場所(パンくず。最後が現在地)、右に流れている曲のプレイヤー・時計・プレイヤー名(押すと名前とアイコンを変えられる)。返す辞書: {node, clock(時計の Label)}
 static func build_toolbar(host: Control, crumbs: Array, settings: Dictionary, on_gear: Callable) -> Dictionary:
 	var tb := Control.new()
 	tb.position = Vector2.ZERO
@@ -89,24 +90,13 @@ static func build_toolbar(host: Control, crumbs: Array, settings: Dictionary, on
 			sep.position = Vector2(x - 8, 9)
 			tb.add_child(sep)
 			x += 12.0
-	# 右: プレイヤー(丸い印 + 名前)と時計
-	var name_s := str(settings.get("player_name", ""))
-	if name_s == "":
-		name_s = "Player"
-	var chip := Control.new()
-	chip.position = Vector2(SIZE_PX.x - 18 - 24, 8)
-	chip.size = Vector2(24, 24)
-	chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	chip.draw.connect(func():
-		chip.draw_circle(Vector2(12, 12), 12.0, LazerStyle.PINK)
-		chip.draw_string(LazerStyle.font_bold(), Vector2(0, 17), name_s.substr(0, 1).to_upper(), HORIZONTAL_ALIGNMENT_CENTER, 24.0, 14, Color(0.2, 0.05, 0.12)))
+	# 右: プレイヤー(丸いアイコン + 名前。押すと変えられる)と時計
+	var chip := LazerProfileChip.new(settings)
+	chip.position = Vector2(SIZE_PX.x - 14.0 - LazerProfileChip.W, (TOOLBAR_H - LazerProfileChip.H) * 0.5)
 	tb.add_child(chip)
-	var nl := LazerStyle.label(name_s, 14, LazerStyle.TEXT_DIM)
-	tb.add_child(nl)
-	nl.position = Vector2(chip.position.x - 10 - nl.get_minimum_size().x, 10)
 	var clock := LazerStyle.label("", 14, LazerStyle.TEXT_MUTE)
 	clock.size = Vector2(60, 20)
-	clock.position = Vector2(nl.position.x - 14 - 44, 10)
+	clock.position = Vector2(chip.position.x - 12.0 - 44.0, 10)
 	tb.add_child(clock)
 	update_clock(clock)
 	var music := LazerPlayer.new()   # 時計の左: いま流れている曲

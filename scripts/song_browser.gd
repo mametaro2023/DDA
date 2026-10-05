@@ -351,6 +351,11 @@ func step_in_view(from: int, dir: int) -> int:
 
 
 ## 直前にプレイした曲の番号(なければ 0)。
+## パスの曲の番号(一覧になければ -1)。
+func index_of_path(path: String) -> int:
+	return int(_song_keys.get(SongLibrary.norm(path), -1))
+
+
 func last_song_index() -> int:
 	return int(_song_keys.get(SongLibrary.norm(str(settings.last_song)), 0))
 
@@ -765,10 +770,12 @@ static func load_song(path: String, mod_params: Dictionary, want_full := false) 
 	var from := maxf(first.preview_time / 1000.0, 0.0)
 	var full: AudioStream = audio
 	var cropped := crop_mp3(audio, from)
+	var offset := 0.0   # 試聴の音声が、曲の頭から何秒ずれているか(切り出したときだけ。上のプレイヤーが、曲の時刻で表示するのに使う)
 	if cropped != null:   # MP3 の途中から流すと、探す処理で数十 ms 止まる。あらかじめ、その位置から始まる音声にしておく
 		audio = cropped
+		offset = from
 		from = 0.0
-	return {"ok": true, "loader": l, "gens": gens_out, "v2": v2, "ratings": ratings_out, "levels": levels, "image": image, "audio": audio, "audio_from": from, "audio_full": full, "audio_file": first.audio_filename}
+	return {"ok": true, "loader": l, "gens": gens_out, "v2": v2, "ratings": ratings_out, "levels": levels, "image": image, "audio": audio, "audio_from": from, "audio_offset": offset, "audio_full": full, "audio_file": first.audio_filename}
 
 
 ## 全難易度の弾幕を作って、Lv(同じなら本家★)の低い順に並べる。l.difficulties も同じ並びにする。戻り値: {gens, order(元の並びでの番号)}。

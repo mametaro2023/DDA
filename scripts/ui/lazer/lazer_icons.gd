@@ -1,6 +1,6 @@
 extends Control
 ## lazer 風 UI のアイコン(線画。フォントに頼らず、描画で作る)。Control として置くか、static の draw で CanvasItem に直接描く。
-## kind: gear / back / shuffle / search / star / plus / dots / play / folder / clock / user / users / power / retry / download / alert / book / mods
+## kind: gear / back / shuffle / search / star / plus / dots / play / folder / clock / user / users / power / retry / download / alert / book / mods / list / x / up / down / repeat / pencil / trash / image / note
 
 var kind := "star"
 var col := Color.WHITE
@@ -101,3 +101,36 @@ static func draw_icon(ci: CanvasItem, k: String, c: Vector2, r: float, col: Colo
 			for i in range(3):   # 重なった 3 枚の札
 				var o := Vector2((i - 1) * r * 0.32, (1 - i) * r * 0.22)
 				ci.draw_rect(Rect2(c + o - Vector2(r * 0.42, r * 0.58), Vector2(r * 0.84, r * 1.16)), col, false, w)
+		"check":
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.7, 0.0), c + Vector2(-r * 0.2, r * 0.55), c + Vector2(r * 0.75, -r * 0.55)]), col, w * 1.2, true)
+		"list":   # 3 本の行(左に点)
+			for i in range(3):
+				var y := (i - 1) * r * 0.62
+				ci.draw_circle(c + Vector2(-r * 0.75, y), w * 0.7, col)
+				ci.draw_line(c + Vector2(-r * 0.4, y), c + Vector2(r * 0.85, y), col, w, true)
+		"x":
+			ci.draw_line(c + Vector2(-r * 0.6, -r * 0.6), c + Vector2(r * 0.6, r * 0.6), col, w * 1.2, true)
+			ci.draw_line(c + Vector2(-r * 0.6, r * 0.6), c + Vector2(r * 0.6, -r * 0.6), col, w * 1.2, true)
+		"up":
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.6, r * 0.3), c + Vector2(0, -r * 0.3), c + Vector2(r * 0.6, r * 0.3)]), col, w * 1.2, true)
+		"down":
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.6, -r * 0.3), c + Vector2(0, r * 0.3), c + Vector2(r * 0.6, -r * 0.3)]), col, w * 1.2, true)
+		"repeat":   # 輪になった 2 本の矢印
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.85, 0), c + Vector2(-r * 0.85, -r * 0.45), c + Vector2(r * 0.55, -r * 0.45)]), col, w, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(r * 0.25, -r * 0.8), c + Vector2(r * 0.65, -r * 0.45), c + Vector2(r * 0.25, -r * 0.1)]), col, w, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(r * 0.85, 0), c + Vector2(r * 0.85, r * 0.45), c + Vector2(-r * 0.55, r * 0.45)]), col, w, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.25, r * 0.1), c + Vector2(-r * 0.65, r * 0.45), c + Vector2(-r * 0.25, r * 0.8)]), col, w, true)
+		"pencil":
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.75, r * 0.75), c + Vector2(-r * 0.7, r * 0.25), c + Vector2(r * 0.35, -r * 0.8), c + Vector2(r * 0.8, -r * 0.35), c + Vector2(-r * 0.25, r * 0.7), c + Vector2(-r * 0.75, r * 0.75)]), col, w, true)
+		"trash":
+			ci.draw_line(c + Vector2(-r * 0.8, -r * 0.55), c + Vector2(r * 0.8, -r * 0.55), col, w, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.3, -r * 0.55), c + Vector2(-r * 0.3, -r * 0.85), c + Vector2(r * 0.3, -r * 0.85), c + Vector2(r * 0.3, -r * 0.55)]), col, w, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.6, -r * 0.4), c + Vector2(-r * 0.5, r * 0.85), c + Vector2(r * 0.5, r * 0.85), c + Vector2(r * 0.6, -r * 0.4)]), col, w, true)
+		"image":
+			ci.draw_rect(Rect2(c - Vector2(r * 0.85, r * 0.65), Vector2(r * 1.7, r * 1.3)), col, false, w)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.85, r * 0.45), c + Vector2(-r * 0.2, -r * 0.1), c + Vector2(r * 0.25, r * 0.3), c + Vector2(r * 0.5, r * 0.05), c + Vector2(r * 0.85, r * 0.4)]), col, w, true)
+			ci.draw_circle(c + Vector2(r * 0.4, -r * 0.3), r * 0.15, col)
+		"note":
+			ci.draw_circle(c + Vector2(-r * 0.35, r * 0.55), r * 0.32, col)
+			ci.draw_line(c + Vector2(-r * 0.05, r * 0.5), c + Vector2(-r * 0.05, -r * 0.8), col, w * 1.2, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.05, -r * 0.8), c + Vector2(r * 0.65, -r * 0.45), c + Vector2(r * 0.65, -r * 0.1)]), col, w * 1.2, true)

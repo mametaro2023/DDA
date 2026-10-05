@@ -22,17 +22,24 @@ var _steps_before := 0
 
 func _ready() -> void:
 	layer = 95   # 音量メーター(90)より上、画面切り替えの幕(100)・カーソル(127)より下
+	# 右下の隅に、薄い暗い札(背景の絵の上でも読める。行数が変わると、札の大きさも変わり、左と上へ伸びる)
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	panel.offset_left = -12.0
+	panel.offset_top = -12.0
+	panel.offset_right = -12.0
+	panel.offset_bottom = -12.0
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_theme_stylebox_override("panel", UiStyle.box(Color(0.02, 0.02, 0.05, 0.5), Color(1, 1, 1, 0.08), 1, 8, 10, 6))
+	add_child(panel)
 	_label = Label.new()
-	_label.position = Vector2(1280.0 - 230.0, 720.0 - 68.0)
-	_label.size = Vector2(218, 60)
 	_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_label.add_theme_font_size_override("font_size", 13)
-	_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.78))
-	_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-	_label.add_theme_constant_override("outline_size", 4)
-	add_child(_label)
+	_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.82))
+	panel.add_child(_label)
 	RenderingServer.frame_post_draw.connect(_on_drawn)
 	visible = enabled
 

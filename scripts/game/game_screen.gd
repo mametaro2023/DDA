@@ -31,6 +31,7 @@ const Replay = preload("res://scripts/replay.gd")
 const Records = preload("res://scripts/records.gd")
 const ReplayBar = preload("res://scripts/game/replay_bar.gd")
 const ReplayDense = preload("res://scripts/replay_dense.gd")
+const SideShade = preload("res://scripts/game/side_shade.gd")
 
 const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
@@ -263,6 +264,7 @@ var _hp_w := HP_W         # 体力バーの長さ。ゲージ満タンぶんの�
 var _bg_img: TextureRect  # 背景の画像(キアイ中の拍で少し明るくなる)
 var _soft := false         # 目に優しい表示(設定 eye_comfort)
 var _arena_bg: ColorRect  # フィールドの暗い下地
+var _side_shade: ColorRect  # アリーナの外(左右の余白)の背景(ぼかして暗くした絵。なければ null)
 var _kiai_a := 0.0        # キアイ中か(0..1。なめらかに出入りする)
 var _beat_glow := 0.0     # 今の光の強さ 0..1(キアイ中、拍の頭で立ち上がって、次の拍へ向けて消える)
 
@@ -361,6 +363,13 @@ func _ready() -> void:
 	_arena_bg.position = ARENA_POS
 	_arena_bg.size = PatternGen.ARENA
 	add_child(_arena_bg)
+	if tex != null:   # アリーナの外は、絵をぼかして暗くしたもので覆う(アリーナの下地の下。縁は、下地を通した明るさに合わせる)
+		_side_shade = SideShade.new()
+		_side_shade.setup(tex, BG_TINT, 1.0 - _arena_bg.color.a)
+		_side_shade.refit(_view_l, _view_r, _view_b)
+		add_child(_side_shade)
+		move_child(_side_shade, _arena_bg.get_index())
+		_bg_nodes.append(_side_shade)
 
 	_arena = Node2D.new()
 	_arena.position = ARENA_POS
@@ -1376,6 +1385,9 @@ func _apply_kiai() -> void:
 	if _bg_img != null:
 		_bg_img.modulate = Color(BG_TINT.r * k, BG_TINT.g * k, BG_TINT.b * k * 1.06)
 	_arena_bg.color.a = (SOFT_BG_ALPHA if _soft else ARENA_BG_ALPHA) - KIAI_ARENA_DIM * _beat_glow
+	if _side_shade != null:   # 外側も、背景の絵・アリーナの下地と同じだけ動かす(縁の明るさがずれない)
+		_side_shade.set_gain(k)
+		_side_shade.set_inner(1.0 - _arena_bg.color.a)
 	field.halo = _beat_glow
 
 
@@ -2342,6 +2354,8 @@ func _replay_layout(k: float) -> void:
 	for n in _bg_nodes:
 		n.position = Vector2(_view_l, 0.0)
 		n.size = Vector2(_view_r - _view_l, _view_b)
+	if _side_shade != null:
+		_side_shade.refit(_view_l, _view_r, _view_b)
 	_hud.queue_redraw()
 
 

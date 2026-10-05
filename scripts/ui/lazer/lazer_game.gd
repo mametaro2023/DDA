@@ -27,7 +27,7 @@ func _card(alpha := 0.82, accent := false) -> PanelContainer:
 	return p
 
 
-## 左のパネル: 曲情報・Lv(MOD 適用後)・付けた MOD・いま受けているデバフ・マルチプレイの参加者。
+## 左のパネル: (リプレイのとき)リプレイの情報・いま受けているデバフ(カードなし)・マルチプレイの参加者。
 func _build_left_panel() -> void:
 	var col := VBoxContainer.new()
 	_left_col = col
@@ -51,49 +51,14 @@ func _build_left_panel() -> void:
 		rv.add_child(LazerStyle.label(ri.result, 12, Color(1.0, 0.45, 0.48) if ri.failed else LazerStyle.TEXT_DIM, true))
 		_rp_state_l = LazerStyle.label("", 12, LazerStyle.PINK, true)
 		rv.add_child(_rp_state_l)
-	var info := _card(0.82, true)
-	col.add_child(info)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 3)
-	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	info.add_child(v)
-	for spec in [[bm.artist, 12, LazerStyle.TEXT_DIM, false], [bm.title, 16, LazerStyle.TEXT, true], [bm.version, 13, LazerStyle.PINK, true]]:
-		var l := LazerStyle.label(spec[0], spec[1], spec[2], spec[3])
-		l.custom_minimum_size = Vector2(118, 0)
-		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		v.add_child(l)
-	var gap := Control.new()
-	gap.custom_minimum_size = Vector2(0, 6)
-	v.add_child(gap)
-	var lvc := LazerStyle.level_color(gen.level)
-	var pill := LazerStyle.pill("★ %.2f" % gen.level, lvc, 18)
-	pill.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	v.add_child(pill)
-	if absf(gen.level - gen.base_level) >= 0.005:
-		v.add_child(LazerStyle.label("MODなし  %.2f" % gen.base_level, 12, LazerStyle.TEXT_MUTE))
-	if not _mods.ids.is_empty():
-		var mods_box := HFlowContainer.new()
-		mods_box.add_theme_constant_override("h_separation", 5)
-		mods_box.add_theme_constant_override("v_separation", 5)
-		mods_box.custom_minimum_size = Vector2(118, 0)
-		mods_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var gap2 := Control.new()
-		gap2.custom_minimum_size = Vector2(0, 4)
-		v.add_child(gap2)
-		v.add_child(mods_box)
-		for id in _mods.ids:
-			var m := Mods.find(id)
-			var c: Color = m.color
-			var chip := PanelContainer.new()
-			chip.add_theme_stylebox_override("panel", LazerStyle.box(Color(c.r, c.g, c.b, 0.24), Color(c.r, c.g, c.b, 0.8), 1, 999, 8, 1))
-			chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			chip.add_child(LazerStyle.label(str(m.tag), 12, c, true))
-			mods_box.add_child(chip)
-	_debuff_l = LazerStyle.label("", 14, LazerStyle.TEXT, true)   # 危険エリアに入っている間だけ、デバフの名前を出す
+	# 曲情報・Lv・MOD のカードは置かない(曲名・難易度は選曲画面で見ている)。危険エリアに入っている間だけ、デバフの名前を、カードなしで出す
+	_debuff_l = LazerStyle.label("", 14, LazerStyle.TEXT, true)
 	_debuff_l.visible = false
 	_debuff_l.custom_minimum_size = Vector2(118, 0)
 	_debuff_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	v.add_child(_debuff_l)
+	_debuff_l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+	_debuff_l.add_theme_constant_override("outline_size", 5)
+	col.add_child(_debuff_l)
 	if _mp != null:   # マルチプレイ: 参加者の一覧(対戦はスコア順)
 		var mp_card := _card(0.82)
 		col.add_child(mp_card)

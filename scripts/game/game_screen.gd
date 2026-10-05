@@ -147,7 +147,10 @@ var _mouse_mode := false
 ## いま木の中にあるプレイ画面の数(リトライでは、新しい画面が先に作られ、古い画面があとで消える)
 static var _alive := 0
 var _mouse_accum := Vector2.ZERO  # 未処理のカーソル移動量(相対)
-var _guiding := false             # 開始の演出中: カーソルが自機の位置へ飛んでいる間(マウスの移動は自機に効かせない)
+static var _last_ship := Vector2(-1.0, -1.0)   # 直前のプレイの最後の自機の位置(アリーナの座標)。マウスを捕まえたままリトライしたとき、カーソルがあった場所の代わりになる
+var _cursor_pos := Vector2.ZERO   # マウスの位置(画面の座標)。warp_mouse の直後は、本物の位置が届くまで古いままなので、自分で持つ
+var _start_in_place := false      # 始まるとき、カーソルがもうアリーナの中にあった: 飛ばさず、その場で自機にする
+var _guiding := false            # 開始の演出中: カーソルが自機の位置へ飛んでいる間(マウスの移動は自機に効かせない)
 var _skip_btn: Button            # イントロのスキップのボタン(スキップできる間だけ出る)
 var _skip_free := false           # スキップのボタンを押せるように、マウスを捕まえていない間
 var _skipped := false             # スキップした(もう出さない)
@@ -399,6 +402,11 @@ func _ready() -> void:
 
 	_build_hud()
 	_build_skip_button()
+	if replay_data.is_empty() and _mp == null and debug_seek < 0.0 and _mouse_mode:
+		var at = _start_cursor_pos()
+		if at != null:   # カーソルがもうアリーナの中にある: 自機は、その場から始まる(リプレイの記録の始めの位置も、ここ)
+			sim.player_pos = at
+			_start_in_place = true
 	if replay_data.is_empty() and _mp == null and debug_seek < 0.0 and Replay.enabled and bool(settings.get("replay_save", true)) and (Replay.force_record or (not debug_move.is_valid() and not _dev_run())):
 		_rec = Replay.Recorder.new()   # ひとり用のプレイは入力を記録する(終わりに保存。scripts/replay.gd。開発用の自動操作は保存しない)
 		_rec.begin(sim, field, -LEAD_IN)
@@ -457,6 +465,9 @@ func _set_ship_in(v: float) -> void:
 ## 自機が見えない間はマウスを捕まえず(移動は効かない)、着いたら OS のポインタも自機の位置へ移してから捕まえる
 ## (ポーズでカーソルが戻るとき、自機のあった場所から出る)。キーボード操作・動きなしのときは、少し待って自機が現れる。
 func _begin_arrival() -> void:
+	if _start_in_place:   # カーソルがもうアリーナの中にある(リトライで、そのまま続けて始めたときも): 飛ばさず、その場で自機になる
+		_arrive()
+		return
 	if not UiStyle.animate:
 		if _mouse_mode:
 			_capture_mouse()
@@ -470,6 +481,27 @@ func _begin_arrival() -> void:
 	get_tree().create_timer(0.35).timeout.connect(_arrive)
 
 
+## 始まるときのカーソルの位置(アリーナの座標)。自機が動ける範囲の中にあるときだけ返す(なければ null)。
+## マウスを捕まえたままリトライしたときは、本物の位置が分からないので、直前の自機の位置を使う。
+func _start_cursor_pos() -> Variant:
+	var p: Vector2
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		p = _last_ship
+	elif CursorOverlay.pointer_inside():
+		p = CursorOverlay.pointer_pos() - ARENA_POS
+	else:
+		return null
+	var m: Vector2 = Vector2.ONE * GameSim.PLAYER_MARGIN * sim.player_scale
+	var r := Rect2(sim.move_rect.position + m, sim.move_rect.size - m * 2.0)
+	return p if r.has_point(p) else null
+
+
+## OS のポインタを、自機の位置へ移す(マウスを捕まえていないときに呼ぶ。捕まえていると効かない)。
+func _warp_to_ship() -> void:
+	_cursor_pos = ARENA_POS + sim.player_pos
+	Input.warp_mouse(get_viewport().get_screen_transform() * _cursor_pos)
+
+
 func _arrive() -> void:
 	if _arrived or not is_inside_tree():
 		return
@@ -477,10 +509,10 @@ func _arrive() -> void:
 	_guiding = false
 	CursorOverlay.cancel_fly()
 	if _mouse_mode and not _menu_open():
-		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN   # 先に捕まえを外す(捕まえたままだと warp_mouse が効かず、OS のポインタが中央に残って、自機がそこへ飛ぶ)
+		_warp_to_ship()
 		if _can_skip():   # スキップのボタンを押せるように、まだ捕まえない(自機がマウスの位置へ動き、カーソルの代わりになる。_update_skip_button が、できなくなったら捕まえる)
 			_skip_free = true
-			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		else:
 			_capture_mouse()
 	# 自機が、その場で弾んで現れる(輪が広がり、小さな音)
@@ -882,7 +914,7 @@ func _step_sim(slow: bool) -> void:
 	var move := Vector2.ZERO
 	var d := Vector2.ZERO
 	if _ship_is_cursor():   # スキップできる間: 自機がカーソルの代わり(マウスの位置へ、そのまま動く)
-		d = (get_viewport().get_mouse_position() - ARENA_POS - sim.player_pos) / float(n)
+		d = (_cursor_pos - ARENA_POS - sim.player_pos) / float(n)
 		_mouse_accum = Vector2.ZERO
 	elif _mouse_mode:
 		var mult: float = float(settings.get("mouse_sens", 1.0)) * (GameSim.MOUSE_SLOW_FACTOR if slow else 1.0)
@@ -907,6 +939,7 @@ func _step_sim(slow: bool) -> void:
 		_rec.add(t0, span, n, d if _mouse_mode else move, slow, _mouse_mode, sim, field)   # 同じ入力・同じ刻みで、あとで再生できるように
 	if not sim.finished:
 		_sim_t = _now
+	_last_ship = sim.player_pos
 
 
 ## ゲームオーバー演出の開始。
@@ -1541,10 +1574,10 @@ func _update_skip_button() -> void:
 		_skip_free = true
 		_mouse_accum = Vector2.ZERO
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
-		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))   # 自機がマウスの位置へ跳ばないように
+		_warp_to_ship()   # 自機がマウスの位置へ跳ばないように
 	elif not can and _skip_free:
 		_skip_free = false
-		Input.warp_mouse(get_viewport().get_screen_transform() * (ARENA_POS + sim.player_pos))
+		_warp_to_ship()
 		_capture_mouse(true)
 	if _ship_is_cursor():   # 自機が動ける範囲の中では、独自カーソルを出さない(自機とカーソルが 2 つ並ばない)。小型化で範囲の外にあるボタンへは、自機が届かないので、外ではカーソルを出す
 		var m: float = GameSim.PLAYER_MARGIN * sim.player_scale
@@ -1794,6 +1827,8 @@ func _pause_row_style(selected: bool, mh: float, mv: float) -> StyleBoxFlat:
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		_cursor_pos = event.position   # 捕まえている間の位置は、本物ではない
 	if _resume_wait and event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and _wait_lock <= 0.0:
 		_finish_resume()   # 再開の待ち: クリックで動き出す
 		get_viewport().set_input_as_handled()

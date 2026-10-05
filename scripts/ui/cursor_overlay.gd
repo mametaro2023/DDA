@@ -77,6 +77,18 @@ static func cancel_fly() -> void:
 		inst._fly_t = -1.0
 
 
+## マウスのポインタが、ウィンドウの上にあるか(画面が始まるとき、カーソルの位置を使ってよいかの確認用)。
+static func pointer_inside() -> bool:
+	return inst != null and (inst._inside or inst.debug_pos.x >= 0.0)
+
+
+## マウスのポインタの位置(画面の座標。開発用の決め打ちがあれば、それ)。
+static func pointer_pos() -> Vector2:
+	if inst != null and inst.debug_pos.x >= 0.0:
+		return inst.debug_pos
+	return inst.get_viewport().get_mouse_position() if inst != null else Vector2(-1.0, -1.0)
+
+
 ## このフレームは、rect(画面の座標)の中ではカーソルを描かない(自機がカーソルの代わり)。毎フレーム呼ぶ。
 static func hide_in(rect: Rect2) -> void:
 	_hide_rect = rect

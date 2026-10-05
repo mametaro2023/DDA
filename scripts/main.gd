@@ -1504,7 +1504,7 @@ func _smoke_ui() -> void:
 
 
 ## 開発用: PLAY を押してからゲームが始まるまでの「間」を、時間を追って確認する(発進の演出 → カーソルが自機へ飛ぶ → 自機が現れる → GO)。
-## 例: --smoke-start [keyboard]   画面写真は user:// ではなく、第 1 引数の接頭辞があればそこへ保存(--shots <接頭辞>)
+## 例: --smoke-start [keyboard] [inplace]   inplace: カーソルがアリーナの中にあるまま始める(飛ばず、その場で自機になる)。画面写真は user:// ではなく、第 1 引数の接頭辞があればそこへ保存(--shots <接頭辞>)
 func _smoke_start() -> void:
 	var args := OS.get_cmdline_user_args()
 	var orig := Settings.load_all()
@@ -1529,7 +1529,7 @@ func _smoke_start() -> void:
 	await get_tree().create_timer(0.8).timeout
 	# カーソルは PLAY ボタンの上
 	var from: Vector2 = m._play_btn.get_global_rect().get_center()
-	cur.debug_pos = from
+	cur.debug_pos = Vector2(500, 300) if args.has("inplace") else from
 	await get_tree().create_timer(0.2).timeout
 	print("start: control=%s  cursor at PLAY %s  mouse_mode=%d" % [st.control, str(from), Input.mouse_mode])
 	var t0 := Time.get_ticks_msec()
@@ -1552,7 +1552,7 @@ func _smoke_start() -> void:
 		k += 1
 	if g != null and is_instance_valid(g):
 		var ship_at: Vector2 = GameScreen.ARENA_POS + g.sim.player_pos
-		print("ship start (screen) = %s   cursor flew to = %s" % [str(ship_at), str(cur._fly_to)])
+		print("ship start (screen) = %s   cursor flew to = %s   in_place=%s" % [str(ship_at), str(cur._fly_to), str(g._start_in_place)])
 	Settings.restore(orig)
 	get_tree().quit()
 

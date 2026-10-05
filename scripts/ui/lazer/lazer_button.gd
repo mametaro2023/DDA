@@ -15,6 +15,12 @@ var font_size := 18
 var stacked := false
 ## 強調(選んでいるボタン)。明るくする
 var emphasized := false
+## 拍の脈動など、外から与える明るさ(0..1。押せるときだけ効く)
+var glow := 0.0:
+	set(v):
+		if not is_equal_approx(glow, v):
+			glow = v
+			queue_redraw()
 
 
 func _init(p_caption := "", p_color := LazerStyle.PINK, p_icon := "", p_ink := Color(0.16, 0.05, 0.10)) -> void:
@@ -45,6 +51,8 @@ func _draw() -> void:
 		c = color.darkened(0.14)
 	elif is_hovered() or emphasized:
 		c = color.lightened(0.16)
+	elif glow > 0.0:
+		c = color.lightened(0.16 * clampf(glow, 0.0, 1.0))
 	draw_colored_polygon(PackedVector2Array([Vector2(slant, 0), Vector2(w, 0), Vector2(w - slant, h), Vector2(0, h)]), c)
 	var f := LazerStyle.font_bold()
 	var cap := caption if caption != "" else text.get_slice("   [", 0)   # caption が空なら、Button の text を使う(キーの案内の「   [Space]」より後ろは出さない)

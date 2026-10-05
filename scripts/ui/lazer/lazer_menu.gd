@@ -33,9 +33,15 @@ const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const LazerMarquee = preload("res://scripts/ui/lazer/lazer_marquee.gd")
 const SongArt = preload("res://scripts/song_art.gd")
 
-const BAR_MAX := 500.0        # 弾数バーの満点
-const SPEED_MAX := 500.0      # 弾速バーの満点(px/s)
+const BAR_MAX := 1500.0       # 弾数バーの満点(対数で伸ばす。少ない弾数の差も見え、多い譜面でも端に貼りつかない)
+const BAR_KNEE := 40.0        # 弾数バーの対数の曲がり目(この弾数あたりまでは、ほぼ比例して伸びる)
+const SPEED_MAX := 900.0      # 弾速バーの満点(px/s。対数で伸ばす)
+const SPEED_KNEE := 60.0
 const LAUNCH_TIME := 0.25       # プレイを押してから、次の画面へ切り替えるまでの演出の長さ(秒)
+const PULSE_LEAD_MS := 30.0   # 拍の脈動: 拍の頭のこれだけ前から明るくなり始める(ms)
+const PULSE_DECAY_MS := 170.0 # 拍の脈動: 拍のあと、明るさが引いていく速さ(ms。拍が短いときは、拍の長さの 4 割)
+const PULSE_CALM := 0.5       # 拍の脈動の強さ(サビ(kiai)の区間は 1)
+const GLOW_SIZE := 12         # 選んでいる行の、外側の光の広がり(px)
 const BACKDROP_NODES := 3     # 土台(_build_base)が最初に作る背景のノード数(下地・画像の入れ物・暗幕)。発進の演出で、これより上の中身だけを消す
 const ROW_H := 70.0           # 曲の行の高さ(1 画面に 7 行ほど入る。行の間は ROW_GAP)
 const ROW_GAP := 6            # 行と行の間
@@ -44,7 +50,7 @@ const DIFF_GAP := 6
 const DIFF_INDENT := 36.0     # 難易度の一覧の左の余白(曲の行より内側)
 const INDENT := 44.0          # 行の左の余白(閉じているとき)
 const INDENT_HOVER := 30.0
-const INDENT_SEL := 6.0       # 選んでいる行は、左へせり出す
+const INDENT_SEL := 12.0      # 選んでいる行は、左へせり出す(外側の光が、一覧の左端で切れない余白を残す)
 const MARGIN_R := 26.0        # 行の右の余白
 const BULGE := 30.0           # 一覧の真ん中あたりの行は、上下の端の行より、左へこれだけせり出す(px。選んでいる行は、いつも最大にせり出している)
 const BULGE_RATE := 14.0      # せり出しの動きの速さ(大きいほど速く追いつく)
@@ -122,6 +128,23 @@ const SPACER_W := 9.0          # 余白を戻すばねの強さ(約 0.5 秒)
 var _detail_tween: Tween          # 読み込み中に、左の情報を少し薄くする
 var _stat_from: Array = []       # 内訳のバーの、動き始めの割合
 var _stat_k := 1.0               # 内訳のバーの動きの進み(0 → 1)
+var _stat_col := Color.WHITE     # 内訳のバーの色(選んでいる難易度の Lv の色)
+var _stat_col_from := Color.WHITE   # 内訳のバーの、動き始めの色
+var _stat_ticks: Array = []      # 同じ曲のほかの難易度の、バーの上の目盛り [[平均の割合, 最大の割合, 弾速の割合, 色], ...]
+var _lv_pill: PanelContainer     # 左上の Lv の札(作り直さず、数字と色だけを動かす)
+var _lv_box: StyleBoxFlat
+var _lv_star: Control
+var _lv_num: Label
+var _lv_name: Label
+var _lv_base: Label
+var _lv_shown := -1.0            # 左上の Lv の札に、いま見えている値(数え上げの途中なら、その途中の値。まだ出していなければ -1)
+var _lv_tween: Tween
+var _count_l: Label              # 検索の入力欄の右: 曲(譜面)の数
+var _foot_sum: Control           # フッターの真ん中: 選んでいる難易度と MOD の要約
+var _glow_card: Control          # 外側の光をつけている行のカード(選んでいる行)
+var _pulse := 0.0                # 拍の脈動の、いまの強さ(0..1)
+var _bg_shade: CanvasItem        # 背景の暗幕(拍に合わせて、ごく少し明るくする)
+var _opened_at := 0              # 画面を開いた時刻(ミリ秒)
 var _art_asked := {}             # 画像を SongArt に頼んだ行
 var _key_to_row := {}            # 曲の識別子 → 行の番号
 var _art_t := 0.0
@@ -153,6 +176,7 @@ var _sort_btn: Button             # 並び替えのボタン(押すと、選択�
 var _sort_menu: PanelContainer    # 並び替えの選択肢
 const SORT_W := 190.0             # 並び替えのボタンの幅
 const SORT_X := 1280.0 - 20.0 - SORT_W
+const COUNT_W := 120.0            # 検索の入力欄の右端の、曲の数の欄の幅
 var _no_match: Label              # 検索に合う曲がないとき
 var _empty_box: Control
 var _play_btn: Button
@@ -167,6 +191,7 @@ var _cards_gen := 0
 
 
 func _ready() -> void:
+	_opened_at = Time.get_ticks_msec()
 	settings = Settings.load_all()
 	browser.settings = settings
 	browser.song_changing.connect(_on_song_changing)
@@ -180,6 +205,7 @@ func _ready() -> void:
 	browser.length_of = func(i: int) -> float: return SongArt.length_of(str(_songs[i].md5))
 	backdrop_bright = true
 	_build_base()
+	_bg_shade = get_child(BACKDROP_NODES - 1)   # 土台の暗幕(背景の 3 枚の、いちばん上)
 	_build_toolbar(["ロビー", "曲を選ぶ"] if pick_mode else ["ソロ"])
 	_build_info()
 	_build_stats()
@@ -189,6 +215,7 @@ func _ready() -> void:
 	_build_empty()
 	_build_footer()
 	_build_footer_buttons()
+	_build_footer_summary()
 	_build_sort_menu()   # ほかの部品より前に出すので、最後に作る
 	_audio = AudioStreamPlayer.new()
 	Volume.route_music(_audio)   # 音楽バスへ(ホイールなどの「音楽」の音量が効く)
@@ -227,6 +254,7 @@ func _exit_tree() -> void:
 # --- 部品 ---
 
 ## 左上の情報パネル(右の縁が斜め): 曲名・アーティスト・譜面の情報・選んでいる難易度・付けた MOD。
+## 地は半透明の暗い色だけ(曲の画像は画面の背景に敷いてあるので、パネルには重ねない。同じ画像が二重に見えて不自然になる)。
 func _build_info() -> void:
 	_info = Control.new()
 	_place(_info, 0, 56, 604, 232)
@@ -250,7 +278,29 @@ func _build_info() -> void:
 	_lv_holder.position = Vector2(32, 128)
 	_lv_holder.size = Vector2(520, 30)
 	_lv_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_lv_holder.visible = false
 	_info.add_child(_lv_holder)
+	_lv_pill = PanelContainer.new()
+	_lv_box = LazerStyle.box(LazerStyle.PANEL, Color(0, 0, 0, 0), 0, 15, 12, 3)
+	_lv_pill.add_theme_stylebox_override("panel", _lv_box)
+	_lv_pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 6)
+	hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_lv_pill.add_child(hb)
+	_lv_star = LazerIcons.new("star", LazerStyle.TEXT, 15.0)
+	_lv_star.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(_lv_star)
+	_lv_num = LazerStyle.label("", 18, LazerStyle.TEXT, true)
+	_lv_num.custom_minimum_size = Vector2(LazerStyle.font_bold().get_string_size("88.88", HORIZONTAL_ALIGNMENT_LEFT, -1, 18).x, 0)   # 数え上げの途中で、札の幅が揺れない
+	hb.add_child(_lv_num)
+	_lv_holder.add_child(_lv_pill)
+	_lv_name = LazerStyle.label("", 20, LazerStyle.TEXT, true)
+	_lv_name.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_lv_holder.add_child(_lv_name)
+	_lv_base = LazerStyle.label("", 14, LazerStyle.TEXT_MUTE)
+	_lv_base.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_lv_holder.add_child(_lv_base)
 	_mod_bar = HBoxContainer.new()
 	_mod_bar.add_theme_constant_override("separation", 8)
 	_mod_bar.clip_contents = true
@@ -280,6 +330,7 @@ func _draw_stats() -> void:
 	_stats.draw_style_box(LazerStyle.box(Color(LazerStyle.PANEL_DARK.r, LazerStyle.PANEL_DARK.g, LazerStyle.PANEL_DARK.b, 0.78), Color(0, 0, 0, 0), 0, 12), Rect2(0, 0, w, h))
 	var f := LazerStyle.font()
 	var y := 20.0
+	var col := _stat_col_from.lerp(_stat_col, clampf(_stat_k, 0.0, 1.0))   # バーの色も、前の難易度の色から移る
 	for q in range(_stat_rows.size()):
 		var r: Array = _stat_rows[q]
 		_stats.draw_string(f, Vector2(20, y + 13), str(r[0]), HORIZONTAL_ALIGNMENT_LEFT, 120, 14, LazerStyle.TEXT_DIM)
@@ -287,7 +338,10 @@ func _draw_stats() -> void:
 		var bw := w - x0 - 100.0
 		_stats.draw_rect(Rect2(x0, y + 6, bw, 6), Color(1, 1, 1, 0.12))
 		var frac: float = clampf(_stat_from_old(q), 0.0, 1.0)   # 前の難易度の値から、なめらかに伸び縮みする
-		_stats.draw_rect(Rect2(x0, y + 6, bw * frac, 6), LazerStyle.PINK)
+		_stats.draw_rect(Rect2(x0, y + 6, bw * frac, 6), col)
+		for t in _stat_ticks:   # 同じ曲のほかの難易度の位置(← → で切り替えたときの差が、一目で分かる)
+			var tc: Color = t[3]
+			_stats.draw_rect(Rect2(x0 + bw * float(t[q]) - 1.0, y + 2, 2, 14), Color(tc.r, tc.g, tc.b, 0.75))
 		_stats.draw_string(f, Vector2(x0 + bw + 14, y + 13), str(r[2]), HORIZONTAL_ALIGNMENT_LEFT, 80, 14, LazerStyle.TEXT)
 		y += 32.0
 	if _stat_note != "":
@@ -297,7 +351,7 @@ func _draw_stats() -> void:
 ## 左下: 選んだ難易度のローカル記録(上位 5 件。ランク・スコア・付けた MOD・日付)。
 func _build_records() -> void:
 	_rec_card = Control.new()
-	_place(_rec_card, 24, 476, 540, 180)
+	_place(_rec_card, 24, 476, 540, 64)   # 高さは、記録の数に合わせる(_fit_records。5 件で 182)
 	_rec_card.mouse_filter = Control.MOUSE_FILTER_PASS   # 行ごとの再生ボタン(リプレイがあるものだけ)を押せるように
 	_rec_card.draw.connect(_draw_records)
 	_rec_card.gui_input.connect(_rec_input)
@@ -315,7 +369,7 @@ func _draw_records() -> void:
 	var fb := LazerStyle.font_bold()
 	_rec_card.draw_string(f, Vector2(20, 24), "ローカル記録", HORIZONTAL_ALIGNMENT_LEFT, 200, 13, LazerStyle.TEXT_MUTE)
 	if _rec_rows.is_empty():
-		_rec_card.draw_string(f, Vector2(20, 66), "まだ記録がありません", HORIZONTAL_ALIGNMENT_LEFT, w - 40, 15, LazerStyle.TEXT_MUTE)
+		_rec_card.draw_string(f, Vector2(20, 50), "まだ記録がありません", HORIZONTAL_ALIGNMENT_LEFT, w - 40, 15, LazerStyle.TEXT_MUTE)
 		return
 	var y := 34.0
 	for i in range(_rec_rows.size()):
@@ -375,8 +429,26 @@ func _update_records() -> void:
 	_rec_rows = []
 	if _loader != null and _diff_sel >= 0 and _diff_sel < _loader.difficulties.size():
 		_rec_rows = Records.top(str(_loader.difficulties[_diff_sel].md5), 5)
-	if _rec_card != null:
-		_rec_card.queue_redraw()
+	_fit_records()
+
+
+## 記録の欄の高さを、記録の数に合わせる(記録がなければ、1 行の案内だけの低い欄。なめらかに伸び縮みする)。
+func _fit_records() -> void:
+	if _rec_card == null:
+		return
+	_rec_card.queue_redraw()
+	var to := 64.0 if _rec_rows.is_empty() else 34.0 + 28.0 * float(_rec_rows.size()) + 8.0
+	var old = _rec_card.get_meta("h_tween") if _rec_card.has_meta("h_tween") else null
+	if old is Tween and old.is_valid():
+		old.kill()
+	if is_equal_approx(_rec_card.size.y, to):
+		return
+	if not UiStyle.animate or not _rec_card.is_inside_tree():
+		_rec_card.size.y = to
+		return
+	var t := _rec_card.create_tween()
+	t.tween_property(_rec_card, "size:y", to, 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_rec_card.set_meta("h_tween", t)
 
 
 ## 右上: 曲の検索の入力欄と、並び替えの切り替え。
@@ -391,6 +463,16 @@ func _build_search() -> void:
 		_apply_view())
 	# 検索の入力欄を広く取り、並び替えは 1 つのボタン(押すと、下に選択肢が開く)にまとめる(ボタンを 6 つ並べると、窮屈だった)
 	_place(_search, 624, 50, SORT_X - 624.0 - 14.0, 36)
+	for st in [["normal", Color(1, 1, 1, 0.08), LazerStyle.LINE], ["focus", Color(1, 1, 1, 0.12), LazerStyle.PINK]]:   # 右端に曲の数を出すので、文字はその手前まで
+		var sb := LazerStyle.box(st[1], st[2], 1, 10, 14, 8)
+		sb.content_margin_right = 14.0 + COUNT_W
+		_search.add_theme_stylebox_override(st[0], sb)
+	_count_l = LazerStyle.label("", 13, LazerStyle.TEXT_MUTE)
+	_count_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_count_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_count_l.position = Vector2(_search.size.x - COUNT_W - 4.0, 0)
+	_count_l.size = Vector2(COUNT_W - 10.0, 36)
+	_search.add_child(_count_l)
 	_sort_btn = Button.new()
 	_sort_btn.toggle_mode = true
 	_sort_btn.focus_mode = Control.FOCUS_NONE
@@ -537,6 +619,7 @@ func _apply_view(sorted := false, keep_scroll := false) -> void:
 	if _diff_box != null:
 		_diff_box.visible = shown.has(_song_sel)
 	_no_match.visible = v.is_empty() and not _songs.is_empty()
+	_set_count("%d 曲" % _songs.size() if v.size() == _songs.size() else "%d / %d 曲" % [v.size(), _songs.size()])
 	_art_t = 1.0   # 見えるようになった行の画像を頼む
 	if leaving:
 		_fade_list()
@@ -608,6 +691,7 @@ func _apply_chart_view() -> void:
 	var pending := SongArt.meta_pending() > 0
 	_no_match.text = "難易度を調べています…" if pending else "一致する曲がありません"
 	_no_match.visible = order.is_empty() and not _songs.is_empty()
+	_set_count("%d 譜面" % order.size())
 	if keys != _chart_keys or entering:   # 並びが同じなら、行には触らない
 		_chart_keys = keys
 		for key in _chart_holders.keys():
@@ -653,6 +737,12 @@ func _clear_charts() -> void:
 	_chart_keys = PackedStringArray()
 	_chart_sel = ""
 	_chart_want = ""
+
+
+## 検索の入力欄の右端の、曲(譜面)の数。検索で絞り込んでいるときは「出ている数 / 全部の数」。
+func _set_count(text: String) -> void:
+	if _count_l != null:
+		_count_l.text = text
 
 
 ## 一覧を、ふわっと現れさせる(並び方の種類が変わったとき)。行を滑らせないので、数が多くても目に優しい。
@@ -1036,6 +1126,56 @@ func _build_footer_buttons() -> void:
 	_play_btn = play
 
 
+## フッターの真ん中(設定とプレイの間): 選んでいる難易度(Lv の札・難易度名)と、付けた MOD・スコアの倍率の要約。
+func _build_footer_summary() -> void:
+	_foot_sum = Control.new()
+	_foot_sum.position = Vector2(636, 0)
+	_foot_sum.size = Vector2(1280 - 260 - 636 - 24, FOOTER_H)
+	_foot_sum.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_foot_sum.draw.connect(_draw_footer_summary)
+	_footer.add_child(_foot_sum)
+
+
+func _draw_footer_summary() -> void:
+	if _loader == null or _diff_sel < 0 or _diff_sel >= _ratings.size() or _diff_sel >= _loader.difficulties.size():
+		return
+	var w := _foot_sum.size.x
+	var cy := _foot_sum.size.y * 0.5
+	var f := LazerStyle.font()
+	var fb := LazerStyle.font_bold()
+	var lv := _lv_shown if _lv_shown >= 0.0 else float(_ratings[_diff_sel].level)   # 左上の札と同じ値(数え上げの途中も)
+	var col := LazerStyle.level_color(lv)
+	var cap := "★ %.2f" % lv
+	var pw := fb.get_string_size(cap, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 22.0
+	_foot_sum.draw_style_box(LazerStyle.box(col, Color(0, 0, 0, 0), 0, 999), Rect2(0, cy - 12.0, pw, 24))
+	_foot_sum.draw_string(fb, Vector2(11, cy + (fb.get_ascent(14) - fb.get_descent(14)) * 0.5), cap, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, LazerStyle.ink_on(col))
+	# 右端から: スコアの倍率と、付けた MOD の略号(MOD の色)
+	var p := Mods.params(settings.mods)
+	var base_y := cy + (f.get_ascent(14) - f.get_descent(14)) * 0.5
+	var ver := str(_loader.difficulties[_diff_sel].version)
+	var name_room := minf(fb.get_string_size(ver, HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x, 150.0) + 26.0   # 難易度名を優先して残す幅(長い名前は、ここまで)
+	var x := w
+	if not p.ids.is_empty():
+		var mul := "×%.2f" % float(p.score_mul)
+		x -= f.get_string_size(mul, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+		_foot_sum.draw_string(f, Vector2(x, base_y), mul, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, LazerStyle.TEXT_DIM)
+		var ids: Array = p.ids
+		for k in range(ids.size() - 1, -1, -1):
+			var m := Mods.find(ids[k])
+			var tag := str(m.get("tag", m.get("name", "")))
+			var tw := fb.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+			if x - tw - 10.0 < pw + name_room:   # 難易度名の場所を残す(入りきらない MOD は「+n」。全部は、左上の一覧で見られる)
+				var more := "+%d" % (k + 1)
+				x -= fb.get_string_size(more, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x + 10.0
+				_foot_sum.draw_string(fb, Vector2(x, base_y), more, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LazerStyle.TEXT_DIM)
+				break
+			x -= tw + 10.0
+			_foot_sum.draw_string(fb, Vector2(x, base_y), tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, m.color)
+		x -= 14.0
+	var name := LazerStyle.fit(fb, ver, 15, x - pw - 12.0)
+	_foot_sum.draw_string(fb, Vector2(pw + 12.0, cy + (fb.get_ascent(15) - fb.get_descent(15)) * 0.5), name, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, LazerStyle.TEXT)
+
+
 func _go_back() -> void:
 	UiSfx.play("back")
 	_audio.stop()
@@ -1062,7 +1202,7 @@ func _set_loading(on: bool) -> void:
 func _dim_detail(on: bool) -> void:
 	if _detail_tween != null and _detail_tween.is_valid():
 		_detail_tween.kill()
-	var nodes: Array = [_meta_l, _lv_holder, _stats, _rec_card]
+	var nodes: Array = [_meta_l, _lv_holder, _stats, _rec_card, _foot_sum]
 	if not UiStyle.animate or not is_inside_tree():
 		for n in nodes:
 			n.modulate.a = 0.45 if on else 1.0
@@ -1235,6 +1375,7 @@ func _center_selected() -> void:
 	if not is_inside_tree() or _song_sel != want or want >= _rows.size():
 		return
 	_smooth.center_on_control(_rows[want], true)
+	_scroll_to_selection(true)   # 選んでいる難易度が、開いた一覧の下の画面の外なら、見えるところへ(読み込みが後なら、_on_song_loaded が)
 
 
 ## 全曲の難易度を用意する裏の作業を、始める(統計のない曲があるとき。曲が増えたときのために、数秒おきに確かめる)。曲の読み込み・プレイ中は、裏の作業が待つ。
@@ -1405,19 +1546,19 @@ func _fill_row(i: int) -> void:
 func _draw_dots(dots: Control, i: int) -> void:
 	var secs := int(SongArt.length_of(str(_songs[i].md5)))   # 右端に、曲の長さ(分かっていれば)
 	if secs > 0:
-		dots.draw_string(LazerStyle.font(), Vector2(0, 11), "%d:%02d" % [secs / 60, secs % 60], HORIZONTAL_ALIGNMENT_RIGHT, dots.size.x, 12, LazerStyle.TEXT_DIM)
+		dots.draw_string(LazerStyle.font(), Vector2(0, 12), "%d:%02d" % [secs / 60, secs % 60], HORIZONTAL_ALIGNMENT_RIGHT, dots.size.x, 13, LazerStyle.TEXT_DIM)
 	var cols := _dot_colors(i)
 	if cols.is_empty():
 		return
-	var y := 3.0
-	dots.draw_arc(Vector2(6, y + 4), 5.0, 0.0, TAU, 20, Color(1, 1, 1, 0.9), 2.0, true)
+	var y := 2.5
+	dots.draw_arc(Vector2(6, y + 4.5), 5.0, 0.0, TAU, 20, Color(1, 1, 1, 0.9), 2.0, true)
 	var x := 17.0
-	var room := int((dots.size.x - x - 30.0 - (44.0 if secs > 0 else 0.0)) / 13.0)
+	var room := int((dots.size.x - x - 30.0 - (48.0 if secs > 0 else 0.0)) / 16.0)
 	for k in range(mini(cols.size(), room)):
-		dots.draw_style_box(LazerStyle.box(cols[k], Color(0, 0, 0, 0), 0, 4), Rect2(x, y, 10, 8))
-		x += 13.0
+		dots.draw_style_box(LazerStyle.box(cols[k], Color(0, 0, 0, 0), 0, 4), Rect2(x, y, 13, 9))
+		x += 16.0
 	if cols.size() > room:
-		dots.draw_string(LazerStyle.font_bold(), Vector2(x + 2, y + 9), "+%d" % (cols.size() - room), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LazerStyle.TEXT_DIM)
+		dots.draw_string(LazerStyle.font_bold(), Vector2(x + 2, y + 9.5), "+%d" % (cols.size() - room), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LazerStyle.TEXT_DIM)
 
 
 ## 行 i の難易度の色(易しい順)。読み込んで測った Lv があればそれ、なければ譜面の★の推定から。
@@ -1486,6 +1627,7 @@ func _request_visible_art() -> void:
 
 func _process(delta: float) -> void:
 	super._process(delta)
+	_update_pulse(delta)
 	_pump_osu()
 	_release_spacers(delta)
 	if _scroll != null and (_bulge_dirty or _scroll.scroll_vertical != _bulge_scroll):
@@ -1500,6 +1642,37 @@ func _process(delta: float) -> void:
 		_charts_dirty = false
 		_charts_at = Time.get_ticks_msec()
 		_apply_view(false, true)
+
+
+## 拍の脈動: 試聴の曲の拍に合わせて、選んでいる行の光・プレイボタン・背景が、ごく弱く明るくなる(サビ(kiai)の区間は少し強く)。
+## 拍の位置は、選んでいる難易度のタイミングポイントと、試聴の再生位置から求める(音の出るまでの遅れも差し引く)。止まっている間は、なめらかに消える。
+func _update_pulse(delta: float) -> void:
+	var target := 0.0
+	if UiStyle.animate and not _launching and _loader != null and not _job_pending and _audio.playing and not _audio.stream_paused \
+			and _diff_sel >= 0 and _diff_sel < _loader.difficulties.size():
+		var bm = _loader.difficulties[_diff_sel]
+		var off := NowPlaying.offset if NowPlaying.player == _audio else 0.0   # 切り出した試聴の音声なら、曲の頭からのずれ
+		var t := (_audio.get_playback_position() + (AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()) * _audio.pitch_scale + off) * 1000.0
+		var bl: float = bm.beat_length_at(t)
+		if bl > 1.0 and not bm.timing_points.is_empty():
+			var ms: float = bm.beat_phase_at(t + PULSE_LEAD_MS) * bl   # (拍の頭 - PULSE_LEAD_MS)からの経過
+			var env := ms / PULSE_LEAD_MS if ms < PULSE_LEAD_MS else exp(-(ms - PULSE_LEAD_MS) / minf(PULSE_DECAY_MS, bl * 0.4))
+			target = env * (1.0 if bm.kiai_at(t) else PULSE_CALM)
+	var rate := 8.0 if _launching else 40.0   # 発進のときは、ゆっくり消える
+	var p := lerpf(_pulse, target, 1.0 - exp(-rate * minf(delta, 0.05)))
+	if absf(p - _pulse) < 0.002 and target == 0.0 and p < 0.01:
+		p = 0.0
+	if p == _pulse:
+		return
+	_pulse = p
+	if _glow_card != null and is_instance_valid(_glow_card):
+		var g := _glow_node(_glow_card, false)
+		if g != null:
+			g.queue_redraw()
+	if _play_btn != null:
+		_play_btn.set("glow", _pulse)
+	if _bg_shade != null:
+		_bg_shade.modulate.a = 1.0 - 0.12 * _pulse   # 暗幕を少しだけ薄く = 背景の画像が少し明るく
 
 
 func _set_head(v: float) -> void:
@@ -1585,6 +1758,69 @@ func _style_row_card(card: PanelContainer, sel: bool, animated := true) -> void:
 		shade.modulate.a = to_a
 	var indent := INDENT_SEL if sel else (INDENT_HOVER if hover else INDENT)
 	_shift_card(card, indent, animated)
+	_set_row_glow(card, sel, animated)
+
+
+## 選んでいる行の外側の、ピンクの柔らかい光(画像の暗い曲でも、選んでいる行がはっきり分かる)。拍に合わせて、少し強まる(_update_pulse)。
+## 光は、カードの後ろ(せり出しの入れものの中)に描く。カードは画像を切り抜いているので、カードの中には描けない。
+func _set_row_glow(card: Control, on: bool, animated: bool) -> void:
+	if on:
+		_glow_card = card
+	elif _glow_card == card:
+		_glow_card = null
+	var g := _glow_node(card, on)
+	if g == null:
+		return
+	var to := 1.0 if on else 0.0
+	var old = g.get_meta("tween") if g.has_meta("tween") else null
+	if old is Tween and old.is_valid():
+		old.kill()
+	var from := float(g.get_meta("a", 0.0))
+	if is_equal_approx(from, to):
+		return
+	if not animated or not UiStyle.animate or not g.is_inside_tree():
+		g.set_meta("a", to)
+		g.queue_redraw()
+		return
+	var t := g.create_tween()
+	t.tween_method(func(v: float):
+		g.set_meta("a", v)
+		g.queue_redraw(), from, to, 0.25).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	g.set_meta("tween", t)
+
+
+## 行の光を描く入れもの(初めて光らせるときに作る)。make = false なら、なければ作らない。
+func _glow_node(card: Control, make: bool) -> Control:
+	var wrap := card.get_parent() as Control
+	if wrap == null or not wrap.has_meta("bulge"):
+		return null
+	if wrap.has_meta("glow"):
+		return wrap.get_meta("glow")
+	if not make:
+		return null
+	var g := Control.new()
+	g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	g.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	wrap.add_child(g)
+	wrap.move_child(g, 0)   # カードの後ろ
+	g.draw.connect(func(): _draw_glow(g, card))
+	card.item_rect_changed.connect(g.queue_redraw)   # カードが横にずれる間も、光がついていく
+	wrap.set_meta("glow", g)
+	return g
+
+
+func _draw_glow(g: Control, card: Control) -> void:
+	var a := float(g.get_meta("a", 0.0))
+	if a <= 0.01 or not is_instance_valid(card):
+		return
+	var p := _pulse if card == _glow_card else 0.0
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0)
+	sb.set_corner_radius_all(12)
+	sb.shadow_color = Color(LazerStyle.PINK.r, LazerStyle.PINK.g, LazerStyle.PINK.b, a * (0.32 + 0.4 * p))
+	sb.shadow_size = GLOW_SIZE
+	var sz := card.size * card.scale   # 押したときの縮み(カードの中心が基準)にも合わせる
+	g.draw_style_box(sb, Rect2(card.position + card.pivot_offset * (Vector2.ONE - card.scale), sz))
 
 
 ## カードを左右に動かす(カードは入れものいっぱいに広がっていて、左端の位置 = 余白)。
@@ -1840,9 +2076,10 @@ func _style_diffs(animated := true) -> void:
 			card.set_meta("x_tween", t)
 
 
-## 選んだ曲と、その難易度の一覧(開ききった高さ)が見えるように、1 回だけ、なめらかにスクロールする。
-## 一覧が高すぎるときは、曲の行を上に合わせる。前の一覧が閉じていく分は、_on_box_sorted が位置を保つ(ここでは考えなくてよい)。
-func _scroll_to_selection() -> void:
+## 選んだ曲と、その難易度の一覧(開ききった高さ)が見えるように、1 回だけ、なめらかにスクロールする(見えていれば動かさない)。
+## 一覧が高すぎて入りきらないときは、選んでいる難易度の行(と、その前後の 1 行)が必ず見えるようにし、その範囲で曲の行もなるべく見せる。
+## 前の一覧が閉じていく分は、_on_box_sorted が位置を保つ(ここでは考えなくてよい)。
+func _scroll_to_selection(instant := false) -> void:
 	if _song_sel < 0 or _song_sel >= _rows.size() or not (_rows[_song_sel] as Control).visible:
 		return
 	var row: Control = _rows[_song_sel]
@@ -1851,12 +2088,21 @@ func _scroll_to_selection() -> void:
 	var bottom := top + ROW_H + (float(ROW_GAP) + _diff_list_h(n) if n > 0 else 0.0)
 	var page := _scroll.size.y
 	var cur: float = _smooth.target()
-	var t := cur
-	if top - 16.0 < cur:
-		t = top - 16.0
-	elif bottom + 16.0 > cur + page:
-		t = minf(bottom + 16.0 - page, top - 16.0)
-	if not is_equal_approx(t, cur):
+	var lo := bottom + 16.0 - page   # これより下へスクロールすれば、一覧の下端まで見える
+	var hi := top - 16.0             # これより上なら、曲の行が見える
+	if lo > hi and _diffs_ready() and _diff_sel >= 0 and _diff_sel < n:   # 入りきらない: 選んでいる難易度の行を優先する
+		var step := DIFF_H + float(DIFF_GAP)
+		var d_top := top + ROW_H + float(ROW_GAP) + 2.0 + step * float(_diff_sel)
+		var ctx_up := step if _diff_sel > 0 else 0.0
+		var ctx_dn := step if _diff_sel < n - 1 else 0.0
+		lo = d_top + DIFF_H + ctx_dn + 16.0 - page
+		hi = minf(top - 16.0, d_top - ctx_up - 16.0) if lo <= top - 16.0 else d_top - ctx_up - 16.0
+	var t := clampf(cur, lo, hi) if lo <= hi else hi
+	if is_equal_approx(t, cur):
+		return
+	if instant:   # 動かさずに、その位置へ置く(開いた直後: 行が入ってくる動きの中なので、スクロールして見せない)
+		_smooth.shift(t - cur)
+	else:
 		_smooth.scroll_to(t)
 
 
@@ -2035,6 +2281,7 @@ func _on_song_loaded(res: Dictionary) -> void:
 		(card.get_meta("dots") as Control).queue_redraw()
 	_set_loading(false)
 	_fill_diffs()   # 開いていなければ開き、開いていれば、その場で数字・色を差し替える
+	_scroll_to_selection(Time.get_ticks_msec() - _opened_at < 600)   # 選ばれた難易度(前回の難易度など)が、一覧の下の画面の外にあれば、見えるところまで(開いた直後は、動かさずに置く)
 	_update_detail()
 	if _mod_panel != null:   # MOD パネルを開いたまま曲が読み込まれた
 		_mod_panel.refresh_info()
@@ -2097,65 +2344,104 @@ func _select_diff(i: int) -> void:
 	_style_diffs()
 	_sync_chart_sel()
 	_update_detail()
+	if old != i:
+		_scroll_to_selection()   # 選んだ難易度の行が、画面の外に出ないように
 	if _mod_panel != null and old != i:
 		_mod_panel.refresh_info()
 
 
+## 左上の Lv の札を隠す(選んでいる難易度がない)。次に出すときは、数え上げずにその値から。
 func _lv_holder_clear() -> void:
-	for c in _lv_holder.get_children():
-		_lv_holder.remove_child(c)
-		c.queue_free()
+	if _lv_tween != null and _lv_tween.is_valid():
+		_lv_tween.kill()
+	_lv_holder.visible = false
+	_lv_shown = -1.0
+	if _foot_sum != null:
+		_foot_sum.queue_redraw()
 
 
-## 選んでいる難易度の情報(左上の Lv の札・難易度名・内訳)を作り直す。
+## 左上の Lv の札に、値 v を出す(数字と、札の色・文字の色)。フッターの要約も、同じ値で描き直す。
+func _show_lv(v: float) -> void:
+	_lv_shown = v
+	var col := LazerStyle.level_color(v)
+	var ink := LazerStyle.ink_on(col)
+	_lv_box.bg_color = col
+	_lv_star.set("col", ink)
+	_lv_star.queue_redraw()
+	_lv_num.text = "%.2f" % v
+	_lv_num.add_theme_color_override("font_color", ink)
+	if _foot_sum != null:
+		_foot_sum.queue_redraw()
+
+
+## 左上の Lv の札を、いま見えている値から to へ数え上げる(色も一緒に移る)。初めて出すときは、すぐその値。
+func _animate_lv(to: float) -> void:
+	if _lv_tween != null and _lv_tween.is_valid():
+		_lv_tween.kill()
+	var from := _lv_shown
+	if from < 0.0 or is_equal_approx(from, to) or not UiStyle.animate or not is_inside_tree():
+		_show_lv(to)
+		return
+	_lv_tween = create_tween()
+	_lv_tween.tween_method(_show_lv, from, to, 0.35).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+
+## 弾数の、内訳のバーの割合(対数。少ない弾数の差も見え、多い譜面でも端に貼りつかない)。
+static func _count_frac(v: float) -> float:
+	return clampf(log(1.0 + maxf(v, 0.0) / BAR_KNEE) / log(1.0 + BAR_MAX / BAR_KNEE), 0.0, 1.0)
+
+
+static func _speed_frac(v: float) -> float:
+	return clampf(log(1.0 + maxf(v, 0.0) / SPEED_KNEE) / log(1.0 + SPEED_MAX / SPEED_KNEE), 0.0, 1.0)
+
+
+## 選んでいる難易度の情報(左上の Lv の札・難易度名・内訳)を入れ直す。
 func _update_detail() -> void:
-	_lv_holder_clear()
 	_update_records()
 	if _diff_sel < 0 or _diff_sel >= _ratings.size() or _loader == null:
+		_lv_holder_clear()
 		_stat_rows = []
+		_stat_ticks = []
 		_stat_note = ""
 		_stats.queue_redraw()
 		return
 	var r: Dictionary = _ratings[_diff_sel]
 	var bm = _loader.difficulties[_diff_sel]
-	var col := LazerStyle.level_color(float(r.level))
-	var ink := LazerStyle.ink_on(col)
-	var pill := PanelContainer.new()
-	pill.add_theme_stylebox_override("panel", LazerStyle.box(col, Color(0, 0, 0, 0), 0, 15, 12, 3))
-	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 6)
-	hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	pill.add_child(hb)
-	var star := LazerIcons.new("star", ink, 15.0)
-	star.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	hb.add_child(star)
-	hb.add_child(LazerStyle.label("%.2f" % float(r.level), 18, ink, true))
-	_lv_holder.add_child(pill)
-	var name_l := LazerStyle.label(str(bm.version), 20, LazerStyle.TEXT, true)
-	name_l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_lv_holder.add_child(name_l)
-	if absf(float(r.level) - float(r.base_level)) >= 0.005:
-		var base := LazerStyle.label("MODなし  %.2f" % float(r.base_level), 14, LazerStyle.TEXT_MUTE)
-		base.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		_lv_holder.add_child(base)
+	_lv_holder.visible = true
+	_lv_name.text = str(bm.version)
+	var modded := absf(float(r.level) - float(r.base_level)) >= 0.005
+	_lv_base.visible = modded
+	_lv_base.text = "MODなし  %.2f" % float(r.base_level) if modded else ""
+	_animate_lv(float(r.level))
 	var secs := int(round((bm.last_time() - bm.first_time()) / 1000.0))
 	var cur: Array = []
 	for q in range(_stat_rows.size()):   # いま見えている長さから動かす
 		cur.append(_stat_from_old(q))
 	_stat_from = cur
+	_stat_col_from = _stat_col_from.lerp(_stat_col, clampf(_stat_k, 0.0, 1.0)) if not _stat_rows.is_empty() else LazerStyle.level_color(float(r.level))
+	_stat_col = LazerStyle.level_color(float(r.level))
 	_stat_rows = [
-		["平均弾数", clampf(float(r.mean) / BAR_MAX, 0.0, 1.0), "%d 発" % int(round(float(r.mean)))],
-		["最大弾数", clampf(float(r.peak) / BAR_MAX, 0.0, 1.0), "%d 発" % int(r.peak)],
-		["弾速", clampf(float(r.speed) / SPEED_MAX, 0.0, 1.0), "%d px/s" % int(round(float(r.speed)))],
+		["平均弾数", _count_frac(float(r.mean)), "%d 発" % int(round(float(r.mean)))],
+		["最大弾数", _count_frac(float(r.peak)), "%d 発" % int(r.peak)],
+		["弾速", _speed_frac(float(r.speed)), "%d px/s" % int(round(float(r.speed)))],
 	]
+	_stat_ticks = []
+	for d in range(_ratings.size()):   # 同じ曲のほかの難易度の位置
+		if d == _diff_sel:
+			continue
+		var o: Dictionary = _ratings[d]
+		_stat_ticks.append([_count_frac(float(o.mean)), _count_frac(float(o.peak)), _speed_frac(float(o.speed)), LazerStyle.level_color(float(o.level))])
 	_stat_note = "弾径 %.1f      イベント %d      長さ %d:%02d      本家★≈%.2f" % [float(r.size), int(_gens[_diff_sel].get("n_events", (_gens[_diff_sel].events as Array).size() if _gens[_diff_sel].has("events") else 0)), secs / 60, secs % 60, float(r.stars)]
+	var old = _stats.get_meta("k_tween") if _stats.has_meta("k_tween") else null
+	if old is Tween and old.is_valid():
+		old.kill()
 	_stat_k = 0.0 if UiStyle.animate and is_inside_tree() else 1.0
 	if _stat_k < 1.0:
 		var t := _stats.create_tween()
 		t.tween_method(func(v: float):
 			_stat_k = v
 			_stats.queue_redraw(), 0.0, 1.0, 0.35).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_stats.set_meta("k_tween", t)
 	_stats.queue_redraw()
 
 
@@ -2170,6 +2456,8 @@ func _stat_from_old(q: int) -> float:
 # --- 付けている MOD ---
 
 func _refresh_mod_bar() -> void:
+	if _foot_sum != null:
+		_foot_sum.queue_redraw()
 	for c in _mod_bar.get_children():
 		c.queue_free()
 	var p := Mods.params(settings.mods)
@@ -2215,7 +2503,7 @@ func _start() -> void:
 		return
 	browser.remember_selection()
 	UiSfx.play("confirm")
-	# 発進: すぐには切り替えず、選んだ曲の行が前に出て、ほかが退き、背景がズームインして、曲が小さくなる(0.4 秒)。それから次の画面へ
+	# 発進: すぐには切り替えず、選んだ行が光って前に出て、ほかが先に退き、背景がズームインして、曲が小さくなる(LAUNCH_TIME 秒)。それから次の画面へ
 	_launching = true
 	_launch_anim()
 	if UiStyle.animate:
@@ -2241,13 +2529,52 @@ func current_zoom() -> float:
 
 
 ## 発進の演出。背景(画像と暗幕)だけを残して、画面の中身をすべてなめらかに消す。背景はそのままズームインして、開始前画面へ続く。
+## 一覧は、選んだ行(と選んだ難易度の行)だけが光って左(画面の真ん中の側)へ出て、最後まで残る。ほかの行は先に消える。
 func _launch_anim() -> void:
 	if not UiStyle.animate:
 		return
 	for c in get_children().slice(BACKDROP_NODES):   # 土台(_build_base)が作った背景の 3 枚より上は、すべて中身
+		if c == _scroll:   # 一覧は、行ごとに(下)
+			continue
 		if c is CanvasItem and c.visible:
 			var t: Tween = c.create_tween()
 			t.tween_property(c, "modulate:a", 0.0, LAUNCH_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	var keep: Array = []   # 最後まで残す行(のカード)
+	var sel_holder: Control = null
+	if _was_chart:
+		sel_holder = _chart_holders.get(_chart_sel) if _chart_sel != "" else null
+	elif _song_sel >= 0 and _song_sel < _rows.size():
+		sel_holder = _rows[_song_sel]
+	if sel_holder != null and is_instance_valid(sel_holder) and sel_holder.has_meta("card"):
+		keep.append(sel_holder.get_meta("card"))
+	elif sel_holder != null and is_instance_valid(sel_holder) and _song_sel >= 0 and _song_sel < _song_cards.size():
+		keep.append(_song_cards[_song_sel])
+	if not _was_chart and _diffs_ready() and _diff_sel >= 0 and _diff_sel < _diff_rows.size():
+		keep.append((_diff_rows[_diff_sel] as Control).get_meta("card"))
+	var quick := LAUNCH_TIME * 0.6
+	for c in _box.get_children():
+		if not (c is Control) or not c.visible:
+			continue
+		if c == sel_holder or c == _diff_box:   # 中の、残さない行だけを消す
+			continue
+		c.create_tween().tween_property(c, "modulate:a", 0.0, quick).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	if _diff_box != null:
+		for k in range(_diff_rows.size()):
+			if k != _diff_sel or not _diffs_ready():
+				var r: Control = _diff_rows[k]
+				r.create_tween().tween_property(r, "modulate:a", 0.0, quick).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	var sb := _scroll.get_v_scroll_bar()
+	sb.create_tween().tween_property(sb, "modulate:a", 0.0, quick)
+	for card in keep:
+		var cc: Control = card
+		var t := cc.create_tween().set_parallel(true)
+		t.tween_property(cc, "position:x", cc.position.x - 10.0, LAUNCH_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)   # 一覧の左端で切れない範囲で
+		t.tween_property(cc, "modulate:a", 0.0, LAUNCH_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	if _glow_card != null and is_instance_valid(_glow_card):   # 選んだ行の光が、ひときわ強まってから引く
+		_pulse = 1.0
+		var g := _glow_node(_glow_card, false)
+		if g != null:
+			g.create_tween().tween_property(g, "modulate:a", 0.0, LAUNCH_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	if _play_btn != null:
 		var at := _play_btn.get_global_rect().get_center()
 		UiFx.ring(self, at, LazerStyle.PINK, 20.0, 160.0, LAUNCH_TIME, 3.0)
@@ -2495,4 +2822,4 @@ func debug_records() -> void:
 		{"rank": "A", "score": 903120, "mods": ["dark", "shrink"], "t": now - 86400 * 3},
 		{"rank": "B", "score": 812300, "mods": [], "t": now - 86400 * 9},
 	]
-	_rec_card.queue_redraw()
+	_fit_records()

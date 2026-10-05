@@ -1,13 +1,13 @@
 extends RefCounted
 ## UI セットの一覧と、いま使うものの選択。選ぶ値は、設定(user://settings.cfg)の ui_style。
 ## 起動オプション --ui <名前> で、設定を上書きできる(撮影・確認用。保存はしない)。
-## 知らない名前(消えた UI セットなど)のときは、既定("classic")に戻す。
+## 知らない名前(消えた UI セットなど)のときは、既定("lazer")に戻す。
 
 const Settings = preload("res://scripts/settings.gd")
 const ClassicUi = preload("res://scripts/ui/classic_ui.gd")
 const LazerUi = preload("res://scripts/ui/lazer/lazer_ui.gd")
 
-const DEFAULT_ID := "classic"
+const DEFAULT_ID := "lazer"
 
 ## --ui で指定された名前(空なら、設定に従う)
 static var override_id := ""
@@ -39,5 +39,5 @@ static func current():
 static func _ensure() -> void:
 	if not _sets.is_empty():
 		return
-	for s in [ClassicUi.new(), LazerUi.new()]:
+	for s in [LazerUi.new(), ClassicUi.new()]:   # 設定画面の選択肢の順
 		_sets[s.id()] = s

@@ -421,7 +421,7 @@ func _build_screen() -> Control:
 		ub.button_group = ui_group
 		ub.focus_mode = Control.FOCUS_NONE
 		ub.custom_minimum_size = Vector2(150, 34)
-		ub.set_pressed_no_signal(str(settings.get("ui_style", "classic")) == id)
+		ub.set_pressed_no_signal(str(settings.get("ui_style", "lazer")) == id)
 		var ui_id: String = id
 		ub.pressed.connect(func():
 			settings.ui_style = ui_id

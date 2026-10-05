@@ -399,8 +399,8 @@ UI の音(ホバー・クリック・選択・決定・開閉・スタンプな�
 全体音量、音楽・効果音の音量、UI の音(オン / オフ)、操作方式(標準はマウス)、マウス感度、オフセット(音と弾のズレの校正)、MOD(練習を含む)、UI の見た目(`ui_style`)、選曲の並び順(`song_sort`)。
 
 ## UI の見た目(クラシック / lazer 風)
-設定の「画面」で、UI の見た目を選べます(**クラシック**が既定。**lazer 風**は osu! lazer の見た目の文法 — 上のツールバー・下のフッターの斜めのボタン・右の曲カルーセル・星の色の難易度札 — を借りた別の UI です。ロゴや画像は osu! のものを使わず、タイトルのロゴ「Danmaku」は、文字も含めて線と円だけで描いています。副題はありません)。選ぶと、いまのタイトル・選曲画面がすぐ作り直されます(ほかの画面は、次に開くときから)。ゲームの中身(弾幕・判定・スコア・通信)は、どちらの UI でも同じで、**クラシックと lazer 風の人が、同じ部屋でマルチプレイできます**。
-- クラシックのタイトル画面の右下には「新しい UI で遊ぼう」が出ます。「試してみる」で lazer 風に切り替わります(✕ で閉じるか、一度試すと、次からは出ません。設定 `ui_promo_hidden`)。
+設定の「画面」で、UI の見た目を選べます(**lazer 風**が既定。**lazer 風**は osu! lazer の見た目の文法 — 上のツールバー・下のフッターの斜めのボタン・右の曲カルーセル・星の色の難易度札 — を借りた別の UI です。ロゴや画像は osu! のものを使わず、タイトルのロゴ「Danmaku」は、文字も含めて線と円だけで描いています。副題はありません)。選ぶと、いまのタイトル・選曲画面がすぐ作り直されます(ほかの画面は、次に開くときから)。ゲームの中身(弾幕・判定・スコア・通信)は、どちらの UI でも同じで、**クラシックと lazer 風の人が、同じ部屋でマルチプレイできます**。
+- 既定は lazer 風です。以前の版でクラシックのまま(自分で選び直していない)の人は、一度だけ lazer 風に引き継ぎます(`settings.gd` の `load_all`、設定 `ui_default_migrated`)。クラシックを選び直した人・クラシックのタイトルの「新しい UI で遊ぼう」を閉じた(✕)か試した人は、そのままです。クラシックは設定の「画面」でいつでも選べます(今後、整理する予定)。「新しい UI で遊ぼう」のカードは廃止しました。
 - **窓口**: 画面とパネルは、`scripts/ui/ui_set.gd`(UI セット)を通して作ります(`classic_ui.gd` / `lazer/lazer_ui.gd`。選ぶのは `ui_sets.gd`、起動オプション `--ui classic|lazer` で、その起動だけ上書きできます)。各画面・パネルが満たす決まり(signal・メソッド・`kind`)は `ui_set.gd` に書いてあり、`tests/test_ui_contract.gd` が確かめます。計画と経緯は `docs/ui_plan.md`。
 - **共通の中身(UI を持たない)**: 選曲(曲の一覧・別スレッドの読み込み・弾幕の生成と難易度の測定・検索と並び替え)は `scripts/song_browser.gd`、リザルト(ランク・体力グラフ・参加者の一覧)は `scripts/result_model.gd`、タイトルの背景と曲の選び方は `scripts/attract_backdrop.gd`、プレイ記録は `scripts/records.gd`。ランクの叩きつけの演出は `scripts/ui/rank_stamp.gd`。どちらの UI も、これを使って表示するだけです。
 - **配色**: `ui_style.gd` の色・フォントは UI セットごとに差し替えられます(`set_palette`)。lazer 風のあいだは、classic の部品をそのまま使っているところも、ピンクのアクセントと lazer 用のフォントで描かれます。
@@ -498,6 +498,7 @@ UI の音(ホバー・クリック・選択・決定・開閉・スタンプな�
 ## テスト(ヘッドレス)
 ```
 godot --headless --path . --script tests/test_ui_contract.gd            # どの UI セットの画面・パネルも、決まりの signal・メソッド・kind を持つ
+godot --headless --path . --script tests/test_ui_default.gd              # 既定の UI が lazer: 設定が無い人は lazer・旧版の既定のままの人は一度だけ lazer に引き継ぐ・自分で選んだ classic は残る(user://settings.cfg を一時的に書き換えて戻す)
 godot --headless --path . --script tests/test_records.gd                # プレイ記録(残す条件・スコア順・上位 10 件・新記録・保存)
 godot --headless --path . --script tests/test_song_view.gd              # 選曲の検索・並び替え
 godot --headless --path . --script tests/test_howto.gd                  # 遊び方パネル(10 ページと 13 枚の挿絵が、classic・lazer 風の両方で作れる)
@@ -508,7 +509,7 @@ godot --path . -- --ui lazer --smoke-player                                   # 
 godot --headless --path . --script tests/test_playlist.gd                # プレイリスト: 編集・順に進める・シャッフル・リピート・選曲で別の曲を選んだとき・保存
 godot --path . -- --ui lazer --smoke-carousel                          # 選曲の一覧: 曲を移るときに行が跳ばない・読み込みで難易度の行を作り直さない・並び替えの動きが最初のフレームから始まる
 godot --path . -- --ui lazer --prof-ui                                  # UI の操作ごとの、止まり(一番長いフレーム)を測る。どの確認にも --hitch 25 を足すと、25 ms を超えたフレームを記録する
-godot --path . -- --ui lazer --smoke-ui                                 # (どの確認も、`--ui lazer` を足すと lazer 風で通せる。`--smoke-ui` `--smoke-title` `--smoke-mp-ui` `--smoke-clear` など。内部の変数を直接見る確認は、クラシックだけ)
+godot --path . -- --ui lazer --smoke-ui                                 # (確認用の起動(`--smoke*` `--shot*` `--prof*`)の既定は classic。`--ui lazer` を足すと lazer 風で通せる。`--smoke-ui` `--smoke-title` `--smoke-mp-ui` `--smoke-clear` など。内部の変数を直接見る確認は、クラシックだけ)
 godot --headless --path . --script tests/test_parser.gd
 godot --headless --path . --script tests/test_star.gd                   # 推定★と公式値の比較
 godot --headless --path . --script tests/test_rating.gd                 # 全 .osz の Lv を公式★と並べて表示(順位相関・イントロ非依存の確認つき)

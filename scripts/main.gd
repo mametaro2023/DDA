@@ -40,6 +40,8 @@ const UPDATE_TOAST_TIME := 7.0       # 新しいバージョンの知らせを�
 const UpdatePanel = preload("res://scripts/ui/update_panel.gd")
 const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
 const OszImport = preload("res://scripts/osz_import.gd")
+const SongDownload = preload("res://scripts/song_download.gd")
+const SongSources = preload("res://scripts/song_sources.gd")
 const SingleInstance = preload("res://scripts/single_instance.gd")
 const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
 const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
@@ -56,6 +58,8 @@ var _settings_dict: Dictionary = {}
 var _ui_before := ""               # 設定を開いたときの UI の見た目(閉じたとき、変わっていたら、いまの画面を作り直す)
 var _settings_btn: Button          # 画面の右上の「設定」(タイトル・選曲画面は、自分で設定を開く入口を持つので出さない)
 var _songs_changed := false      # 設定パネルで、osu! の Songs フォルダの設定が変わった(閉じたときに、選曲画面の一覧を作り直す)
+var _fetch: Node                  # osu! の譜面ページの URL から曲を取るダウンロード(fetch_song_url。初めて使うときに作る)
+var _fetch_note_at := 0            # ダウンロードの進み具合の通知を、最後に書き換えた時刻(ミリ秒)
 var _watch_known := {}             # songs フォルダに、いま見えている .osz(名前|大きさ → パス)
 var _watch_pending := {}           # 見つけたが、コピーの途中かもしれないもの(大きさが落ち着くまで待つ)
 var _watch_ready := false
@@ -212,6 +216,9 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-osu-menu"):
 		_smoke_osu_menu()
+		return
+	if args.has("--smoke-fetch"):
+		_smoke_fetch()
 		return
 	if args.has("--smoke-carousel"):
 		_smoke_carousel()
@@ -479,6 +486,86 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 		overlay.toast("%d 曲を取り込みました" % (imported + 1))
 
 
+## タイトル・選曲画面で Ctrl+V: クリップボードに osu! の譜面ページの URL があれば、その曲を取り込む(なければ何もしない)。
+## 入力欄に入力しているときは、入力欄が先に受け取るので、ここへは来ない。
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_V and event.is_command_or_control_pressed()):
+		return
+	if (_kind != "title" and _kind != "menu") or _settings_panel != null or _aux_panel != null:
+		return
+	var text := DisplayServer.clipboard_get()
+	if SongSources.set_id_of(text) != 0:
+		get_viewport().set_input_as_handled()
+		fetch_song_url(text)
+
+
+## osu! の譜面ページの URL の曲を、ミラーサイトからダウンロードして取り込む(選曲画面の「URL から取り込む」・検索欄への貼り付け・Ctrl+V)。
+## 初めては、非公式のミラーから取ることへの同意を求める(マルチプレイのダウンロードと同じ設定 mirror_consent)。
+## 取り込めたら、.osz を開いたときと同じく、選曲画面でその曲を選ぶ(プレイ中・ロビーなら、取り込みと通知だけ)。
+func fetch_song_url(text: String) -> void:
+	var id := SongSources.set_id_of(text)
+	if id <= 0:
+		if overlay != null:
+			overlay.toast("難易度のページではなく、曲のページ(osu.ppy.sh/beatmapsets/…)の URL を使ってください" if id < 0 else "osu! の譜面ページの URL ではありません(osu.ppy.sh/beatmapsets/…)", 4.0)
+		return
+	if _fetch != null and _fetch.busy:
+		if overlay != null:
+			overlay.toast("ほかの曲をダウンロードしています")
+		return
+	var cur = _current.get("settings") if _current != null else null
+	var st: Dictionary = cur if cur is Dictionary else Settings.load_all()
+	if bool(st.get("mirror_consent", false)):
+		_start_fetch(id)
+		return
+	var q = UiSets.current().make_quit()
+	q.setup("非公式のミラーサイトから取得します", "同意してダウンロード", "キャンセル",
+		"この曲(.osz)を、osu! 公式ではないミラーサイト(osu.direct・Nerinyan・catboy.best)からダウンロードして取り込みます。\n" +
+		"本アプリと各ミラーサイトは無関係で、譜面・楽曲の権利は、それぞれの制作者にあります。公式のページから入れたいときは、ブラウザでダウンロードした .osz をドロップしてください。\n" +
+		"同意すると、次からはこの確認を出しません。")
+	q.confirmed.connect(func():
+		st.mirror_consent = true
+		Settings.save_all(st)
+		close_aux()
+		_start_fetch(id))
+	_open_aux(q)
+
+
+func _start_fetch(set_id: int) -> void:
+	if _fetch == null:
+		_fetch = SongDownload.new()
+		add_child(_fetch)   # main の子なので、画面を移ってもダウンロードは続く
+		_fetch.progress.connect(func(frac: float, text: String):
+			var now := Time.get_ticks_msec()
+			if overlay != null and now - _fetch_note_at >= 250:   # 文字の差し替えは、ときどき
+				_fetch_note_at = now
+				overlay.toast_update(("%s  %d%%" % [text, roundi(frac * 100.0)]) if frac > 0.0 else text, 30.0))
+		_fetch.finished.connect(_on_fetch_finished)
+	_fetch_note_at = 0
+	if overlay != null:
+		overlay.toast("曲(ID %d)をダウンロードしています…" % set_id, 30.0)
+	_fetch.start(set_id, "", str(set_id))
+
+
+func _on_fetch_finished(r: Dictionary) -> void:
+	if not r.ok:
+		if overlay != null:
+			overlay.toast(str(r.error), 6.0)
+		return
+	_watch_sync()   # 取り込んだ曲は、フォルダの監視には「新しい曲」として知らせない
+	var name := str(r.title) if str(r.title) != "" else str(r.path).get_file()
+	if overlay != null:
+		overlay.toast(("%s はもう入っています" if r.get("existed", false) else "%s を取り込みました") % name)
+	if _kind == "menu":
+		_current.refresh_songs()
+		_current.select_path(str(r.path))
+	elif _kind == "title" and _settings_panel == null and _aux_panel == null:
+		var st := Settings.load_all()
+		st.last_song = r.path
+		st.last_diff = ""
+		Settings.save_all(st)
+		show_menu()
+
+
 ## 画面を切り替える。通常起動では、短い暗転(フェードアウト → 入れ替え → フェードイン。点滅・フラッシュなし)を挟む。
 func _swap(n: Node, instant := false) -> void:
 	if not _fade_enabled or _current == null or (instant and not _fading):
@@ -685,6 +772,8 @@ func _open_replay_list(t) -> void:
 func show_menu(pick := false) -> void:
 	var m = UiSets.current().make_menu(pick)   # pick: マルチプレイの部屋の曲を選ぶとき(決定でロビーへ戻る)
 	m.settings_requested.connect(open_settings)
+	if m.has_signal("url_requested"):   # 「URL から取り込む」・検索欄への URL の貼り付け
+		m.url_requested.connect(fetch_song_url)
 	if pick:
 		m.song_picked.connect(_on_song_picked)
 		m.back_requested.connect(func(): show_multi())
@@ -2332,6 +2421,158 @@ func _smoke_osu_menu() -> void:
 	Settings.restore(original)
 	SongLibrary.apply_osu_settings(original)
 	print("smoke-osu-menu: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
+	get_tree().quit()
+
+
+static func _rm_tree(d: String) -> void:
+	if not DirAccess.dir_exists_absolute(d):
+		return
+	for sub in DirAccess.get_directories_at(d):
+		_rm_tree(d.path_join(sub))
+	for f in DirAccess.get_files_at(d):
+		DirAccess.remove_absolute(d.path_join(f))
+	DirAccess.remove_absolute(d)
+
+
+## 開発用: 曲がないときの入口(scripts/song_sources.gd)。-- [--ui lazer] --smoke-fetch
+## ① 「osu! の曲を使う」で、osu! の Songs の曲が一覧に足される ② 「URL から取り込む」→ 同意 → 手元のミラー(tests/fake_mirror_server.js)から取り込んで選ぶ
+## ③ Ctrl+V(同意済みなので、すぐ始まる)④ lazer 風: 検索欄に URL を貼ると、検索ではなく取り込みになる。設定は最後に元へ戻す(node が要る)。
+func _smoke_fetch() -> void:
+	var original := Settings.load_all()
+	var st := {"fails": 0}
+	var chk := func(cond: bool, msg: String):
+		print(("  ok   " if cond else "  FAIL ") + msg)
+		if not cond:
+			st.fails += 1
+	var have := {}   # もう一覧にある曲は使わない(同じ中身の曲は 1 つにまとまるので、足されたかが分からない)
+	for p in SongLibrary.find_osz():
+		have[str(p).get_file().to_lower()] = true
+	var oszs: Array = []   # 1 つめは osu! の Songs に置き、2 つめはミラーから配る(別の曲にする)
+	for f in DirAccess.get_files_at("C:/Desktop/my_apps/DDA"):
+		if f.to_lower().ends_with(".osz") and not have.has(f.to_lower()) and oszs.size() < 2:
+			oszs.append("C:/Desktop/my_apps/DDA/" + f)
+	if oszs.size() < 2:
+		print("smoke-fetch: (試せる .osz がないので省略)")
+		get_tree().quit()
+		return
+	var src: String = oszs[0]
+	var tmp := OS.get_temp_dir().path_join("danmaku_fetch_test").replace("\\", "/")
+	_rm_tree(tmp)   # 前の確認の残り(取り込んだ曲)を消す
+	var songs_dir := tmp.path_join("Songs")
+	var dest := songs_dir.path_join(src.get_file().get_basename())
+	DirAccess.make_dir_recursive_absolute(dest)
+	var z := ZIPReader.new()
+	z.open(src)
+	for f in z.get_files():
+		if f.ends_with("/"):
+			continue
+		var out := dest.path_join(f)
+		DirAccess.make_dir_recursive_absolute(out.get_base_dir())
+		var w := FileAccess.open(out, FileAccess.WRITE)
+		w.store_buffer(z.read_file(f))
+		w.close()
+	z.close()
+	var dl_dir := tmp.path_join("dl")
+	DirAccess.make_dir_recursive_absolute(dl_dir)
+	var s2 := original.duplicate()
+	s2.osu_songs = false
+	s2.osu_songs_dir = songs_dir   # 「前に選んだ場所」として勧められる
+	s2.mirror_consent = false
+	s2.mods = []
+	Settings.save_all(s2)
+	SongLibrary.apply_osu_settings(s2)
+	var port := 8767
+	var pid := OS.create_process("node", [ProjectSettings.globalize_path("res://tests/fake_mirror_server.js"), str(port), oszs[1]])
+	show_menu()
+	await get_tree().create_timer(0.8).timeout
+	var m = _current
+	await m.debug_empty()
+	await get_tree().process_frame
+	var find_btn := func(scr: Node, caption: String) -> Control:
+		var stack: Array = [scr._empty_box]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			var c = n.get("caption") if "caption" in n else (n.get("text") if n is Button else null)
+			if c is String and c == caption:
+				return n
+			stack.append_array(n.get_children())
+		return null
+	chk.call(m._empty_box.visible, "曲がないとき、案内が出る")
+	var osu_btn: Control = find_btn.call(m, "osu! の曲を使う")
+	chk.call(osu_btn != null and osu_btn.visible, "osu! の Songs が見つかると「osu! の曲を使う」が出る")
+	if osu_btn != null:
+		osu_btn.pressed.emit()
+		var folders := func() -> int: return m._songs.filter(func(sg): return bool(sg.get("folder", false))).size()
+		var t0 := Time.get_ticks_msec()
+		while Time.get_ticks_msec() - t0 < 20000 and folders.call() < 1:
+			await get_tree().process_frame
+		chk.call(folders.call() == 1, "押すと、osu! の Songs の曲が一覧に足される(%d 曲)" % folders.call())
+		chk.call(bool(Settings.load_all().osu_songs) and not m._empty_box.visible, "設定に保存され、案内は消える")
+	# ② URL から取り込む(初めては同意を求める)。選曲画面は作り直す(debug_empty で空にした一覧のままにしない)
+	show_menu()
+	await get_tree().create_timer(0.8).timeout
+	m = _current
+	while m._job_pending:
+		await get_tree().process_frame
+	_fetch = SongDownload.new()
+	add_child(_fetch)
+	_fetch.dest_dir = dl_dir
+	_fetch.mirrors = [{"name": "local", "url": "http://127.0.0.1:%d/d/%%d" % port}]
+	_fetch.progress.connect(func(_f: float, _t: String): pass)
+	var got := {"path": "", "existed": false, "title": ""}
+	_fetch.finished.connect(func(r: Dictionary):
+		got.path = SongLibrary.norm(str(r.get("path", "")))
+		got.title = str(r.get("title", ""))
+		got.existed = bool(r.get("existed", false)))
+	_fetch.finished.connect(_on_fetch_finished)
+	var url_btn: Control = find_btn.call(m, "URL から取り込む")
+	chk.call(url_btn != null, "「URL から取り込む」がある")
+	DisplayServer.clipboard_set("https://example.com/foo")
+	url_btn.pressed.emit()
+	chk.call(_aux_panel == null and not _fetch.busy, "URL でないときは、通知だけ")
+	DisplayServer.clipboard_set("https://osu.ppy.sh/beatmapsets/4242#osu/1")
+	url_btn.pressed.emit()
+	chk.call(_aux_panel != null and not _fetch.busy, "初めては、ミラーから取ることへの同意を求める")
+	await get_tree().create_timer(0.6).timeout   # 人が押すまでの間(開く動きが終わる)
+	if _aux_panel != null:
+		_aux_panel.confirmed.emit()
+	chk.call(_aux_panel == null and _fetch.busy and bool(Settings.load_all().mirror_consent), "同意すると、覚えてダウンロードを始める")
+	var t1 := Time.get_ticks_msec()
+	while _fetch.busy and Time.get_ticks_msec() - t1 < 20000:
+		await get_tree().process_frame
+	await get_tree().process_frame
+	var sel_title := func() -> String: return str(m._songs[m._song_sel].title) if m._song_sel >= 0 and m._song_sel < m._songs.size() else ""   # 同じ中身の曲は一覧で 1 つにまとまるので、曲名で比べる
+	chk.call(got.path != "" and sel_title.call() == got.title, "取り込んだ曲が選ばれる(%s / 選択 %s)" % [got.title, sel_title.call()])
+	# ③ Ctrl+V(同意済み: すぐ始まる。同じ曲は、もう入っている)
+	m._select_song((m._song_sel + 1) % m._songs.size())
+	got.path = ""
+	var ev := InputEventKey.new()
+	ev.keycode = KEY_V
+	ev.ctrl_pressed = true
+	ev.pressed = true
+	_unhandled_input(ev)
+	chk.call(_aux_panel == null and _fetch.busy, "Ctrl+V で、確認なしにダウンロードを始める")
+	t1 = Time.get_ticks_msec()
+	while _fetch.busy and Time.get_ticks_msec() - t1 < 20000:
+		await get_tree().process_frame
+	await get_tree().process_frame
+	chk.call(got.path != "" and sel_title.call() == got.title and got.existed, "同じ曲は取り込み直さず、選ぶ(%s / 選択 %s / もうある %s)" % [got.title, sel_title.call(), got.existed])
+	# ④ lazer 風: 検索欄に URL を貼る
+	if "_search" in m:
+		m._select_song((m._song_sel + 1) % m._songs.size())
+		got.path = ""
+		m._search.text = "https://osu.ppy.sh/beatmapsets/4242"
+		m._search.text_changed.emit(m._search.text)
+		chk.call(m._search.text == "" and m.browser.query == "" and _fetch.busy, "検索欄に URL を貼ると、検索せずに取り込む")
+		t1 = Time.get_ticks_msec()
+		while _fetch.busy and Time.get_ticks_msec() - t1 < 20000:
+			await get_tree().process_frame
+		await get_tree().process_frame
+		chk.call(got.path != "" and sel_title.call() == got.title, "取り込んだ曲が選ばれる(%s)" % sel_title.call())
+	OS.kill(pid)
+	Settings.restore(original)
+	SongLibrary.apply_osu_settings(original)
+	print("smoke-fetch: ", "OK" if st.fails == 0 else "%d FAILED" % st.fails)
 	get_tree().quit()
 
 

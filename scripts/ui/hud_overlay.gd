@@ -246,3 +246,15 @@ func toast(msg: String, time := TOAST_TIME) -> void:
 		UiStyle.spring(_toast, "scale", Vector2(0.9, 0.9), Vector2.ONE, 0.45)
 	else:
 		_toast.modulate.a = 1.0
+
+
+## 出ている通知の文字だけを差し替える(進み具合など。動き・音は付けない)。出ていない・消えかけなら、ふつうの通知として出す。
+func toast_update(msg: String, time := TOAST_TIME) -> void:
+	if not _toast.visible or _toast_t < 0.3:
+		toast(msg, time)
+		return
+	_toast_l.text = msg
+	_toast.reset_size()
+	_toast.position.x = (1280.0 - _toast.size.x) * 0.5
+	_toast.pivot_offset = _toast.size * 0.5
+	_toast_t = time

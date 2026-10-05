@@ -15,8 +15,11 @@ signal back_requested
 signal replay_requested(name: String)
 ## マルチプレイの部屋の曲を選ぶモード(pick_mode = true): 「決定」で、開始せずに選んだ内容を返す(level は MOD 適用後の Lv)
 signal song_picked(loader, bm, settings: Dictionary, level: float)
+## osu! の譜面ページの URL の曲を取り込みたい(「URL から取り込む」・検索欄への貼り付け。main がダウンロードする)
+signal url_requested(text: String)
 
 const SongBrowser = preload("res://scripts/song_browser.gd")
+const SongSources = preload("res://scripts/song_sources.gd")
 const ModPanel = preload("res://scripts/ui/lazer/lazer_mods.gd")
 const SmoothScroll = preload("res://scripts/ui/smooth_scroll.gd")
 const SongLibrary = preload("res://scripts/song_library.gd")
@@ -459,6 +462,14 @@ func _build_search() -> void:
 	_search.max_length = 40
 	_search.focus_mode = Control.FOCUS_CLICK
 	_search.text_changed.connect(func(t: String):
+		if SongSources.set_id_of(t) != 0:   # osu! の譜面ページの URL を貼った: 検索ではなく、その曲を取り込む(main がダウンロードする)
+			_search.text = ""
+			_search.release_focus()
+			if browser.query != "":
+				browser.query = ""
+				_apply_view()
+			url_requested.emit(t)
+			return
 		browser.query = t
 		_apply_view())
 	# 検索の入力欄を広く取り、並び替えは 1 つのボタン(押すと、下に選択肢が開く)にまとめる(ボタンを 6 つ並べると、窮屈だった)
@@ -1098,20 +1109,38 @@ func _build_empty() -> void:
 	var v: VBoxContainer = _empty_box
 	v.add_child(LazerStyle.label("曲がありません", 30, LazerStyle.TEXT, true))
 	v.add_child(LazerStyle.label("osu! の譜面(.osz)を追加してください", 17, LazerStyle.TEXT_DIM))
+	var osu_dir := SongSources.osu_offer(settings)   # osu! が入っている: ボタン 1 つで、その曲を使えるようにする(設定の「曲」と同じ)
+	if osu_dir != "":
+		var osu := LazerButton.new("osu! の曲を使う", LazerStyle.PINK, "note")
+		osu.custom_minimum_size = Vector2(240, 50)
+		osu.font_size = 17
+		osu.tooltip_text = osu_dir
+		osu.pressed.connect(func():
+			osu.visible = false   # 一度きり(使うようにしたあとは、設定の「曲」で切り替える)
+			SongSources.enable_osu(settings)
+			refresh_songs()
+			_sync_empty())
+		osu.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		v.add_child(osu)
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	var add := LazerButton.new(".osz を開く", LazerStyle.PINK, "plus")
-	add.custom_minimum_size = Vector2(190, 46)
+	row.add_theme_constant_override("separation", 10)
+	var add := LazerButton.new(".osz を開く", LazerStyle.PANEL if osu_dir != "" else LazerStyle.PINK, "plus", LazerStyle.TEXT if osu_dir != "" else Color(0.16, 0.05, 0.10))
+	add.custom_minimum_size = Vector2(170, 46)
 	add.font_size = 16
 	add.pressed.connect(func(): _dialog.popup_centered_ratio(0.7))
 	row.add_child(add)
-	var folder := LazerButton.new("曲フォルダを開く", LazerStyle.PANEL, "folder", LazerStyle.TEXT)
-	folder.custom_minimum_size = Vector2(210, 46)
+	var url := LazerButton.new("URL から取り込む", LazerStyle.PANEL, "download", LazerStyle.TEXT)   # コピーした osu! の譜面ページの URL の曲を、ダウンロードする
+	url.custom_minimum_size = Vector2(200, 46)
+	url.font_size = 16
+	url.pressed.connect(func(): url_requested.emit(DisplayServer.clipboard_get()))
+	row.add_child(url)
+	var folder := LazerButton.new("曲フォルダ", LazerStyle.PANEL, "folder", LazerStyle.TEXT)
+	folder.custom_minimum_size = Vector2(160, 46)
 	folder.font_size = 16
 	folder.pressed.connect(func(): OS.shell_open(SongLibrary.ensure_user_dir()))
 	row.add_child(folder)
 	v.add_child(row)
-	_place(_empty_box, 660, 220, 580, 200)
+	_place(_empty_box, 660, 200, 580, 260)
 
 
 func _build_footer_buttons() -> void:
@@ -1284,6 +1313,7 @@ func _rebuild_song_cards(animate := true) -> void:
 	_clear_charts()   # 難易度順の行も、いったん捨てる(続く _apply_view が、また作る)
 	_was_chart = false
 	for c in _box.get_children():
+		_box.remove_child(c)   # すぐに外す(消えるのはフレームの終わりなので、残したままだと、同じフレームの並べ直しで、古い行と新しい行が混ざる。選んだ行の位置を保つ処理が、上端の余白を増やし続けて止まらなくなった)
 		c.queue_free()
 	_diff_box = null
 	_diff_inner = null

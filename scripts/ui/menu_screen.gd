@@ -12,8 +12,11 @@ signal back_requested
 signal settings_requested(section: int)
 ## マルチプレイの部屋の曲を選ぶモード(pick_mode = true): 「決定」で、開始せずに選んだ内容を返す(level は MOD 適用後の Lv)
 signal song_picked(loader, bm, settings: Dictionary, level: float)
+## osu! の譜面ページの URL の曲を取り込みたい(「URL から取り込む」。main がダウンロードする)
+signal url_requested(text: String)
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
+const SongSources = preload("res://scripts/song_sources.gd")
 const SongBrowser = preload("res://scripts/song_browser.gd")
 const ChartCache = preload("res://scripts/chart_cache.gd")
 const PatternGen = preload("res://scripts/game/pattern_gen.gd")
@@ -267,15 +270,37 @@ func _build_empty() -> void:
 	var v: VBoxContainer = _empty_box
 	v.add_child(UiStyle.label("曲がありません", 28, UiStyle.TEXT, true))
 	v.add_child(UiStyle.label("osu! の譜面(.osz)を追加してください", 16, UiStyle.TEXT_DIM))
+	var osu_dir := SongSources.osu_offer(settings)   # osu! が入っている: ボタン 1 つで、その曲を使えるようにする(設定の「曲」と同じ)
+	if osu_dir != "":
+		var osu := Button.new()
+		osu.text = "osu! の曲を使う"
+		osu.focus_mode = Control.FOCUS_NONE
+		osu.custom_minimum_size = Vector2(240, 48)
+		osu.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		osu.tooltip_text = osu_dir
+		UiStyle.style_primary(osu)
+		osu.pressed.connect(func():
+			osu.visible = false   # 一度きり(使うようにしたあとは、設定の「曲」で切り替える)
+			SongSources.enable_osu(settings)
+			refresh_songs()
+			_sync_empty())
+		v.add_child(osu)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	var add := Button.new()
 	add.text = ".osz を開く…"
 	add.focus_mode = Control.FOCUS_NONE
 	add.custom_minimum_size = Vector2(190, 44)
-	UiStyle.style_primary(add)
+	if osu_dir == "":
+		UiStyle.style_primary(add)
 	add.pressed.connect(func(): _dialog.popup_centered_ratio(0.7))
 	row.add_child(add)
+	var url := Button.new()   # コピーした osu! の譜面ページの URL の曲を、ダウンロードする(main が受け取る)
+	url.text = "URL から取り込む"
+	url.focus_mode = Control.FOCUS_NONE
+	url.custom_minimum_size = Vector2(190, 44)
+	url.pressed.connect(func(): url_requested.emit(DisplayServer.clipboard_get()))
+	row.add_child(url)
 	var folder := Button.new()
 	folder.text = "曲フォルダを開く"
 	folder.focus_mode = Control.FOCUS_NONE
@@ -283,7 +308,7 @@ func _build_empty() -> void:
 	folder.pressed.connect(func(): OS.shell_open(SongLibrary.ensure_user_dir()))
 	row.add_child(folder)
 	v.add_child(row)
-	_place(_empty_box, 468, 200, 700, 160)
+	_place(_empty_box, 468, 200, 700, 230)
 
 
 func _sync_empty() -> void:

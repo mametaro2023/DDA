@@ -448,6 +448,11 @@ UI の音(ホバー・クリック・選択・決定・開閉・スタンプな�
 - **独自のマウスカーソル**: OS のカーソルはウィンドウの中では隠し(`MOUSE_MODE_HIDDEN`)、小さな輪と点を描きます(`scripts/ui/cursor_overlay.gd`)。ボタンなど押せるものの上では輪がなめらかに大きくなり、押している間は小さくなります。プレイ中のマウス操作(`CAPTURED`)では描きません。
 - **アプリを閉じたときの停止**: 部屋を作った直後(UPnP を探している間、数秒)に閉じる・部屋を出ると、探索のスレッドを待って止まっていたので、待たずに手放し(終わってから回収)、ポートを閉じる処理も別スレッドにしました。アプリを閉じるときは、最長 2.5 秒だけ待ちます(`tests/prof_close.gd`)。
 
+## 曲がないときの入口(`scripts/song_sources.gd`)
+- **osu! の曲を使う**: 曲が 1 つもない選曲画面(classic・lazer 風とも)で、osu! の Songs フォルダが見つかれば(前に選んだ場所、なければ標準の場所)「osu! の曲を使う」を出します。押すと設定の「曲」の「osu! の Songs フォルダの曲を使う」を入れたのと同じになり(保存も)、裏で準備しながら一覧に足します。
+- **URL から取り込む**: osu! の譜面ページの URL(`osu.ppy.sh/beatmapsets/<ID>`、古い `/s/<ID>` も)をコピーして、タイトル・選曲画面で **Ctrl+V**(入力欄に入力しているときを除く)、曲がないときの「URL から取り込む」、lazer 風の選曲画面の**検索欄に貼る**、のどれでも、その曲を取り込みます。ダウンロードはマルチプレイと同じ非公式ミラー(`song_download.gd`)で、初めては同意を求めます(設定 `mirror_consent` を共有)。進み具合は画面の下の通知に出し、終わったら `.osz` を開いたときと同じく選曲画面でその曲を選びます(タイトルからは選曲画面へ。すでにある曲は取り込み直さずに選ぶ)。難易度だけのページ(`/beatmaps/<ID>`)は、曲全体の ID が分からないので断ります。ダウンロードは main の子なので、画面を移っても続きます。
+- 確認は `tests/test_song_sources.gd`(URL の読み取り・勧める場所)と `--smoke-fetch`(`--ui lazer` / `--ui classic`。node で `tests/fake_mirror_server.js` を立てて、ボタン・同意・Ctrl+V・検索欄を通す)。
+
 ## .osz を開く(取り込み)
 アプリで `.osz` を開くと、自動で取り込まれます(`scripts/osz_import.gd`)。ユーザーデータ内の `songs` にコピーし(すでに曲の置き場にあるファイルはそのまま使い、同じ物は重複して取り込みません)、**選曲画面でその曲を選んだ状態**にします。
 - アプリが起動していなければ、起動して選曲画面へ。動いているときは、動いているアプリへ渡します(`scripts/single_instance.gd`: 127.0.0.1 の UDP 24660。あとから起動したほうは、渡して終了します)。
@@ -506,6 +511,8 @@ godot --headless --path . --script tests/test_song_view.gd              # 選曲
 godot --headless --path . --script tests/test_howto.gd                  # 遊び方パネル(10 ページと 13 枚の挿絵が、classic・lazer 風の両方で作れる)
 godot --headless --path . --script tests/test_chart_cache.gd            # 譜面の読み込み結果の保存(統計と発射の一覧の 2 段・全曲の準備・弾幕を変える MOD・ファイルが変わったら読まない・壊れた保存)
 godot --path . -- --smoke-uiswitch                                      # 設定で UI の見た目を切り替えると、いまのタイトルが作り直される
+godot --headless --path . --script tests/test_song_sources.gd          # osu! の譜面ページの URL から曲の ID を読む・osu! の Songs フォルダを勧める場所
+godot --path . -- --ui lazer --smoke-fetch                             # 曲がないときの「osu! の曲を使う」「URL から取り込む」・Ctrl+V・検索欄への URL(手元のミラーから取り込んで選ぶ。--ui classic でも。node が要る)
 godot --path . -- --ui lazer --smoke-osu-menu                          # osu! の Songs フォルダの曲が選曲画面に足され、選んで読める・弾幕 v2 で読み直しても難易度が保たれる(--ui classic でも)
 godot --path . -- --ui lazer --smoke-player                                   # 上のプレイヤー: 線を押す・ドラッグして飛ぶ / プレイリストを流して、次へ・曲が終わって次へ(タイトルも選曲も)/ 外の曲を選ぶと止まる / プロフィールの保存(設定は元へ戻す)
 godot --headless --path . --script tests/test_playlist.gd                # プレイリスト: 編集・順に進める・シャッフル・リピート・選曲で別の曲を選んだとき・保存

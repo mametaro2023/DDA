@@ -2,7 +2,7 @@ extends "res://scripts/ui/mod_panel.gd"
 ## lazer 風の MOD パネル: 画面の下からせり上がるシート。MOD は色の札(タイル)を並べ、押すと札が MOD の色に染まる。
 ## 札は「難しくする」「易しくする」「特殊」に分けて並べる。札には、MOD の絵・名前・要点(1 行)・ベーススコアの増減だけを出し、
 ## 詳しい効果は、カーソルを乗せた(なければ、最後に押した)札の分だけ、札の下の欄に出す。
-## 右上に、選んでいる難易度の MOD 適用後 Lv(MOD なしの値からの変化つき)と、ベーススコアの倍率(増減つき)。下に「すべて解除」と「閉じる」。
+## 右上に、選んでいる難易度の MOD 適用後 Lv と、ベーススコアの倍率(数字がなめらかに増減する)。下に「すべて解除」と「閉じる」。
 ## MOD の付け外し・数字の動き・キー操作(Esc / M で閉じる)・契約(setup / signal changed・closed / refresh_info / multi)は、
 ## classic(mod_panel.gd)のものをそのまま使う。札は ToggleCard と同じ決まり(meta の state / apply)を持つので、「すべて解除」もそのまま働く。
 
@@ -21,11 +21,6 @@ const GROUPS := [   # [id, 見出し, 見出しの色]
 	["special", "特殊", Color(0.5, 0.8, 1.0)],
 ]
 
-## 選んでいる難易度の、MOD なしの Lv を返す Callable(-> float。なければ負の値)。MOD で Lv がどう変わるかを出すのに使う(なくてもよい)
-var base_level_cb: Callable = Callable()
-
-var _lv_base_l: Label       # 「5.01 →」(MOD で Lv が変わったときだけ)
-var _mul_delta_l: Label     # 「+23.5%」
 var _detail_name: Label
 var _detail_text: Label
 var _detail_bar: ColorRect
@@ -66,22 +61,9 @@ func _ready() -> void:
 	title_box.add_child(LazerStyle.label("難易度とスコアの修飾。複数つけると、効果も倍率も掛け算で重なります", 13, LazerStyle.TEXT_MUTE))
 	head.add_child(title_box)
 	_lv_l = LazerStyle.label("--", 38, LazerStyle.TEXT_MUTE, true)
-	_lv_base_l = LazerStyle.label("", 20, LazerStyle.TEXT_MUTE)
-	_lv_base_l.visible = false
-	_lv_base_l.size_flags_vertical = Control.SIZE_SHRINK_END
-	var lv_row := HBoxContainer.new()
-	lv_row.add_theme_constant_override("separation", 8)
-	lv_row.add_child(_lv_base_l)
-	lv_row.add_child(_lv_l)
-	head.add_child(_stat_row("難易度  LV", lv_row, 230.0))
+	head.add_child(_stat_row("難易度  LV", _lv_l, 120.0))
 	_mul_l = LazerStyle.label("×1.0000", 38, LazerStyle.TEXT, true)
-	_mul_delta_l = LazerStyle.label("", 16, LazerStyle.TEXT_MUTE, true)
-	_mul_delta_l.size_flags_vertical = Control.SIZE_SHRINK_END
-	var mul_row := HBoxContainer.new()
-	mul_row.add_theme_constant_override("separation", 10)
-	mul_row.add_child(_mul_l)
-	mul_row.add_child(_mul_delta_l)
-	head.add_child(_stat_row("ベーススコア倍率", mul_row, 260.0))
+	head.add_child(_stat_row("ベーススコア倍率", _mul_l, 170.0))
 	# MOD の札(分類ごと)
 	var groups := {}
 	for m0 in Mods.ALL:
@@ -396,7 +378,7 @@ func _sync_clear_btn() -> void:
 
 
 ## 見出し(小さな文字)と、その下の大きな数字の段(右の段)。
-func _stat_row(cap: String, value: Control, width: float) -> Control:
+func _stat_row(cap: String, value: Label, width: float) -> Control:
 	var b := VBoxContainer.new()
 	b.custom_minimum_size = Vector2(width, 0)
 	b.add_theme_constant_override("separation", -4)
@@ -408,29 +390,6 @@ func _stat_row(cap: String, value: Control, width: float) -> Control:
 func _show_lv(v: float) -> void:
 	super._show_lv(v)
 	_lv_l.add_theme_color_override("font_color", LazerStyle.level_color(v))   # 星の色(lazer の難易度の色)
-
-
-## Lv・倍率を更新し、MOD なしからの変化(「5.01 →」「+23.5%」)も出す。
-func refresh_info(animate := true) -> void:
-	super.refresh_info(animate)
-	if _lv_base_l == null:
-		return
-	var lv: float = level_cb.call() if level_cb.is_valid() else -1.0
-	var base: float = base_level_cb.call() if base_level_cb.is_valid() else -1.0
-	var shown_base := ""
-	if lv >= 0.0 and base >= 0.0 and absf(lv - base) >= 0.005:
-		shown_base = "%.2f  →" % base
-	_lv_base_l.text = shown_base
-	_lv_base_l.visible = shown_base != ""
-	var mul: float = Mods.params(Mods.multi_ok(settings.mods) if multi else settings.mods).score_mul
-	var pct := (mul - 1.0) * 100.0
-	if absf(pct) < 0.05:
-		_mul_delta_l.text = ""
-	else:
-		_mul_delta_l.text = "%+.1f%%" % pct
-		_mul_delta_l.add_theme_color_override("font_color", Color(1.0, 0.5, 0.45) if pct > 0.0 else Color(0.55, 0.92, 0.55))
-	if animate and UiStyle.animate and is_inside_tree():
-		_pop(_mul_delta_l)
 
 
 func close_panel() -> void:

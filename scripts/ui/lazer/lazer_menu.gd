@@ -2767,7 +2767,6 @@ func open_mods() -> void:
 	var p := ModPanel.new()
 	p.multi = pick_mode
 	p.setup(settings, _mod_level)
-	p.base_level_cb = _mod_base_level
 	p.changed.connect(_on_mods_changed)
 	p.closed.connect(_close_mods)
 	_mod_panel = p
@@ -2802,13 +2801,6 @@ func _close_mods() -> void:
 ## MOD パネルに出す、選択中の難易度の MOD 適用後 Lv(難易度がなければ -1)。
 func _mod_level() -> float:
 	return browser.selected_level()
-
-
-## 選んでいる難易度の、MOD なしの Lv(MOD パネルが、MOD での変化を出すのに使う)。
-func _mod_base_level() -> float:
-	if _diff_sel < 0 or _diff_sel >= _ratings.size():
-		return -1.0
-	return float(_ratings[_diff_sel].base_level)
 
 
 ## 試聴が終わった: プレイリストを流している最中なら、次の曲へ。

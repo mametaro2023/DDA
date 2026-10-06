@@ -11,8 +11,8 @@ signal replays_requested
 signal update_requested
 
 const AttractBackdrop = preload("res://scripts/attract_backdrop.gd")
-const HowToPanel = preload("res://scripts/ui/lazer/lazer_howto.gd")
-const QuitPanel = preload("res://scripts/ui/lazer/lazer_quit.gd")
+const HOWTO_PANEL := "res://scripts/ui/lazer/lazer_howto.gd"   # 開くときに読む(起動を軽くする。先読みは main の _warm_up)
+const QUIT_PANEL := "res://scripts/ui/lazer/lazer_quit.gd"
 const LazerLogo = preload("res://scripts/ui/lazer/lazer_logo.gd")
 const Volume = preload("res://scripts/volume.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
@@ -294,12 +294,12 @@ func _activate(i: int) -> void:
 			replays_requested.emit()   # 一覧のパネルは main が作る(再生は、タイトルから離れて始まる)
 		3:
 			UiSfx.play("open")
-			_open(HowToPanel.new())
+			_open(load(HOWTO_PANEL).new())
 		4:
 			UiSfx.play("open")
 			settings_requested.emit(0)   # 設定パネルは main が持つ(どの画面でも開ける)
 		5:
-			var q := QuitPanel.new()
+			var q = load(QUIT_PANEL).new()
 			q.confirmed.connect(func(): get_tree().quit())
 			_open(q)
 

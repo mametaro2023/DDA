@@ -148,6 +148,11 @@ var drain_time := GAUGE_DRAIN_TIME    # ゲージ満タンぶんの被弾時間(
 var low_protect := true               # ゲージが low_threshold 以下で被ダメージが半分になるか
 var low_threshold := GAUGE_LOW_THRESHOLD   # その境目(MOD「天国」で 35%)
 var regen := true                     # 被弾していないときの自然回復(MOD「無回復」で false)
+var regen_rate := GAUGE_REGEN         # その回復の速さ(ゲージ全体に対する割合 / 秒。サバイバルの強化で上がる)
+var guard := 0                        # サバイバルの「身代わり」の残り: ゲージが 0 になるとき、guard_gauge で踏みとどまり、盤面の弾を消す
+var guard_gauge := 0.4
+var guard_t := -1.0                   # 最後に身代わりを使った時刻(-1 = 使っていない。画面が演出に使う)
+var fail_score := 0.0                 # ゲームオーバーになる直前の表示点数(サバイバルは、倒れた曲もそこまでの点を数える)
 var score_base := SCORE_BASE          # ベーススコア(MOD で増える)
 var player_scale := 1.0                # 自機サイズの倍率(MOD)
 var player_r := PLAYER_HIT_R          # 自機の当たり判定半径(= PLAYER_HIT_R × player_scale)
@@ -585,7 +590,7 @@ func _update(now: float, dt: float) -> void:
 	else:
 		_no_hit_time += dt
 		if regen and not resting and authority and _ext_hit_t <= 0.0:
-			gauge = minf(gauge + GAUGE_REGEN * dt, 1.0)
+			gauge = minf(gauge + regen_rate * dt, 1.0)
 
 	_update_poison(dt, resting)
 	_update_heal(dt, resting)
@@ -605,9 +610,16 @@ func _update(now: float, dt: float) -> void:
 	if not authority:
 		return   # 協力の参加者: ゲームオーバー・クリアはホストが決める(apply_net_event)
 
+	if gauge <= 0.000001 and guard > 0 and not practice:   # サバイバルの身代わり: 1 回だけ踏みとどまり、盤面の弾を消す
+		guard -= 1
+		gauge = guard_gauge
+		guard_t = now
+		field.clear()
+		active_warns.clear()
 	if gauge <= 0.000001:
 		gauge = 0.0
 		if not practice:
+			fail_score = score
 			failed = true
 			finished = true
 			death_pos = player_pos

@@ -69,6 +69,9 @@ func _init() -> void:
 		_contract(id + " howto", ui.make_howto(), ["closed"], ["close_panel"])
 		_contract(id + " mods", ui.make_mods(), ["changed", "closed"], ["setup", "refresh_info", "close_panel"], ["multi"])
 		_contract(id + " quit", ui.make_quit(), ["closed", "confirmed"], ["setup"])
+		_contract(id + " survival setup", ui.make_survival_setup(), ["start_requested", "back_requested", "settings_requested"], ["on_overlay"], ["kind", "settings"])
+		_contract(id + " survival break", ui.make_survival_break(), ["choices_done", "go_requested", "give_up_requested"], ["setup", "show_next", "set_ready", "show_error", "on_overlay"], ["kind"])
+		_contract(id + " survival result", ui.make_survival_result(), ["again_requested", "menu_requested"], ["setup", "on_overlay"], ["kind"])
 
 	print("test_ui_contract: ", "OK" if _fail == 0 else "%d FAIL" % _fail)
 	quit(1 if _fail > 0 else 0)

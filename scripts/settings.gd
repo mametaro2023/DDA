@@ -11,6 +11,8 @@ const DEFAULTS := {
 	"control": "mouse",   # 操作: keyboard / mouse
 	"mouse_sens": 1.0,    # マウス感度(相対移動の倍率)
 	"mods": [],           # 付ける MOD の id(scripts/mods.gd)
+	"survival_mods": [],  # サバイバルで付ける MOD の id(選曲の MOD とは別。練習・撃破は付けられない)
+	"survival_start": 4.0, # サバイバルの開始の Lv(SurvivalRun.START_LEVELS のどれか)
 	"last_song": "",
 	"last_diff": "",      # 直前にプレイした難易度の名前(メニューに戻ったときに選んだ状態にする)
 	"volume": 80,          # 全体音量 0..100(%)

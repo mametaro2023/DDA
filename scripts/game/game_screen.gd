@@ -32,6 +32,7 @@ const Records = preload("res://scripts/records.gd")
 const ReplayBar = preload("res://scripts/game/replay_bar.gd")
 const ReplayDense = preload("res://scripts/replay_dense.gd")
 const SideShade = preload("res://scripts/game/side_shade.gd")
+const SurvivalRun = preload("res://scripts/survival/survival_run.gd")
 
 const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
@@ -272,6 +273,14 @@ var _beat_glow := 0.0     # 今の光の強さ 0..1(キアイ中、拍の頭で�
 ## 選曲で作っておいたもの {gen: 弾幕(MOD 適用前), audio: 曲全体の音声}。ないものは、ここで作る・読む
 var pre: Dictionary = {}
 
+## サバイバル(scripts/survival/survival_run.gd の game_params)。空ならふつうのプレイ。
+## {gauge: 始めのゲージ, drain_mul: ゲージ満タンぶんの被弾時間の倍率, regen_add: 自然回復の上乗せ, guard: 身代わりの残り, guard_gauge, no: 何曲目か, total: これまでの合計点}
+## リトライ・リプレイの記録はなく、ポーズの「メニューへ」は「あきらめる」(そこまでの点で終わる)。
+var survival: Dictionary = {}
+var _sv_total_l: Label        # 右のパネルの合計点(これまでの合計 + この曲の点 × f)
+var _sv_f := 1.0              # この曲の点の倍率 f(Lv)
+var _guard_seen := -1.0       # 身代わりの演出をした時刻
+
 
 ## ポーズ中か(main が、F11 の全画面を受け付けるかの判断に使う)
 func is_paused() -> bool:
@@ -413,6 +422,15 @@ func _ready() -> void:
 	_end_time = built.end_time
 	sim = built.sim
 	_hp_w = HP_W * clampf(_mods.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.2)   # 体力が少ない MOD ほどバーが短い(地獄: 150ms ÷ 250ms = 0.6 倍)
+	if not survival.is_empty():   # サバイバル: ゲージを持ち越し、強化(最大ゲージ・自然回復・身代わり)を掛ける
+		sim.drain_time *= float(survival.get("drain_mul", 1.0))
+		sim.regen_rate += float(survival.get("regen_add", 0.0))
+		sim.guard = int(survival.get("guard", 0))
+		sim.guard_gauge = float(survival.get("guard_gauge", sim.guard_gauge))
+		sim.gauge = clampf(float(survival.get("gauge", 1.0)), 0.01, 1.0)
+		_gauge_ghost = sim.gauge
+		_hp_w = HP_W * clampf(sim.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.7)   # 最大ゲージの強化で、バーも伸びる
+		_sv_f = SurvivalRun.f_of(float(gen.level))
 	_audio.pitch_scale = _rate
 	if sim.boss != null:
 		_hp_y = HP_Y_BOSS
@@ -437,7 +455,7 @@ func _ready() -> void:
 		if at != null:   # カーソルがもうアリーナの中にある: 自機は、その場から始まる(リプレイの記録の始めの位置も、ここ)
 			sim.player_pos = at
 			_start_in_place = true
-	if replay_data.is_empty() and _mp == null and debug_seek < 0.0 and Replay.enabled and bool(settings.get("replay_save", true)) and (Replay.force_record or (not debug_move.is_valid() and not _dev_run())):
+	if replay_data.is_empty() and _mp == null and survival.is_empty() and debug_seek < 0.0 and Replay.enabled and bool(settings.get("replay_save", true)) and (Replay.force_record or (not debug_move.is_valid() and not _dev_run())):
 		_rec = Replay.Recorder.new()   # ひとり用のプレイは入力を記録する(終わりに保存。scripts/replay.gd。開発用の自動操作は保存しない)
 		_rec.begin(sim, field, -LEAD_IN)
 		_rp_fp = Replay.fingerprint_of(sim)
@@ -587,6 +605,8 @@ func _build_hud() -> void:
 	if sim.boss != null:
 		_build_boss_gauge()
 	_build_pause()
+	if not survival.is_empty():
+		_build_survival_hud()
 	# 始まりの動き: 左右のパネルが外から滑り込み、HP・スコアがフェードインし、READY が弾んで現れる
 	UiStyle.pop_in(_left_col, 0.1, Vector2(-26, 0), 0.5)
 	UiStyle.pop_in(_right_col, 0.1, Vector2(26, 0), 0.5)
@@ -875,6 +895,9 @@ func _process(delta: float) -> void:
 	_hit_started = false
 	_hit_glow = 1.0 if _hit_any else _hit_glow * exp(-delta * 5.0)
 	_gauge_ghost = maxf(sim.gauge, _gauge_ghost - delta * 0.5)
+	if sim.guard_t >= 0.0 and sim.guard_t != _guard_seen:   # サバイバル: 身代わりで踏みとどまった
+		_guard_seen = sim.guard_t
+		_show_guard_fx()
 	_ease_score(delta)
 	_animate_hud(delta)
 	_update_skip_button()
@@ -1100,6 +1123,10 @@ func _stats() -> Dictionary:
 		"first_fire": sim.first_fire_time,
 		"last_fire": sim.log_end_t if sim.boss != null else sim.last_fire_time,   # 撃破は曲が繰り返すので、戦いの終わりまで
 	}
+	if not survival.is_empty():   # サバイバル: 倒れた曲は、倒れる直前の点を数える(score は 0 になるので)
+		d["fail_score"] = sim.fail_score if sim.failed else sim.score
+		d["guard_left"] = sim.guard
+		d["play_s"] = maxf(sim.log_end_t, 0.0)
 	if sim.boss != null:   # 撃破 MOD: 結果画面に、倒せたか・倒すまでの時間(最初の発射から。実時間)・残りの HP・周回数を出す
 		d["boss"] = {"defeated": sim.boss.defeated, "defeat_t": maxf(float(sim.boss.defeat_t) - maxf(sim.first_fire_time, 0.0), 0.0),
 			"hp_left": float(sim.boss.hp) / maxf(float(sim.boss.max_hp), 1.0), "loops": sim.loop_index(_now) + 1}
@@ -1142,6 +1169,8 @@ func _refresh() -> void:
 	field.sync_render()
 	_graze_l.text = str(sim.graze)
 	_hit_l.text = "%d%%" % int(round(sim.damage_total * 100.0))   # ダメージ量(回復は引かない。協力ではチーム全体)
+	if _sv_total_l != null:
+		_sv_total_l.text = UiStyle.fmt(int(round(float(survival.get("total", 0.0)) + _score_disp * _sv_f)))
 	_hud.queue_redraw()
 	_hp_node.queue_redraw()
 	_sc_node.queue_redraw()
@@ -1508,7 +1537,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				var d := -1 if event.keycode == KEY_UP else 1
 				for _i in range(PAUSE_ROWS):
 					_pause_sel = (_pause_sel + d + PAUSE_ROWS) % PAUSE_ROWS
-					if not (_mp != null and _pause_sel == 1):   # マルチプレイにリトライはない
+					if not (_no_retry() and _pause_sel == 1):   # マルチプレイ・サバイバルにリトライはない
 						break
 				UiSfx.play("select", 1.0 + 0.1 * _pause_sel)
 				if _pause_sel < _pause_btns.size():   # 選んだボタンが、ぴょこっと弾む
@@ -1529,13 +1558,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			if _menu_open() and _pause_sel < 3:
 				_pause_activate(_pause_sel)
 		KEY_R:
-			if _menu_open() and _mp == null:
+			if _menu_open() and not _no_retry():
 				_audio.stop()
 				retry_requested.emit()
 		KEY_Q:
 			if _menu_open():
-				_audio.stop()
-				quit_requested.emit()
+				_pause_activate(2)
 
 
 ## イントロ(最初のノーツまでの何もない区間)を飛ばした先の曲時間。最初のノーツの SKIP_LEAD 秒前。
@@ -1778,7 +1806,7 @@ func _update_retry_hold(delta: float) -> bool:
 	var held := Input.is_physical_key_pressed(KEY_R)
 	if not held:
 		_retry_armed = true
-	if held and _retry_armed and _mp == null and not _menu_open():
+	if held and _retry_armed and not _no_retry() and not _menu_open():
 		_retry_hold += delta
 	else:
 		_retry_hold = maxf(_retry_hold - delta * 4.0, 0.0)   # 離したら、すばやく戻る
@@ -1826,13 +1854,77 @@ func _pause_activate(i: int) -> void:
 		0:
 			_set_paused(false)
 		1:
-			if _mp != null:
+			if _no_retry():
 				return
 			_audio.stop()
 			retry_requested.emit()
 		2:
+			if not survival.is_empty():
+				_give_up()
+				return
 			_audio.stop()
 			quit_requested.emit()
+
+
+## リトライがないプレイか(マルチプレイ・サバイバル)。
+func _no_retry() -> bool:
+	return _mp != null or not survival.is_empty()
+
+
+## サバイバル: あきらめる。そこまでの点(クリアした場合の点 × 進み具合)で、倒れたのと同じく終わる。
+func _give_up() -> void:
+	if _done:
+		return
+	_done = true
+	_audio.stop()
+	var st := _stats()
+	st["failed"] = true
+	st["gave_up"] = true
+	st["fail_score"] = sim.score
+	finished.emit(st, null)
+
+
+## サバイバル: 右のパネルに、何曲目か・合計点・この曲の点の倍率 f を足す。ポーズのリトライは隠し、「メニューへ」を「あきらめる」にする。
+func _build_survival_hud() -> void:
+	if _pause_btns.size() >= 3:
+		_pause_btns[1].visible = false
+		if "caption" in _pause_btns[2]:
+			_pause_btns[2].caption = "あきらめる"
+		_pause_btns[2].text = "あきらめる"
+	var v := _survival_box()
+	v.add_child(_survival_caption("SURVIVAL  %d 曲目" % int(survival.get("no", 1))))
+	_sv_total_l = _survival_value("0", 22)
+	v.add_child(_sv_total_l)
+	v.add_child(_survival_caption("Lv %.2f   × %.2f" % [float(gen.level), _sv_f]))
+
+
+## サバイバルの欄の入れ物(右のパネルの下に足す。lazer 風の画面は、カードの見た目にする)。
+func _survival_box() -> VBoxContainer:
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 12)
+	_right_col.add_child(gap)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_right_col.add_child(v)
+	return v
+
+
+func _survival_caption(text: String) -> Label:
+	return UiStyle.caption(text)
+
+
+func _survival_value(text: String, size: int) -> Label:
+	return UiStyle.label(text, size, UiStyle.TEXT, true)
+
+
+## サバイバル: 身代わりを使ったときの演出(自機のまわりに光の輪と火花)。
+func _show_guard_fx() -> void:
+	_sfx.play("boom")
+	var at: Vector2 = ARENA_POS + sim.player_pos
+	UiFx.ring(self, at, Color(1.0, 0.85, 0.35), 12.0, 220.0, 0.7, 3.0)
+	UiFx.burst(self, at, Color(1.0, 0.85, 0.35), 18, 260.0, 0.6, 3.0)
+	_gauge_ghost = sim.gauge
 
 
 func _set_master_volume(v: int) -> void:

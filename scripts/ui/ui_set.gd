@@ -82,3 +82,18 @@ func make_quit() -> Control:
 ## リプレイの一覧パネル(signal closed / signal replay_requested(name))
 func make_replays() -> Control:
 	return null
+
+
+## サバイバルの画面(docs/survival_plan.md)。準備画面: signal start_requested(start_level, mod_ids, charts) / back_requested
+func make_survival_setup() -> Control:
+	return null
+
+
+## 曲の間: setup(run, last, hp_end, bg, music) / signal choices_done / go_requested / give_up_requested / show_next(info) / set_ready(level, tex) / show_error(msg)
+func make_survival_break() -> Control:
+	return null
+
+
+## リザルト: setup(record, is_best, bg) / signal again_requested / menu_requested
+func make_survival_result() -> Control:
+	return null

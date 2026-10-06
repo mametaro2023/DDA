@@ -40,6 +40,9 @@ const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const Juice = preload("res://scripts/ui/juice.gd")
 const ScreenWipe = preload("res://scripts/ui/screen_wipe.gd")
+const SurvivalRun = preload("res://scripts/survival/survival_run.gd")
+const SurvivalPicker = preload("res://scripts/survival/survival_picker.gd")
+const SurvivalRecords = preload("res://scripts/survival/survival_records.gd")
 
 var _current: Node
 var _kind := ""                    # いまの画面の種類(画面の kind。"title" / "menu" / "multi" / "game" / "result")。クラスでは判定しない(UI セットで中身が変わる)
@@ -94,6 +97,7 @@ func _ready() -> void:
 		var a_s := str(a)
 		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
 			load(P_Records).enabled = false
+			SurvivalRecords.enabled = false
 			Playlist.file_path = "user://dev_playlists.json"   # 確認用の起動は、使う人のプレイリストを書き換えない
 			UiSets.override_id = "classic"   # 確認用の起動は、内部の変数を見る確認が多いので classic が既定(--ui で変えられる。下)
 			_play_loader = false   # 確認用の起動は、開始前画面を挟まない(挟むのは、--smoke-loader だけ)
@@ -185,6 +189,9 @@ func _ready() -> void:
 		return
 	if args.has("--smoke-clear"):
 		_smoke_clear()
+		return
+	if args.has("--smoke-survival"):
+		_smoke_survival()
 		return
 	if args.has("--smoke-rush"):
 		_smoke_rush()
@@ -807,6 +814,8 @@ func show_title(open_replays := false) -> void:
 	t.play_requested.connect(show_menu)
 	t.multi_requested.connect(show_multi)
 	t.replays_requested.connect(func(): _open_replay_list(t))
+	if t.has_signal("survival_requested"):   # lazer 風のタイトルだけ
+		t.survival_requested.connect(show_survival)
 	t.settings_requested.connect(open_settings)
 	t.update_requested.connect(func():
 		var p = UiSets.current().make_update()
@@ -818,6 +827,13 @@ func show_title(open_replays := false) -> void:
 		t.ready.connect(func(): _open_replay_list(t), CONNECT_ONE_SHOT)
 	_stop_music()
 	_swap(t)
+
+
+## タイトルの項目の番号(lazer 風のタイトルは id から引く。classic は決まった番号)。開発用の確認が使う。
+func _title_idx(id: String, classic_i: int) -> int:
+	if _current != null and _current.has_method("item_index"):
+		return _current.item_index(id)
+	return classic_i
 
 
 ## リプレイの一覧を、タイトルの上に重ねる。選んだリプレイを再生して、閉じたら一覧へ戻る。
@@ -956,6 +972,138 @@ func show_result(stats: Dictionary, music: AudioStreamPlayer = null) -> void:
 		add_child(music)
 		music.finished.connect(func(): if _music == music: _stop_music(0.0))
 	_swap(r, music != null)
+
+
+# --- サバイバル(docs/survival_plan.md。1 回の状態と点は SurvivalRun、曲の選び方と用意は SurvivalPicker) ---
+## 準備画面 → 曲の間(1 曲目の前は NEXT だけ)→ プレイ → 曲の間 → … → 倒れた・あきらめた → リザルト。
+## 曲の間で 3 択が済んだら次の曲を選び、別スレッドで用意する(曲を開く・弾幕・MOD 込みの Lv・音声・背景)。
+## プレイ中は裏で何もしない(別スレッドの解析が、プレイ中の画面を止めることがあるため)。プレイ画面は曲ごとに作り直す。
+
+var _sv_run                    # いまのサバイバル(SurvivalRun。遊んでいないときは null)
+var _sv_charts: Array = []     # 選べる譜面の一覧(SurvivalPicker.read_charts)
+var _sv_next: Dictionary = {}  # 次の曲 {chart, mods, extra}
+var _sv_loaded: Dictionary = {}   # 用意できた次の曲(SurvivalPicker.load_chart の結果)
+var _sv_job := 0               # 用意の通し番号(最新のものだけ使う)
+var _sv_bg: Texture2D          # 最後に遊んだ曲の背景(リザルトに敷く)
+
+
+func show_survival() -> void:
+	_sv_run = null
+	_sv_job += 1
+	var s = UiSets.current().make_survival_setup()
+	s.start_requested.connect(_survival_start)
+	s.back_requested.connect(show_title)
+	_stop_music()
+	_swap(s)
+
+
+func _survival_start(start_lv: float, mods: Array, charts: Array) -> void:
+	_sv_run = SurvivalRun.new()
+	_sv_run.start(start_lv, mods)
+	_sv_charts = charts
+	_sv_bg = null
+	_survival_break({}, 1.0, null, null)
+
+
+## 曲の間の画面。last: 終えた曲の記録(1 曲目の前は空)/ music: クリアした曲(流れたまま来る。画面がフェードアウトさせる)
+func _survival_break(last: Dictionary, hp_end: float, bg: Texture2D, music: AudioStreamPlayer) -> void:
+	var b = UiSets.current().make_survival_break()
+	b.setup(_sv_run, last, hp_end, bg, music)
+	b.choices_done.connect(func(): _survival_pick(b))
+	b.go_requested.connect(func(): _survival_play(b))
+	b.give_up_requested.connect(_survival_end)
+	_stop_music()
+	_swap(b, music != null)
+
+
+## 次の曲を選んで、裏で用意し始める。読めなかったら、別の曲を選び直す(数回まで)。
+func _survival_pick(b, tries := 0) -> void:
+	var run = _sv_run
+	if run == null or _current != b:
+		return
+	var pk := SurvivalPicker.pick(_sv_charts, run.target_level(), run.mod_ids, run.used_keys, run.rng)
+	if pk.is_empty():
+		b.show_error("遊べる曲がありません")
+		return
+	var c: Dictionary = pk.chart
+	var mods: Array = run.mod_ids.duplicate()
+	for m in pk.extra_mods:
+		mods = load(P_Mods).toggled(mods, str(m), true)
+	_sv_next = {"chart": c, "mods": mods, "extra": pk.extra_mods}
+	run.used_keys[c.key] = int(run.used_keys.get(c.key, 0)) + 1
+	b.show_next({"title": c.title, "artist": c.artist, "version": c.version, "est": pk.est, "extra_mods": pk.extra_mods})
+	_sv_job += 1
+	var job := _sv_job
+	_sv_loaded = {}
+	WorkerThreadPool.add_task(func():
+		var r := SurvivalPicker.load_chart(c, mods)
+		_survival_loaded.call_deferred(job, r, b, tries))
+
+
+func _survival_loaded(job: int, r: Dictionary, b, tries: int) -> void:
+	if job != _sv_job or _current != b or not is_instance_valid(b):
+		return
+	if not bool(r.ok):
+		if tries < 5:
+			_survival_pick(b, tries + 1)
+		else:
+			b.show_error("曲を読み込めませんでした: %s" % str(r.get("error", "")))
+		return
+	r["tex"] = ImageTexture.create_from_image(r.image) if r.get("image") != null else null
+	_sv_loaded = r
+	b.set_ready(float(r.level), r.tex)
+
+
+func _survival_play(b) -> void:
+	if _sv_loaded.is_empty() or _current != b or _sv_run == null:
+		return
+	var r := _sv_loaded
+	_sv_loaded = {}
+	var st := Settings.load_all()
+	st["mods"] = _sv_next.mods
+	st["speed_study"] = false
+	st["replay_save"] = false
+	var g = UiSets.current().make_game()
+	g.setup(r.loader, r.bm, st)
+	g.pre = {"gen": r.gen, "audio": r.audio}
+	g.survival = _sv_run.game_params()
+	var info := {"key": str(_sv_next.chart.key), "extra_mods": _sv_next.extra}
+	g.finished.connect(func(stats, music): _survival_song_done(stats, music, info))
+	g.quit_requested.connect(_survival_end)
+	_stop_music()
+	SongArt.cancel_all()
+	_swap(g)
+
+
+func _survival_song_done(stats: Dictionary, music: AudioStreamPlayer, info: Dictionary) -> void:
+	if _sv_run == null:
+		return
+	var e: Dictionary = _sv_run.song_done(stats, info)
+	_sv_bg = stats.get("bg")
+	if _sv_run.over:
+		if music != null:
+			music.queue_free()
+		_survival_end()
+		return
+	_survival_break(e, float(stats.get("hp_end", 0.0)), _sv_bg, music)
+
+
+## 終わり(倒れた・あきらめた): 記録して、リザルトへ。
+func _survival_end() -> void:
+	var run = _sv_run
+	_sv_job += 1   # 用意の途中なら、結果は捨てる
+	if run == null:
+		show_title()
+		return
+	var rec: Dictionary = run.to_record()
+	var best := SurvivalRecords.add(rec)
+	var r = UiSets.current().make_survival_result()
+	r.setup(rec, best, _sv_bg)
+	r.again_requested.connect(show_survival)
+	r.menu_requested.connect(show_title)
+	_sv_run = null
+	_stop_music()
+	_swap(r)
 
 
 # --- リプレイ ---
@@ -1294,7 +1442,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"title":
 			show_title()   # 例: --shot title out.png [howto|options|quit] [fps]
 			if extra.size() > 0 and extra[0] == "howto":
-				_current._activate(2)
+				_current._activate(_title_idx("howto", 2))
 				if extra.size() > 1 and extra[1].is_valid_int():
 					_current._overlay._show(int(extra[1]))
 				if extra.size() > 2 and extra[2].is_valid_int():   # 3 つ目: スクロールの位置(px)。長いページの下のほうを撮る
@@ -1304,9 +1452,9 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 							sc.scroll_vertical = int(extra[2])
 					await get_tree().create_timer(0.3).timeout
 			elif extra.size() > 0 and extra[0] == "options":
-				_current._activate(3)
+				_current._activate(_title_idx("settings", 3))
 			elif extra.size() > 0 and extra[0] == "quit":
-				_current._activate(4)   # 終了の確認
+				_current._activate(_title_idx("quit", 4))   # 終了の確認
 			if extra.has("fps"):   # FPS 表示つき
 				FpsOverlay.enabled = true
 				add_child(FpsOverlay.new())
@@ -2934,14 +3082,15 @@ func _prof_ui() -> void:
 	await get_tree().create_timer(0.5).timeout
 	await measure.call("show_title", func(): show_title())
 	await get_tree().create_timer(1.0).timeout
-	var lz: bool = UiSets.current().id() == "lazer"   # タイトルの項目の順: classic は 遊び方 = 2・終了 = 4、lazer は リプレイ = 2・遊び方 = 3・終了 = 5
-	var i_howto := 3 if lz else 2
-	var i_quit := 5 if lz else 4
+	var lz: bool = UiSets.current().id() == "lazer"   # タイトルの項目の順: classic は 遊び方 = 2・終了 = 4、lazer は item_index で引く
+	var i_howto := _title_idx("howto", 2)
+	var i_quit := _title_idx("quit", 4)
 	if lz:
-		await measure.call("title: replays open", func(): _current._activate(2))
+		var i_rep := _title_idx("replays", 2)
+		await measure.call("title: replays open", func(): _current._activate(i_rep))
 		await measure.call("title: replays close", func(): _current._overlay.close_panel())
 		await get_tree().create_timer(0.4).timeout
-		await measure.call("title: replays open 2nd", func(): _current._activate(2))
+		await measure.call("title: replays open 2nd", func(): _current._activate(i_rep))
 		await measure.call("title: replays close 2nd", func(): _current._overlay.close_panel())
 		await get_tree().create_timer(0.4).timeout
 	await measure.call("title: howto open", func(): _current._activate(i_howto))
@@ -3706,7 +3855,7 @@ func _smoke_replay() -> void:
 	await get_tree().create_timer(1.2).timeout
 	var tt = _current
 	chk.call(tt.kind == "title" and tt.has_signal("replays_requested"), "タイトルに「リプレイ」の項目がある")
-	tt._activate(2)
+	tt._activate(_title_idx("replays", 2))
 	await get_tree().create_timer(0.8).timeout
 	var lp = tt._overlay
 	var all_n: int = load(P_Replay).list().size()
@@ -3903,6 +4052,76 @@ func _smoke_clear() -> void:
 	print("after menu request: music node alive=%s (fading)" % str(_music != null))
 	await get_tree().create_timer(0.6).timeout
 	print("+0.7s: music=%s" % str(_music))
+	get_tree().quit()
+
+
+## 開発用: サバイバルを通す。準備画面 → 1 曲目の NEXT → 1 曲目(最後のノーツの直前へ飛ばしてクリア。被弾しない)→ 曲の間(結果の札・3 択)
+## → 2 曲目 → あきらめる → リザルト。-- --ui lazer --smoke-survival [<接頭辞>](接頭辞があれば、各画面のスクリーンショットを撮る)
+func _smoke_survival() -> void:
+	var args := OS.get_cmdline_user_args()
+	var si := args.find("--smoke-survival")
+	var shots := str(args[si + 1]) if args.size() > si + 1 and not str(args[si + 1]).begins_with("--") else ""
+	var fails := [0]
+	var shot := func(tag: String):
+		if shots != "":
+			get_viewport().get_texture().get_image().save_png("%s_%s.png" % [shots, tag])
+	var chk := func(c: bool, msg: String):
+		print(("ok:   " if c else "FAIL: ") + msg)
+		if not c:
+			fails[0] += 1
+	var wait_for := func(cond: Callable, sec: float) -> bool:
+		var t0 := Time.get_ticks_msec()
+		while not cond.call() and Time.get_ticks_msec() - t0 < int(sec * 1000.0):
+			await get_tree().process_frame
+		return cond.call()
+	show_survival()
+	await get_tree().create_timer(0.5).timeout
+	var s = _current
+	chk.call(_kind == "survival_setup", "タイトルの「サバイバル」から準備画面")
+	await wait_for.call(func(): return not s._charts.is_empty() and not s._reading, 40.0)
+	chk.call(not s._charts.is_empty(), "準備画面: 統計のある譜面 %d(曲 %d)" % [s._charts.size(), SurvivalPicker.song_count(s._charts)])
+	await get_tree().create_timer(1.0).timeout
+	shot.call("setup")
+	s._start()
+	await get_tree().create_timer(1.6).timeout
+	chk.call(_kind == "survival_break" and _current._next_card.visible, "1 曲目の前は NEXT の札だけ: %s" % (_current._next_title.text if _kind == "survival_break" else "?"))
+	shot.call("next1")
+	await wait_for.call(func(): return _kind == "game", 20.0)
+	var g = _current
+	chk.call(_kind == "game" and not g.survival.is_empty(), "1 曲目が始まる(Lv %.2f / f %.2f / 始めのゲージ %.2f)" % [float(g.gen.level), g._sv_f, g.sim.gauge])
+	await get_tree().create_timer(3.0).timeout
+	shot.call("play1")
+	g.sim.debug_invincible = true
+	var last: float = g.sim.events[g.sim.events.size() - 1].t
+	g._audio.seek((last - 0.5) * g._rate)
+	await wait_for.call(func(): return _kind != "game", 25.0)
+	chk.call(_kind == "survival_break", "クリアで曲の間へ(合計 %d)" % (int(_sv_run.total) if _sv_run != null else -1))
+	await get_tree().create_timer(2.2).timeout
+	var b = _current
+	chk.call(_kind == "survival_break" and b._choice_cards.size() >= 1 and b._choosing, "強化の 3 択が出る(%s)" % (", ".join(b._choice_ids) if _kind == "survival_break" else "?"))
+	shot.call("break1")
+	if _kind == "survival_break":
+		b._choose(0)
+	await wait_for.call(func(): return _kind == "survival_break" and b._next_t >= 0.0, 5.0)
+	await get_tree().create_timer(1.0).timeout
+	shot.call("next2")
+	chk.call(_sv_run != null and _sv_run.picked_upgrades.size() == 1, "強化を選ぶと NEXT へ(%s)" % (str(_sv_run.picked_upgrades) if _sv_run != null else "?"))
+	await wait_for.call(func(): return _kind == "game", 20.0)
+	var g2 = _current
+	chk.call(_kind == "game" and int(g2.survival.get("no", 0)) == 2, "2 曲目が始まる(始めのゲージ %.2f)" % (g2.sim.gauge if _kind == "game" else -1.0))
+	await get_tree().create_timer(3.5).timeout
+	shot.call("play2")
+	if _kind == "game":   # ポーズの「あきらめる」(リトライは隠れている)
+		g2._set_paused(true)
+		await get_tree().create_timer(0.6).timeout
+		shot.call("pause")
+		chk.call(not g2._pause_btns[1].visible and str(g2._pause_btns[2].text) == "あきらめる", "ポーズ: リトライはなく、「あきらめる」がある")
+		g2._pause_activate(2)
+	await wait_for.call(func(): return _kind == "survival_result", 5.0)
+	await get_tree().create_timer(2.4).timeout
+	shot.call("result")
+	chk.call(_kind == "survival_result" and int(_current.rec.songs_n) == 2, "あきらめるとリザルト(2 曲・合計 %d)" % (int(_current.rec.total) if _kind == "survival_result" else -1))
+	print("smoke-survival: ", "OK" if fails[0] == 0 else "%d FAIL" % fails[0])
 	get_tree().quit()
 
 

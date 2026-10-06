@@ -112,6 +112,25 @@ func _build_right_panel() -> void:
 		_update_weapon_labels()
 
 
+## サバイバルの欄(何曲目か・合計点・f)を、右のパネルのカードにする。
+func _survival_box() -> VBoxContainer:
+	var card := _card(0.82, true)
+	_right_col.add_child(card)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 1)
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(v)
+	return v
+
+
+func _survival_caption(text: String) -> Label:
+	return LazerStyle.label(text, 11, LazerStyle.TEXT_MUTE)
+
+
+func _survival_value(text: String, size: int) -> Label:
+	return LazerStyle.label(text, size, LazerStyle.TEXT, true)
+
+
 # --- 体力バー・スコア・枠・進行バー ---
 
 ## 体力バーの塗りの角の丸み。幅が高さより狭い(残りわずか)ときは、角ばらないよう、幅の半分までにする。

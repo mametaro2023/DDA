@@ -76,3 +76,16 @@ func make_quit() -> Control:
 ## リプレイの一覧パネル(classic と lazer 風で共通。UiStyle の配色が、その UI セットの色になる)
 func make_replays() -> Control:
 	return load(P_ReplayList).new()
+
+
+## サバイバルの画面は、lazer 風のものだけ(classic でも同じものを使う。設定で選べるのは lazer だけ)
+func make_survival_setup() -> Control:
+	return load("res://scripts/ui/lazer/lazer_survival_setup.gd").new()
+
+
+func make_survival_break() -> Control:
+	return load("res://scripts/ui/lazer/lazer_survival_break.gd").new()
+
+
+func make_survival_result() -> Control:
+	return load("res://scripts/ui/lazer/lazer_survival_result.gd").new()

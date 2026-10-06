@@ -2924,13 +2924,23 @@ func _prof_ui() -> void:
 	await get_tree().create_timer(0.5).timeout
 	await measure.call("show_title", func(): show_title())
 	await get_tree().create_timer(1.0).timeout
-	await measure.call("title: howto open", func(): _current._activate(2))
+	var lz: bool = UiSets.current().id() == "lazer"   # タイトルの項目の順: classic は 遊び方 = 2・終了 = 4、lazer は リプレイ = 2・遊び方 = 3・終了 = 5
+	var i_howto := 3 if lz else 2
+	var i_quit := 5 if lz else 4
+	if lz:
+		await measure.call("title: replays open", func(): _current._activate(2))
+		await measure.call("title: replays close", func(): _current._overlay.close_panel())
+		await get_tree().create_timer(0.4).timeout
+		await measure.call("title: replays open 2nd", func(): _current._activate(2))
+		await measure.call("title: replays close 2nd", func(): _current._overlay.close_panel())
+		await get_tree().create_timer(0.4).timeout
+	await measure.call("title: howto open", func(): _current._activate(i_howto))
 	await measure.call("title: howto close", func(): _current._overlay.close_panel())
 	await get_tree().create_timer(0.4).timeout
-	await measure.call("title: howto open 2nd", func(): _current._activate(2))
+	await measure.call("title: howto open 2nd", func(): _current._activate(i_howto))
 	await measure.call("title: howto close 2nd", func(): _current._overlay.close_panel())
 	await get_tree().create_timer(0.4).timeout
-	await measure.call("title: quit open", func(): _current._activate(4))
+	await measure.call("title: quit open", func(): _current._activate(i_quit))
 	await measure.call("title: quit close", func(): _current._overlay._cancel())
 	await get_tree().create_timer(0.4).timeout
 	await measure.call("title: settings open", func(): open_settings(0))
@@ -2950,6 +2960,11 @@ func _prof_ui() -> void:
 	await measure.call("menu: mods open 2nd", func(): _current.open_mods())
 	await measure.call("menu: mods close 2nd", func(): _current._mod_panel.close_panel())
 	await get_tree().create_timer(0.4).timeout
+	if _current.has_method("_set_tab"):   # lazer: 「探す」タブ(開く・閉じる)
+		await measure.call("menu: finder open", func(): _current._set_tab(1))
+		await get_tree().create_timer(1.0).timeout
+		await measure.call("menu: finder close", func(): _current._set_tab(0))
+		await get_tree().create_timer(0.4).timeout
 	for k in range(3):
 		await measure.call("menu: next song %d" % k, func():
 			var nxt: int = _current.browser.step_in_view(_current._song_sel, 1)

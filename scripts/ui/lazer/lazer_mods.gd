@@ -58,13 +58,7 @@ func _ready() -> void:
 	grid.add_theme_constant_override("v_separation", 14)
 	grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	v.add_child(grid)
-	var mods: Array = settings.mods
-	for m in Mods.ALL:
-		if multi and bool(m.get("solo", false)):
-			continue
-		var tile := _tile(m, mods.has(m.id), func(on: bool): _on_toggled(m.id, on))
-		_cards[m.id] = tile
-		grid.add_child(tile)
+	_build_tiles(grid)   # 動きがあるときは、数枚ずつ数フレームに分けて作る(一度に作ると、押した瞬間に止まる)
 	# 下の段: 「すべて解除」(左)と「閉じる」(右)
 	var foot := HBoxContainer.new()
 	foot.add_theme_constant_override("separation", 14)
@@ -86,7 +80,10 @@ func _ready() -> void:
 	done.pressed.connect(close_panel)
 	foot.add_child(done)
 	_sync_clear_btn()
-	refresh_info(false)
+	if UiStyle.animate:
+		refresh_info.call_deferred(false)   # Lv の計算は、最初のフレームのあとへ(シートはまだ画面の外から上がってくる途中)
+	else:
+		refresh_info(false)
 	UiStyle.close_on_outside_click(self, panel, close_panel)
 	# 開く動き: 背景が暗くなり、シートが下からせり上がり、札が左上から順に現れる
 	UiSfx.play("open")
@@ -94,10 +91,28 @@ func _ready() -> void:
 	if UiStyle.animate:
 		panel.position.y = 720.0
 		create_tween().tween_property(panel, "position:y", 720.0 - SHEET_H, 0.36).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		var k := 0
-		for id in _cards:
-			UiStyle.tween(_cards[id], "modulate:a", 0.0, 1.0, 0.24, 0.1 + 0.035 * k)
+
+
+const TILES_PER_FRAME := 3
+
+
+## MOD の札を作って並べる。動きがあるときは TILES_PER_FRAME 枚ずつ、フレームを分けて作り(札は作った順に、ふわっと現れる)、動きがないときは一度に作る。
+func _build_tiles(grid: GridContainer) -> void:
+	var mods: Array = settings.mods
+	var k := 0
+	for m in Mods.ALL:
+		if multi and bool(m.get("solo", false)):
+			continue
+		var tile := _tile(m, mods.has(m.id), func(on: bool): _on_toggled(m.id, on))
+		_cards[m.id] = tile
+		grid.add_child(tile)
+		if UiStyle.animate:
+			UiStyle.tween(tile, "modulate:a", 0.0, 1.0, 0.24, 0.1 + 0.035 * k if k < TILES_PER_FRAME else 0.0)
 			k += 1
+			if k % TILES_PER_FRAME == 0:
+				await get_tree().process_frame
+				if not is_instance_valid(grid) or _closing:
+					return
 
 
 ## MOD の札: 上に色の帯、タグ(英字)と名前、効果、下にベーススコアの倍率。付けると札が MOD の色に染まり、右上に印が付く。

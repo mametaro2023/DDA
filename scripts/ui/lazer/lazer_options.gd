@@ -6,6 +6,9 @@ const LazerStyle = preload("res://scripts/ui/lazer/lazer_style.gd")
 const LazerFrame = preload("res://scripts/ui/lazer/lazer_frame.gd")
 
 const WIDTH := 940.0
+const PAGE_BUILDERS := ["_build_control", "_build_audio", "_build_screen", "_build_songs", "_build_other"]
+
+var _stack: Control
 
 
 func _ready() -> void:
@@ -16,13 +19,33 @@ func _ready() -> void:
 	_nav_holder = f.nav_holder
 	_nav_ind = f.nav_ind
 	f.close.pressed.connect(close_panel)
-	_pages = [_build_control(), _build_audio(), _build_screen(), _build_songs(), _build_other()]
-	for p in _pages:
-		p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		f.stack.add_child(p)
+	_stack = f.stack
+	for k in range(SECTIONS.size()):   # ページは、開いたときに作る(5 ページ全部を、開くたびに作ると重い)。作るまでは、場所取りだけ置いておく
+		var ph := Control.new()
+		ph.visible = false
+		ph.set_meta("lazy", true)
+		_pages.append(ph)
 	UiStyle.close_on_outside_click(self, _panel, close_panel)
 	_show(0)
 	LazerFrame.open_anim(self, _dim, _panel, _nav)
+
+
+func _show(i: int) -> void:
+	_ensure_page(i)
+	super._show(i)
+
+
+## i 番のページを、まだなら作る(場所取りと入れ替える)。
+func _ensure_page(i: int) -> void:
+	var ph: Control = _pages[i]
+	if not ph.has_meta("lazy"):
+		return
+	var page: Control = call(PAGE_BUILDERS[i])
+	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	page.visible = false   # 表示は _show が決める(切り替えの動きは、非表示から表示へ変わったときに付く)
+	_stack.add_child(page)
+	_pages[i] = page
+	ph.free()
 
 
 func close_panel() -> void:

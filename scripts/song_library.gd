@@ -129,6 +129,20 @@ static func find_by_md5(md5: String) -> Dictionary:
 	return found
 
 
+## いま持っている曲の、譜面の識別子(Beatmap.md5)の集合(キー = 識別子、値 = true)。find_by_md5 を何度も呼ぶ代わりに、これを 1 回作って使う。
+static func md5_set() -> Dictionary:
+	var out := {}
+	for path in find_osz():
+		for k in info(path).ids:
+			out[k] = true
+	_index_mutex.lock()
+	for e in _warm_ready:
+		for k in e.info.ids:
+			out[k] = true
+	_index_mutex.unlock()
+	return out
+
+
 # --- 曲の索引(.osz を全部開かずに、一覧に出す情報を得る) ---
 
 const INDEX_PATH := "user://song_index.json"

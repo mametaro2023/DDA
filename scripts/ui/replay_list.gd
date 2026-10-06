@@ -15,6 +15,8 @@ const SongLibrary = preload("res://scripts/song_library.gd")
 const Mods = preload("res://scripts/mods.gd")
 
 const FILTERS := ["すべて", "クリア", "ゲームオーバー", "保存済み"]
+const ROWS_FIRST := 6           # 最初のフレームで作る行の数(画面に見える分)
+const ROWS_PER_FRAME := 4       # あとは、1 フレームにこれだけずつ
 
 var _items: Array = []          # Replay.list() の結果
 var _shown: Array = []          # フィルタ後
@@ -32,6 +34,7 @@ var _closing := false
 var _del_name := ""             # 「削除」を 1 度押して、確認待ちの行
 var _del_timer: SceneTreeTimer
 var _have: Dictionary = {}      # md5 → 曲が見つかるか
+var _gen := 0                  # 一覧を作った回数(行を分けて作る途中で、作り直しになったら、前の続きをやめる)
 
 
 func _ready() -> void:
@@ -122,9 +125,9 @@ func _ready() -> void:
 
 	UiStyle.close_on_outside_click(self, _panel, close_panel)
 	_items = Replay.list()
+	var owned := SongLibrary.md5_set()   # 曲の一覧は、1 回だけなめる(行ごとに find_by_md5 で探すと、曲の数 × 行の数だけファイルを調べて重い)
 	for m in _items:
-		if not _have.has(m.md5):
-			_have[m.md5] = not SongLibrary.find_by_md5(str(m.md5)).is_empty()
+		_have[m.md5] = owned.has(str(m.md5))
 	_rebuild()
 	UiStyle.tween(_dim, "color:a", 0.0, 0.7, 0.22)
 	UiStyle.pop_scale(_panel, 0.93, 0.42)
@@ -156,11 +159,6 @@ func _rebuild() -> void:
 		empty.custom_minimum_size = Vector2(0, 160)
 		empty.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		_list.add_child(empty)
-	for i in range(_shown.size()):
-		var card := _make_row(i, _shown[i])
-		_list.add_child(card)
-		_cards.append(card)
-	_restyle()
 	var kept := 0
 	var bytes := 0
 	for m in _items:
@@ -170,6 +168,18 @@ func _rebuild() -> void:
 	_count_l.text = "%d 件(保存済み %d 件)  ·  自動で残るのは、保存済みを除いて新しい %d 件まで  ·  %.1f MB" % [_items.size(), kept, Replay.KEEP, float(bytes) / 1048576.0]
 	for i in range(_filter_btns.size()):
 		_filter_btns[i].set_pressed_no_signal(i == _filter)
+	_gen += 1
+	var gen := _gen
+	for i in range(_shown.size()):
+		if UiStyle.animate and i >= ROWS_FIRST and (i - ROWS_FIRST) % ROWS_PER_FRAME == 0:   # 動きがあるときは、見えない下のほうの行を、数フレームに分けて作る(一度に作ると、開いた瞬間に止まる)
+			await get_tree().process_frame
+			if gen != _gen or not is_inside_tree():
+				return
+		var card := _make_row(i, _shown[i])
+		_list.add_child(card)
+		_cards.append(card)
+		UiStyle.style_card(card, i == _sel, true, UiStyle.ACCENT)
+	_restyle()
 
 
 func _restyle() -> void:

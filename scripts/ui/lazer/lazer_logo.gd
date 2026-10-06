@@ -16,22 +16,44 @@ const BULLET_COLORS := [LazerStyle.PINK, LazerStyle.BLUE, LazerStyle.PURPLE, Laz
 const LIGHT := Vector2(-0.6, -0.8)   # 光の来る向き(左上)
 const DISC_R := 122.0                # 台座の半径(380 のとき)
 
+## 描き方: 動かない部分(円盤・文字など)と、一定の速さで回るだけの部分(欠けのある輪・周回する弾)は、
+## 起動のとき 1 回だけ画像に焼き(SubViewport)、毎フレームは、その画像の向き・大きさを変えるだけにする。
+## 毎フレーム描き直すのは、扇形の弾と自機だけ。焼き上がるまでの数フレームは、従来どおり全部を描く。
+## (焼く側・動く部分も、このスクリプトのインスタンス。_layer で、何を描くかを決める)
+enum Layer { LIVE, BACK, RING, OUTER, INNER, TOP, DYN }
+const BAKE_SCALE := 2.0   # 焼く大きさ(表示の何倍か。ウィンドウを大きくしてもにじまないように)
+const ROT_RING := 0.12    # 回る速さ(_spin に掛ける)
+const ROT_OUTER := -0.2
+const ROT_INNER := 0.32
+
+## false なら、焼かずに毎フレーム全部を描く(従来の描き方。見た目の比較・切り分け用)
+static var bake_enabled := true
+
+var _layer: int = Layer.LIVE
 var _t := 0.0
 var _spin := 0.0     # 周回・弾の流れの進み(マウスが乗ると速くなる)
 var _hover := 0.0
 var _hover_target := 0.0
 var _press := 0.0
+var _baked := false
+var _rotors: Array = []   # [TextureRect, 回る速さ]
+var _breathers: Array = []   # 拍動で大きさが変わる TextureRect
+var _dyn: Control
 
 
-func _init(p_size := 380.0) -> void:
+func _init(p_size := 380.0, p_layer := Layer.LIVE) -> void:
+	_layer = p_layer
 	custom_minimum_size = Vector2(p_size, p_size)
 	size = Vector2(p_size, p_size)
 	pivot_offset = Vector2(p_size, p_size) * 0.5
-	mouse_filter = Control.MOUSE_FILTER_STOP
+	mouse_filter = Control.MOUSE_FILTER_STOP if p_layer == Layer.LIVE else Control.MOUSE_FILTER_IGNORE
 	mouse_default_cursor_shape = Control.CURSOR_ARROW
 
 
 func _ready() -> void:
+	if _layer != Layer.LIVE:
+		set_process(false)   # 焼く側・動く部分は、親(LIVE)が動かす
+		return
 	mouse_entered.connect(func(): _hover_target = 1.0)
 	mouse_exited.connect(func(): _hover_target = 0.0; _press = 0.0)
 	gui_input.connect(func(ev: InputEvent):
@@ -42,6 +64,8 @@ func _ready() -> void:
 				_press = 0.0
 				pressed.emit())
 	set_process(true)
+	if bake_enabled and DisplayServer.get_name() != "headless":
+		_bake()
 
 
 func _process(delta: float) -> void:
@@ -52,49 +76,161 @@ func _process(delta: float) -> void:
 	_spin += delta * (1.0 + 0.8 * _hover)
 	var s := 1.0 + 0.035 * _hover - 0.03 * _press
 	scale = Vector2(s, s)
-	queue_redraw()
+	if _baked:
+		_move_baked()
+	else:
+		queue_redraw()
+
+
+## 焼く(各層を SubViewport で 1 回だけ描き、数フレーム待ってから表示に切り替える)。
+func _bake() -> void:
+	var specs := [[Layer.RING, ROT_RING], [Layer.OUTER, ROT_OUTER], [Layer.INNER, ROT_INNER], [Layer.BACK, 0.0], [Layer.DYN, 0.0], [Layer.TOP, 0.0]]
+	var shown: Array = []
+	for sp in specs:
+		var layer: int = sp[0]
+		if layer == Layer.DYN:   # 扇形の弾と自機: 毎フレーム描く
+			_dyn = get_script().new(size.x, Layer.DYN)
+			_dyn.visible = false
+			add_child(_dyn)
+			shown.append(_dyn)
+			continue
+		var vp := SubViewport.new()
+		vp.size = Vector2i(size * BAKE_SCALE)
+		vp.transparent_bg = true
+		vp.disable_3d = true
+		vp.gui_disable_input = true
+		vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+		vp.add_child(get_script().new(size.x * BAKE_SCALE, layer))
+		add_child(vp)
+		var tr := TextureRect.new()
+		tr.texture = vp.get_texture()
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_SCALE
+		tr.size = size
+		tr.pivot_offset = size * 0.5
+		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var mat := CanvasItemMaterial.new()
+		mat.blend_mode = CanvasItemMaterial.BLEND_MODE_PREMULT_ALPHA   # 透明な背景に描いた画像は、色に透明度が掛かっている
+		tr.material = mat
+		tr.visible = false
+		add_child(tr)
+		shown.append(tr)
+		if sp[1] != 0.0:
+			_rotors.append([tr, sp[1]])
+		elif layer == Layer.BACK or layer == Layer.TOP:
+			_breathers.append(tr)
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	if not is_inside_tree():
+		return
+	for n in shown:
+		n.visible = true
+	_baked = true
+	_move_baked()
+	queue_redraw()   # 従来の描き方をやめる(何も描かない)
+
+
+func _move_baked() -> void:
+	for r in _rotors:
+		r[0].rotation = _spin * r[1]
+	var breath := _breath()
+	for tr in _breathers:
+		tr.scale = Vector2(breath, breath)
+	_dyn.queue_redraw()
+
+
+func _breath() -> float:
+	return 1.0 + 0.008 * sin(_t * 1.6)   # ごくゆっくりした拍動
 
 
 func _draw() -> void:
 	var u := size.x / 380.0   # 380 を基準にした倍率
 	var c := size * 0.5
-	var breath := 1.0 + 0.008 * sin(_t * 1.6)   # ごくゆっくりした拍動
 	var pink := LazerStyle.PINK
-	# いちばん外の、細い輪
+	match _layer:
+		Layer.BACK:
+			_paint_thin_ring(c, u)
+			_paint_base(c, u, 1.0, pink)
+		Layer.RING:
+			_paint_ring(c, u, 0.0, pink)
+		Layer.OUTER:
+			_paint_outer(c, u, 0.0)
+		Layer.INNER:
+			_paint_inner(c, u, 0.0)
+		Layer.TOP:
+			_paint_top(c, u, 1.0, pink)
+		Layer.DYN:
+			var root = get_parent()
+			_t = root._t
+			_spin = root._spin
+			var rr := DISC_R * u * _breath()
+			_draw_fan(c, rr, c.y + 4.0 * u, u)
+			_draw_ship(c, rr, u)
+		_:
+			if _baked:
+				return
+			var breath := _breath()   # 焼き上がるまで(と、焼かない設定のとき): 全部を描く
+			var rr := DISC_R * u * breath
+			_paint_thin_ring(c, u)
+			_paint_ring(c, u, _spin, pink)
+			_paint_outer(c, u, _spin)
+			_paint_inner(c, u, _spin)
+			_paint_base(c, u, breath, pink)
+			_draw_fan(c, rr, c.y + 4.0 * u, u)
+			_draw_ship(c, rr, u)
+			_paint_top(c, u, breath, pink)
+
+
+## いちばん外の、細い輪
+func _paint_thin_ring(c: Vector2, u: float) -> void:
 	draw_arc(c, 186.0 * u, 0.0, TAU, 128, Color(1, 1, 1, 0.10), 1.5 * u, true)
-	# 欠けのある輪(6 つの弧。進む向きの先端ほど濃い)
+
+
+## 欠けのある輪(6 つの弧。進む向きの先端ほど濃い)
+func _paint_ring(c: Vector2, u: float, spin: float, pink: Color) -> void:
 	for i in range(6):
-		var a0 := _spin * 0.12 + float(i) * TAU / 6.0
+		var a0 := spin * ROT_RING + float(i) * TAU / 6.0
 		var span := TAU / 6.0 * 0.66
 		for k in range(8):
 			var f0 := float(k) / 8.0
 			draw_arc(c, 160.0 * u, a0 + span * f0, a0 + span * (f0 + 0.13), 6, Color(pink.r, pink.g, pink.b, 0.12 + 0.5 * f0), 4.0 * u, true)
-	# 周回する弾(外は反時計回り・尾つき、内は時計回りの小さな弾)
+
+
+## 周回する外の弾(反時計回り・尾つき)
+func _paint_outer(c: Vector2, u: float, spin: float) -> void:
 	for i in range(14):
-		var a := -_spin * 0.2 + float(i) * TAU / 14.0
+		var a := spin * ROT_OUTER + float(i) * TAU / 14.0
 		var col: Color = BULLET_COLORS[i % BULLET_COLORS.size()]
 		var r := (173.0 + 4.0 * sin(float(i) * 1.7)) * u
 		for j in range(1, 5):   # 尾(進む向きの後ろに、薄くなる影)
 			var aj := a + 0.035 * float(j)
 			draw_circle(c + Vector2.from_angle(aj) * r, (4.6 - 0.7 * float(j)) * u, Color(col.r, col.g, col.b, 0.22 - 0.045 * float(j)))
 		_bullet(c + Vector2.from_angle(a) * r, 6.0 * u, col)
+
+
+## 周回する内の小さな弾(時計回り)
+func _paint_inner(c: Vector2, u: float, spin: float) -> void:
 	for i in range(10):
-		var a2 := _spin * 0.32 + float(i) * TAU / 10.0
+		var a2 := spin * ROT_INNER + float(i) * TAU / 10.0
 		var col2: Color = BULLET_COLORS[(i * 2 + 1) % BULLET_COLORS.size()]
 		_bullet(c + Vector2.from_angle(a2) * 143.0 * u, 3.4 * u, Color(col2.r, col2.g, col2.b, 0.9))
-	# 台座: 影 → 白い縁 → グラデーションの円盤
+
+
+## 台座: 影 → 白い縁 → グラデーションの円盤
+func _paint_base(c: Vector2, u: float, breath: float, pink: Color) -> void:
 	var rr := DISC_R * u * breath
 	for k in range(6):   # やわらかい影(少し下へ)
 		draw_circle(c + Vector2(0, 7.0 * u), rr + (14.0 - 2.0 * k) * u, Color(0.05, 0.0, 0.06, 0.06))
 	draw_circle(c, rr + 7.0 * u, Color(1, 1, 1, 0.95))
 	_disc(c, rr, pink.lightened(0.28), pink.darkened(0.30))
+
+
+## 内側の縁(細い白い輪)・上半分の艶・文字「Danmaku」(影 → 白)
+func _paint_top(c: Vector2, u: float, breath: float, pink: Color) -> void:
+	var rr := DISC_R * u * breath
 	var word_y := c.y + 4.0 * u   # 文字の帯の中心
-	_draw_fan(c, rr, word_y, u)
-	_draw_ship(c, rr, u)
-	# 内側の縁(細い白い輪)と、上半分の艶
 	draw_arc(c, rr - 10.0 * u, 0.0, TAU, 96, Color(1, 1, 1, 0.5), 2.0 * u, true)
 	_gloss(c, rr - 4.0 * u)
-	# 文字「Danmaku」(影 → 白)
 	var xh := 26.0 * u   # 小文字の高さ
 	var w := 7.2 * u     # 線の太さ
 	var base := word_y + xh * 0.5 + 3.0 * u

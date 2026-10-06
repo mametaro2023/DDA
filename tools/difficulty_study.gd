@@ -4,7 +4,8 @@ extends SceneTree
 ##   godot --headless --path . --script tools/difficulty_study.gd -- maps [osz の名前の一部 ...]   譜面ごと: Lv・★・ボットの被弾
 ##   godot --headless --path . --script tools/difficulty_study.gd -- factors                     要素ごと: 1 つずつ変えたときの Lv とボットの変化
 ##   godot --headless --path . --script tools/difficulty_study.gd -- mods [dir=<osz のフォルダ>] [part=k/n]   MOD ごと: Lv の変化と、ボットが倒れる回数(ベーススコアの倍率を決める材料)
-##   godot --headless --path . --script tools/difficulty_study.gd -- elastic [jobs=12] [minlv=0]  弾数・弾の大きさの効き(並列。下の _elastic)
+##   godot --headless --path . --script tools/difficulty_study.gd -- elastic [jobs=12] [minlv=0] [bots=human hd=0.26 he=0.15]  弾数・弾の大きさ・弾速の効き(並列。下の _elastic)
+##   godot --headless --path . --script tools/difficulty_study.gd -- calib [jobs=14]   人間に近いボットを、保存されたリプレイ(使う人のプレイ)に合わせる(下の _calib)
 ## 出力は CSV ふうの行(先頭が "row," / "factor," / "mod," / "el,")。
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
@@ -13,6 +14,7 @@ const GameSim = preload("res://scripts/game/game_sim.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const Mods = preload("res://scripts/mods.gd")
 const PatternGenV2 = preload("res://scripts/game/pattern_gen_v2.gd")
+const Replay = preload("res://scripts/replay.gd")
 
 const DIRS := [Vector2.ZERO, Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
 	Vector2(1, 1), Vector2(1, -1), Vector2(-1, 1), Vector2(-1, -1)]
@@ -27,6 +29,8 @@ func _init() -> void:
 		_factors()
 	elif args.has("elastic"):
 		_elastic(args)
+	elif args.has("calib"):
+		_calib(args)
 	else:
 		var filters: Array = []
 		for a in args:
@@ -306,6 +310,8 @@ const ELASTIC_VARIANTS := [
 	["size1.25", {"size_mul": 1.25}],
 	["size1.5", {"size_mul": 1.5}],
 	["player1.5", {"player_scale": 1.5}],
+	["speed1.25", {"speed_mul": 1.25}],
+	["speed0.8", {"speed_mul": 0.8}],
 ]
 const SEEDS := [Vector2.ZERO, Vector2(-90, 0), Vector2(90, -20)]
 
@@ -317,9 +323,18 @@ func _elastic(args: Array) -> void:
 	var parts := 1
 	var out := ""
 	var minlv := 0.0
+	var bots := ["strong", "weak"]
+	var hd := 0.26
+	var he := 0.15
 	for a in args:
 		var s := str(a)
-		if s.begins_with("dir="):
+		if s.begins_with("bots="):
+			bots = Array(s.trim_prefix("bots=").split("+"))
+		elif s.begins_with("hd="):
+			hd = float(s.trim_prefix("hd="))
+		elif s.begins_with("he="):
+			he = float(s.trim_prefix("he="))
+		elif s.begins_with("dir="):
 			dir = s.trim_prefix("dir=")
 		elif s.begins_with("jobs="):
 			jobs = int(s.trim_prefix("jobs="))
@@ -332,7 +347,7 @@ func _elastic(args: Array) -> void:
 			part = int(kn[0])
 			parts = int(kn[1])
 	if jobs > 1 and out == "":
-		_elastic_parent(dir, jobs, minlv)
+		_elastic_report(_parallel(["elastic", "dir=" + dir, "minlv=%f" % minlv, "bots=" + "+".join(bots), "hd=%f" % hd, "he=%f" % he], jobs, "el,"), bots)
 		return
 	var lines: Array = []
 	var k := 0
@@ -359,53 +374,21 @@ func _elastic(args: Array) -> void:
 				g2["zones"] = []
 				var r1 := PatternGen.danger_radius(float(gen.size) * float(p.size_mul), PatternGen.PLAYER_HIT_R * float(p.player_scale))
 				for si in range(SEEDS.size()):
-					for weak in [false, true]:
-						var res := _run_bot_at(g2, p, weak, SEEDS[si])
+					for bot in bots:
+						var res := _run_bot_at(g2, p, bot == "weak", SEEDS[si]) if bot != "human" else _run_human_at(g2, p, SEEDS[si], hd, he, hash("%s|%s|%d" % [path, bm.version, si]))
 						lines.append("el,%s,%s,%.2f,%s,%d,%s,%.4f,%.4f,%.3f" % [str(path).get_file().substr(0, 14).replace(",", " "), str(bm.version).replace(",", " "),
-							gen.level, v[0], si, "weak" if weak else "strong", res.hit_s, res.play_min, r1 / r0])
+							gen.level, v[0], si, bot, res.hit_s, res.play_min, r1 / r0])
 	if out != "":
 		var f := FileAccess.open(out, FileAccess.WRITE)
 		f.store_string("\n".join(lines) + "\n")
 		f.close()
 	else:
-		_elastic_report(lines)
-
-
-func _elastic_parent(dir: String, jobs: int, minlv: float) -> void:
-	var exe := OS.get_executable_path()
-	var tmp := OS.get_temp_dir().path_join("danmaku_elastic").replace("\\", "/")
-	DirAccess.make_dir_recursive_absolute(tmp)
-	var pids: Array = []
-	var files: Array = []
-	var t0 := Time.get_ticks_msec()
-	for j in range(jobs):
-		var f := tmp.path_join("part%d.csv" % j)
-		if FileAccess.file_exists(f):
-			DirAccess.remove_absolute(f)
-		files.append(f)
-		pids.append(OS.create_process(exe, ["--headless", "--path", ProjectSettings.globalize_path("res://"), "--script", "res://tools/difficulty_study.gd", "--",
-			"elastic", "dir=" + dir, "minlv=%f" % minlv, "part=%d/%d" % [j, jobs], "out=" + f]))
-	while true:
-		var running := 0
-		for pid in pids:
-			if int(pid) > 0 and OS.is_process_running(int(pid)):
-				running += 1
-		if running == 0:
-			break
-		OS.delay_msec(500)
-	var lines: Array = []
-	for f in files:
-		if FileAccess.file_exists(f):
-			for l in FileAccess.get_file_as_string(f).split("\n"):
-				if l.begins_with("el,"):
-					lines.append(l)
-	print("elastic: %d 本の結果(%d 並列、%.0f 秒)" % [lines.size(), jobs, (Time.get_ticks_msec() - t0) / 1000.0])
-	_elastic_report(lines)
+		_elastic_report(lines, bots)
 
 
 ## 集計: 変えたもの・ボットごとに、全譜面・全開始位置の被弾時間を足して、基準(base)との比を出す(被弾 0 の譜面があっても割れない)。
 ## 被弾の比 → 弾性。弾数は倍率、弾・自機の大きさは危険半径の比(譜面ごとに違うので、平均)で割る。
-func _elastic_report(lines: Array) -> void:
+func _elastic_report(lines: Array, bots: Array = ["strong", "weak"]) -> void:
 	for l in lines:
 		print(l)
 	var sum := {}     # "variant|bot" → 被弾時間の合計
@@ -421,8 +404,8 @@ func _elastic_report(lines: Array) -> void:
 		rr[c[4]] = a
 		maps[c[1] + c[2]] = true
 	print("elastic_sum: 譜面 %d" % maps.size())
-	var mult := {"count1.25": 1.25, "count1.5": 1.5}
-	for bot in ["strong", "weak"]:
+	var mult := {"count1.25": 1.25, "count1.5": 1.5, "speed1.25": 1.25, "speed0.8": 0.8}
+	for bot in bots:
 		var base := float(sum.get("base|" + bot, 0.0))
 		var e_count := []
 		for v in ELASTIC_VARIANTS:
@@ -431,7 +414,7 @@ func _elastic_report(lines: Array) -> void:
 				continue
 			var ratio := float(sum.get(name + "|" + bot, 0.0)) / maxf(base, 1e-6)
 			var x: float = mult.get(name, 0.0)
-			var by := "弾数"
+			var by := "弾数" if name.begins_with("count") else "弾速"
 			if x == 0.0:
 				x = float(rr[name][0]) / maxf(float(rr[name][1]), 1.0)
 				by = "危険半径"
@@ -477,3 +460,304 @@ func _run_bot_at(gen: Dictionary, p: Dictionary, weak: bool, offset: Vector2) ->
 		now += DT
 	field.free()
 	return {"hit_s": sim.hit_time, "play_min": maxf(last_t - maxf(first_t, 0.0), 1.0) / 60.0}
+
+
+## _run_bot_at の人間に近いボット版(下の _run_human)。
+func _run_human_at(gen: Dictionary, p: Dictionary, offset: Vector2, delay: float, err: float, seed: int) -> Dictionary:
+	var field := BulletField.new()
+	var sim := GameSim.new()
+	var last_t := 0.0
+	for e in gen.events:
+		last_t = maxf(last_t, float(e.t))
+	var end_t := last_t + 2.0
+	var m := p.duplicate()
+	m["practice"] = true
+	sim.setup(field, gen, end_t, true, m)
+	sim.player_pos = (sim.player_pos + offset).clamp(Vector2(12, 12), GameSim.ARENA - Vector2(12, 12))
+	var first_t := -1.0
+	for e in gen.events:
+		if not e.shots.is_empty():
+			first_t = float(e.t)
+			break
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed
+	var hit_s := _run_human(sim, field, end_t + 10.0, delay, err, rng)
+	field.free()
+	return {"hit_s": hit_s, "play_min": maxf(last_t - maxf(first_t, 0.0), 1.0) / 60.0}
+
+
+# --- 人間に近いボット(human)と、リプレイでの合わせ込み(calib) ---
+## 今のボット(_bot)は、反応が 0.05 秒・動きにぶれがない・自分の大きさを考えない、で人間よりずっと強い。人間に近づけたボット:
+##   - 反応の遅れ: 0.1 秒ごとに判断し、決めた動きは delay 秒後(+ 0〜H_JITTER 秒のゆらぎ)に効く(見てから手が動くまで)
+##   - ぶれ: err の確率で、いちばん良い動きではなく、上位 3 つのどれかを選ぶ
+##   - 自分の当たり判定を引いて、すき間を測る。H_HORIZON 秒先まで 4 点で読む
+##   - ふだんは全速、低速のほうがすき間が広いときだけ低速(Shift)
+## calib: 保存されたリプレイ(使う人のプレイ)と同じ弾幕を、このボットで走らせ、被弾時間(1 分あたり)を人間と比べる。delay × err の組を総当たり。
+##   godot --headless --path . --script tools/difficulty_study.gd -- calib [jobs=14]
+## elastic に bots=human hd=<delay> he=<err> を付けると、このボットで効きを測る。
+const H_THINK := 0.1
+const H_JITTER := 0.06
+const H_HORIZON := 0.35
+const CALIB_DELAYS := [0.0, 0.05, 0.1, 0.18]
+const CALIB_ERRS := [0.0, 0.15, 0.3]
+const CALIB_SEEDS := 2
+const SongLibrary = preload("res://scripts/song_library.gd")
+
+
+## リプレイの譜面(md5)→ 曲の場所。dir の .osz と osu! の Songs フォルダ(標準の場所)を、曲の索引(SongLibrary.info。保存された控えを使う)で調べる。
+## 子プロセスは、親が作ったこの表(JSON)を読む(全員で 800 曲を調べ直さない)。
+func _chart_map(dir: String, want: Dictionary) -> Dictionary:
+	var paths: Array = _osz_files(dir)
+	paths.append_array(SongLibrary.find_osz())
+	var osu := SongLibrary.detect_osu_songs()
+	if osu != "":
+		for sub in DirAccess.get_directories_at(osu):
+			paths.append(osu.path_join(sub))
+	var out := {}
+	for path in paths:
+		if out.size() >= want.size():
+			break
+		var inf := SongLibrary.info(str(path))
+		for md5 in (inf.get("ids", {}) as Dictionary):
+			if want.has(md5) and not out.has(md5):
+				out[md5] = str(path)
+	SongLibrary.save_index()
+	return out
+
+
+func _bot_h(sim, field, rng: RandomNumberGenerator, err: float) -> Array:
+	var cands: Array = []   # [score, move, slow]
+	var center := GameSim.ARENA * Vector2(0.5, 0.75)
+	var pr: float = sim.player_r * 1.0
+	for slow in [false, true]:
+		var speed: float = GameSim.PLAYER_SLOW if slow else GameSim.PLAYER_SPEED
+		for d in DIRS:
+			if slow and d == Vector2.ZERO:
+				continue
+			var gap := 80.0
+			for kk in range(1, 5):
+				var tt: float = H_HORIZON * float(kk) / 4.0
+				var np: Vector2 = (sim.player_pos + d.normalized() * speed * tt) if d != Vector2.ZERO else sim.player_pos
+				np = np.clamp(Vector2(12, 12), GameSim.ARENA - Vector2(12, 12))
+				for i in range(field.count):
+					if field.grace[i] > 0.0:
+						continue
+					var g: float = (field.pos[i] + field.vel[i] * tt).distance_to(np) - field.rad[i] - pr
+					if g < gap:
+						gap = g
+			var endp: Vector2 = (sim.player_pos + d.normalized() * speed * H_HORIZON) if d != Vector2.ZERO else sim.player_pos
+			cands.append([gap * 3.0 - endp.distance_to(center) * 0.02 - (0.5 if slow else 0.0), d, slow])
+	cands.sort_custom(func(a, b): return a[0] > b[0])
+	var pick: Array = cands[0]
+	if err > 0.0 and rng.randf() < err:
+		pick = cands[rng.randi_range(0, mini(2, cands.size() - 1))]
+	return [pick[1], pick[2]]
+
+
+## 人間に近いボットで、until 秒まで走らせる(練習モード)。被弾時間(秒)を返す。
+func _run_human(sim, field, until: float, delay: float, err: float, rng: RandomNumberGenerator) -> float:
+	var now := 0.0
+	var move := Vector2.ZERO
+	var slow := false
+	var queue: Array = []   # [効く時刻, move, slow]
+	var next_think := 0.0
+	var steps := 0
+	while not sim.finished and now < until and steps < int((until + 10.0) / DT):
+		if now >= next_think:
+			next_think = now + H_THINK
+			var dec := _bot_h(sim, field, rng, err)
+			queue.append([now + delay + rng.randf() * H_JITTER, dec[0], dec[1]])
+		while not queue.is_empty() and float(queue[0][0]) <= now:
+			var q: Array = queue.pop_front()
+			move = q[1]
+			slow = q[2]
+		sim.step(now, DT, move, slow)
+		steps += 1
+		now += DT
+	return sim.hit_time
+
+
+func _calib(args: Array) -> void:
+	var jobs := 1
+	var part := 0
+	var parts := 1
+	var out := ""
+	var dir := "C:/Desktop/my_apps/DDA"
+	var map_file := ""
+	for a in args:
+		var s := str(a)
+		if s.begins_with("jobs="):
+			jobs = int(s.trim_prefix("jobs="))
+		elif s.begins_with("out="):
+			out = s.trim_prefix("out=")
+		elif s.begins_with("dir="):
+			dir = s.trim_prefix("dir=")
+		elif s.begins_with("map="):
+			map_file = s.trim_prefix("map=")
+		elif s.begins_with("part="):
+			var kn: PackedStringArray = s.trim_prefix("part=").split("/")
+			part = int(kn[0])
+			parts = int(kn[1])
+	var names: Array = []
+	for n in DirAccess.get_files_at(Replay.dir):   # 一覧の控え(index.json)は書き換えない(子が同時に書くと壊れる)
+		if str(n).ends_with(".rpl"):
+			names.append(str(n))
+	names.sort()
+	var charts := {}
+	if map_file != "":
+		var mj = JSON.parse_string(FileAccess.get_file_as_string(map_file))
+		charts = mj if mj is Dictionary else {}
+	else:
+		var want := {}
+		for n in names:
+			var d0 := Replay.load_file(n)
+			if not d0.is_empty():
+				want[str(d0.md5)] = true
+		charts = _chart_map(dir, want)
+		print("calib: 譜面 %d / %d が見つかった" % [charts.size(), want.size()])
+	if jobs > 1 and out == "":
+		var mf := OS.get_temp_dir().path_join("danmaku_study_charts.json").replace("\\", "/")
+		var fw := FileAccess.open(mf, FileAccess.WRITE)
+		fw.store_string(JSON.stringify(charts))
+		fw.close()
+		_calib_report(_parallel(["calib", "map=" + mf], jobs, "cal"))
+		return
+	var lines: Array = []
+	var k := 0
+	for n in names:
+		k += 1
+		if (k - 1) % parts != part:
+			continue
+		var d := Replay.load_file(n)
+		if d.is_empty():
+			continue
+		var mods: Array = (d.settings as Dictionary).get("mods", [])
+		if mods.has("auto") or mods.has("boss") or mods.has("dark") or str(d.get("cond", "")) != "":
+			lines.append("cal_skip,%s,MOD" % n)
+			continue   # オート・撃破(ボスを追う)・暗闇(見えない)・弾速の実験は、比べられない
+		var ch := Replay.open_chart(str(charts[str(d.md5)]), str(d.md5)) if charts.has(str(d.md5)) else {}
+		if ch.is_empty():
+			lines.append("cal_skip,%s,曲がない" % n)
+			continue
+		var st: Dictionary = d.stats
+		var first := float(st.get("first_fire", 0.0))
+		var until := float(st.get("hp_t_end", 0.0))
+		var play_min := (until - maxf(first, 0.0)) / 60.0
+		if play_min < 0.15:
+			lines.append("cal_skip,%s,短い" % n)
+			continue   # 短すぎる(すぐ終えた)プレイは使わない
+		var human := float(st.get("hit_ms", 0)) / 1000.0 / play_min
+		var lv := float(st.get("level", 0.0))
+		for delay in CALIB_DELAYS:
+			for err in CALIB_ERRS:
+				var acc := 0.0
+				var ok := true
+				for s in range(CALIB_SEEDS):
+					var field := BulletField.new()
+					var g := Replay.build_game(field, ch.bm, d.settings, "", {}, true)
+					if Replay.fingerprint_of(g.sim) != int(d.get("fp", -1)):
+						ok = false   # 版が変わって、人が見た弾幕と違う
+						field.free()
+						break
+					var rng := RandomNumberGenerator.new()
+					rng.seed = hash("%s|%d" % [n, s])
+					acc += _run_human(g.sim, field, until, delay, err, rng) / play_min
+					field.free()
+				if not ok:
+					lines.append("cal_skip,%s,版が違う(%s)" % [n, str(d.get("app", ""))])
+					break
+				lines.append("cal,%s,%.2f,%s,%.3f,%.2f,%.2f,%.4f,%.4f" % [n, lv, "+".join(mods), play_min, delay, err, human, acc / CALIB_SEEDS])
+	if out != "":
+		var f := FileAccess.open(out, FileAccess.WRITE)
+		f.store_string("\n".join(lines) + "\n")
+		f.close()
+	else:
+		_calib_report(lines)
+
+
+## 集計: delay × err ごとに、全プレイの被弾時間の合計の比(ボット ÷ 人間。遊んだ長さで重み)と、プレイごとの比の対数の平均・ばらつき。
+func _calib_report(lines: Array) -> void:
+	for l in lines:
+		print(l)
+	var agg := {}
+	var plays := {}
+	for l in lines:
+		if str(l).begins_with("cal_skip,"):
+			continue
+		var c: PackedStringArray = str(l).split(",")
+		var key := c[5] + "|" + c[6]
+		var a: Array = agg.get(key, [0.0, 0.0, 0.0, 0.0, 0, [], []])
+		var w := float(c[4])
+		a[0] += float(c[7]) * w
+		a[1] += float(c[8]) * w
+		var lr := log((float(c[8]) + 0.02) / (float(c[7]) + 0.02))
+		a[2] += lr
+		a[3] += lr * lr
+		a[4] += 1
+		(a[5] as Array).append(log(float(c[7]) + 0.02))
+		(a[6] as Array).append(log(float(c[8]) + 0.02))
+		agg[key] = a
+		plays[c[1]] = true
+	print("calib_sum: プレイ %d" % plays.size())
+	var keys := agg.keys()
+	keys.sort()
+	for key in keys:
+		var a: Array = agg[key]
+		var n := maxf(float(a[4]), 1.0)
+		var mean := float(a[2]) / n
+		print("calib_sum,delay=%s,err=%s,合計の比(ボット/人間) %.2f,比の対数 平均 %.2f ばらつき %.2f,相関 %.2f" % [str(key).split("|")[0], str(key).split("|")[1], float(a[1]) / maxf(float(a[0]), 1e-6), mean, sqrt(maxf(float(a[3]) / n - mean * mean, 0.0)), _corr(a[5], a[6])])
+
+
+## 相関係数(プレイごとの被弾の多さの順が、人間とボットでどれだけ揃うか。1 に近いほど、どの譜面が難しいかの感じ方が同じ)。
+static func _corr(xs: Array, ys: Array) -> float:
+	var n := float(xs.size())
+	if n < 3:
+		return 0.0
+	var mx := 0.0
+	var my := 0.0
+	for i in range(xs.size()):
+		mx += float(xs[i]) / n
+		my += float(ys[i]) / n
+	var sxy := 0.0
+	var sxx := 0.0
+	var syy := 0.0
+	for i in range(xs.size()):
+		sxy += (float(xs[i]) - mx) * (float(ys[i]) - my)
+		sxx += (float(xs[i]) - mx) * (float(xs[i]) - mx)
+		syy += (float(ys[i]) - my) * (float(ys[i]) - my)
+	return sxy / sqrt(maxf(sxx * syy, 1e-12))
+
+
+## 自分を jobs 個の子プロセスで起動し(part=k/n out=<ファイル>)、prefix で始まる行を集める。
+func _parallel(mode_args: Array, jobs: int, prefix: String) -> Array:
+	var exe := OS.get_executable_path()
+	var tmp := OS.get_temp_dir().path_join("danmaku_study").replace("\\", "/")
+	DirAccess.make_dir_recursive_absolute(tmp)
+	var pids: Array = []
+	var files: Array = []
+	var t0 := Time.get_ticks_msec()
+	for j in range(jobs):
+		var f := tmp.path_join("%s%d.csv" % [str(mode_args[0]), j])
+		if FileAccess.file_exists(f):
+			DirAccess.remove_absolute(f)
+		files.append(f)
+		var a := ["--headless", "--path", ProjectSettings.globalize_path("res://"), "--script", "res://tools/difficulty_study.gd", "--"]
+		a.append_array(mode_args)
+		a.append_array(["part=%d/%d" % [j, jobs], "out=" + f])
+		pids.append(OS.create_process(exe, a))
+	while true:
+		var running := 0
+		for pid in pids:
+			if int(pid) > 0 and OS.is_process_running(int(pid)):
+				running += 1
+		if running == 0:
+			break
+		OS.delay_msec(500)
+	var lines: Array = []
+	for f in files:
+		if FileAccess.file_exists(f):
+			for l in FileAccess.get_file_as_string(f).split("\n"):
+				if l.begins_with(prefix):
+					lines.append(l)
+	print("%s: %d 本の結果(%d 並列、%.0f 秒)" % [str(mode_args[0]), lines.size(), jobs, (Time.get_ticks_msec() - t0) / 1000.0])
+	return lines

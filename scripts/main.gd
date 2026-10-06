@@ -4245,28 +4245,16 @@ func _smoke_kiai() -> void:
 
 ## 開発用: タイトル画面の流れを、実際のキー入力で通して確認する。-- --smoke-title
 ##   起動 → タイトル(曲が流れる)→ 遊び方を開閉 → 設定を開閉 → プレイ → 選曲画面 → Esc → タイトル
-## 開発用: 設定で UI の見た目を切り替えると、いまのタイトルが新しい見た目で作り直される(戻すと、また戻る)。-- --smoke-uiswitch
+## 開発用: classic は設定で選べない。classic を保存していても、タイトルは lazer 風になる。-- --smoke-uiswitch
 func _smoke_uiswitch() -> void:
-	UiSets.override_id = ""   # 開発用の確認の既定(classic)で、設定の切り替えを邪魔しない
+	UiSets.override_id = ""   # 開発用の確認の既定(classic)で、設定の選択を邪魔しない
 	var original := Settings.load_all()
 	var st := original.duplicate()
 	st.ui_style = "classic"
 	Settings.save_all(st)
 	show_title()
 	await get_tree().create_timer(1.0).timeout
-	print("start:   %s (expect title_screen.gd)" % _current.get_script().resource_path.get_file())
-	open_settings(2)
-	await get_tree().create_timer(0.5).timeout
-	_settings_dict.ui_style = "lazer"
-	close_settings()
-	await get_tree().create_timer(1.0).timeout
-	print("lazer:   %s (expect lazer_title.gd)" % _current.get_script().resource_path.get_file())
-	open_settings(2)
-	await get_tree().create_timer(0.5).timeout
-	_settings_dict.ui_style = "classic"
-	close_settings()
-	await get_tree().create_timer(1.0).timeout
-	print("classic: %s (expect title_screen.gd)" % _current.get_script().resource_path.get_file())
+	print("saved classic: %s (expect lazer_title.gd)" % _current.get_script().resource_path.get_file())
 	Settings.restore(original)
 	get_tree().quit()
 

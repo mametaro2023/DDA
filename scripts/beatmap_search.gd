@@ -9,8 +9,12 @@ signal results(req: int, items: Array, more: bool)
 signal failed(req: int, msg: String)
 ## ジャケット画像ができた
 signal cover_ready(set_id: int, tex: Texture2D)
+## 試聴の音声ができた / 取れなかった
+signal preview_ready(set_id: int, stream: AudioStream)
+signal preview_failed(set_id: int)
 
 const PAGE := 30
+const PREVIEW_MEM := 8   # 覚えておく試聴の数(約 30 秒 × 数十 KB。超えたら古いものから忘れる)
 const COVER_PARALLEL := 4
 const COVER_DIR := "user://web_covers"
 const COVER_MEM := 240   # 覚えておくジャケットの数(超えたら古いものから忘れる。ファイルは残る)
@@ -23,6 +27,12 @@ const STATUSES := {"ranked": "1", "loved": "4", "all": ""}
 
 ## 検索 API の場所(テストでは手元のサーバーに差し替える)
 var base_url := "https://osu.direct/api/v2/search"
+## 試聴の音声(osu! 公式の置き場。約 30 秒の短いもの)。%d に曲の番号。テストでは手元のサーバーに差し替える
+var preview_url := "https://b.ppy.sh/preview/%d.mp3"
+var _pv_http: HTTPRequest
+var _pv_id := 0
+var _pv_mem := {}                    # set_id → AudioStream
+var _pv_order: Array = []
 
 var _req := 0
 var _http: HTTPRequest
@@ -181,3 +191,59 @@ func _remember(set_id: int, tex: Texture2D) -> void:
 	_cover_order.append(set_id)
 	while _cover_order.size() > COVER_MEM:
 		_cover_mem.erase(_cover_order.pop_front())
+
+
+# --- 試聴の音声 ---
+
+## その曲の試聴を取る(覚えていれば、すぐ preview_ready)。取れなければ preview_failed。同時に取るのは 1 つだけ(新しく頼むと、前のは捨てる)。
+func fetch_preview(set_id: int) -> void:
+	cancel_preview()
+	if _pv_mem.has(set_id):
+		preview_ready.emit.call_deferred(set_id, _pv_mem[set_id])
+		return
+	_pv_id = set_id
+	_pv_http = HTTPRequest.new()
+	_pv_http.timeout = 15.0
+	_pv_http.body_size_limit = 4 * 1024 * 1024
+	add_child(_pv_http)
+	var h := _pv_http
+	h.request_completed.connect(func(result: int, code: int, _hd: PackedStringArray, body: PackedByteArray):
+		if h != _pv_http:
+			return
+		_pv_http = null
+		_pv_id = 0
+		h.queue_free()
+		var s: AudioStream = decode_audio(body) if result == HTTPRequest.RESULT_SUCCESS and code == 200 else null
+		if s == null:
+			preview_failed.emit(set_id)
+			return
+		_pv_mem[set_id] = s
+		_pv_order.append(set_id)
+		while _pv_order.size() > PREVIEW_MEM:
+			_pv_mem.erase(_pv_order.pop_front())
+		preview_ready.emit(set_id, s))
+	if h.request(preview_url % set_id, PackedStringArray([USER_AGENT])) != OK:
+		_pv_http = null
+		_pv_id = 0
+		h.queue_free()
+		preview_failed.emit.call_deferred(set_id)
+
+
+## 取りに行っている試聴をやめる。
+func cancel_preview() -> void:
+	if _pv_http != null:
+		_pv_http.cancel_request()
+		_pv_http.queue_free()
+		_pv_http = null
+	_pv_id = 0
+
+
+## 試聴の音声(ogg か mp3。中身の先頭で見分ける)をデコードする。読めなければ null。
+static func decode_audio(bytes: PackedByteArray) -> AudioStream:
+	if bytes.size() < 4:
+		return null
+	if bytes[0] == 0x4F and bytes[1] == 0x67 and bytes[2] == 0x67 and bytes[3] == 0x53:   # "OggS"
+		return AudioStreamOggVorbis.load_from_buffer(bytes)
+	var s := AudioStreamMP3.new()
+	s.data = bytes
+	return s if s.get_length() > 0.0 else null

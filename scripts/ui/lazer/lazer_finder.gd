@@ -7,6 +7,8 @@ extends Control
 signal download_requested(set_id: int, label: String)
 signal play_requested(path: String)
 signal closed
+## 試聴が流れ始めた(true)・止まった(false)。選曲画面が、自分の曲を小さくするのに使う
+signal preview_changed(on: bool)
 
 const LazerStyle = preload("res://scripts/ui/lazer/lazer_style.gd")
 const LazerButton = preload("res://scripts/ui/lazer/lazer_button.gd")
@@ -15,6 +17,9 @@ const LazerIcons = preload("res://scripts/ui/lazer/lazer_icons.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const SmoothScroll = preload("res://scripts/ui/smooth_scroll.gd")
 const BeatmapSearch = preload("res://scripts/beatmap_search.gd")
+const UiFx = preload("res://scripts/ui/ui_fx.gd")
+const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
+const Volume = preload("res://scripts/volume.gd")
 
 const TOP := LazerChrome.TOOLBAR_H
 const CARD_W := 598.0
@@ -24,6 +29,9 @@ const MARGIN := 36.0
 const BTN_W := 104.0
 const DEBOUNCE := 0.45        # 入力が止まってから検索するまでの秒数
 const MORE_AHEAD := 400.0     # 下端までこれだけ近づいたら、続きを読む(px)
+const PREVIEW_DB := -6.0       # 試聴の音量(音楽の音量とは別に、音楽バスの音量が効く)
+const PREVIEW_FADE := 0.14    # 試聴の入り・切れのフェード(秒)
+const SKEL_ROWS := 6          # 読み込み中の仮カードの行数
 
 ## 曲の ID → ダウンロードの状態(main の fetch_states と同じ辞書)
 var states: Dictionary = {}
@@ -46,6 +54,14 @@ var _req := -1
 var _more := false
 var _loading := false
 var _debounce := -1.0
+var _skel: Control             # 読み込み中の仮カード(光の帯が流れる)
+var _skel_tw: Tween
+var _pv_player: AudioStreamPlayer
+var _pv_id := 0               # 試聴を押した曲(0 = なし)
+var _pv_state := ""           # "loading" | "playing"
+var _pv_tw: Tween
+var _ducked := false
+var _dl_cards := {}           # ダウンロード中の曲(set_id → true)。進捗の棒をなめらかに動かす
 
 
 func _ready() -> void:
@@ -64,7 +80,19 @@ func _ready() -> void:
 	search.cover_ready.connect(func(id: int, _t: Texture2D):
 		var c = _cards.get(id)
 		if c != null and is_instance_valid(c):
+			if UiStyle.animate:   # ジャケットは、取れたらふわっと現れる
+				c.set_meta("cover_a", 0.0)
+				UiStyle.tween_value(c, 0.0, 1.0, 0.3, func(v: float):
+					if is_instance_valid(c):
+						c.set_meta("cover_a", v)
+						c.queue_redraw())
 			c.queue_redraw())
+	search.preview_ready.connect(_on_preview_ready)
+	search.preview_failed.connect(_on_preview_failed)
+	_pv_player = AudioStreamPlayer.new()
+	Volume.route_music(_pv_player)   # 音楽バスへ(「音楽」の音量が効く)
+	_pv_player.finished.connect(func(): if _pv_state == "playing": _stop_preview())
+	add_child(_pv_player)
 	_build_bar()
 	_scroll = ScrollContainer.new()
 	_scroll.position = Vector2(MARGIN, 64)
@@ -77,6 +105,13 @@ func _ready() -> void:
 	_grid.add_theme_constant_override("h_separation", GAP)
 	_grid.add_theme_constant_override("v_separation", 10)
 	_scroll.add_child(_grid)
+	_skel = Control.new()
+	_skel.position = _scroll.position
+	_skel.size = _scroll.size
+	_skel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_skel.visible = false
+	_skel.draw.connect(_draw_skeleton)
+	add_child(_skel)
 	_note = LazerStyle.label("", 17, LazerStyle.TEXT_MUTE)
 	_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_note.position = Vector2(0, 250)
@@ -159,6 +194,8 @@ func _run(more: bool) -> void:
 	if more and (_loading or not _more):
 		return
 	if not more:
+		_stop_preview()
+		_dl_cards.clear()
 		search.drop_pending_covers()
 		for c in _grid.get_children():
 			_grid.remove_child(c)
@@ -168,8 +205,10 @@ func _run(more: bool) -> void:
 		_scroll.scroll_vertical = 0
 	_loading = true
 	_more = false
-	_set_note("読み込み中…" if not more else "")
+	_set_note("")
 	_retry.visible = false
+	if not more:
+		_show_skeleton(true)
 	_req = search.search(_query.text, _sort, _status, _items.size())
 
 
@@ -178,6 +217,8 @@ func _on_results(req: int, items: Array, more: bool) -> void:
 		return
 	_loading = false
 	_more = more
+	_show_skeleton(false)
+	var k := 0
 	for it in items:
 		if _cards.has(int(it.id)):
 			continue
@@ -185,6 +226,13 @@ func _on_results(req: int, items: Array, more: bool) -> void:
 		var c := _make_card(it)
 		_grid.add_child(c)
 		_cards[int(it.id)] = c
+		if UiStyle.animate:   # カードが、順に少し弾んで現れる(最初の数枚だけ時間差。あとは続けて)
+			var delay := minf(k * 0.035, 0.42)
+			c.modulate.a = 0.0
+			c.scale = Vector2(0.94, 0.94)
+			UiStyle.tween(c, "modulate:a", 0.0, 1.0, 0.25, delay)
+			UiStyle.spring(c, "scale", Vector2(0.94, 0.94), Vector2.ONE, 0.45, delay)
+		k += 1
 	_set_note("" if not _items.is_empty() else "見つかりませんでした")
 
 
@@ -192,6 +240,7 @@ func _on_failed(req: int, msg: String) -> void:
 	if req != _req:
 		return
 	_loading = false
+	_show_skeleton(false)
 	if _items.is_empty():
 		_set_note(msg + "(osu.direct)")
 		_retry.visible = true
@@ -213,6 +262,31 @@ func _process(delta: float) -> void:
 		var bar := _scroll.get_v_scroll_bar()
 		if bar.max_value - bar.page - _scroll.scroll_vertical < MORE_AHEAD:
 			_run(true)
+	if _skel.visible:
+		_skel.queue_redraw()
+	if _pv_id != 0:   # 試聴中のカードは、回る輪・棒・進みを毎フレーム描き直す
+		var pc = _cards.get(_pv_id)
+		if pc != null and is_instance_valid(pc):
+			pc.queue_redraw()
+	for id in _dl_cards.keys():   # ダウンロードの棒は、目標へなめらかに近づく
+		var dc = _cards.get(id)
+		if dc == null or not is_instance_valid(dc):
+			_dl_cards.erase(id)
+			continue
+		var cur := float(dc.get_meta("dl_a", 0.0))
+		var to := float(dc.get_meta("dl_to", 0.0))
+		if not UiStyle.animate:
+			cur = to
+		else:
+			cur = move_toward(cur, to, maxf(absf(to - cur), 0.02) * minf(1.0, delta * 10.0))
+		dc.set_meta("dl_a", cur)
+		dc.queue_redraw()
+		if is_equal_approx(cur, to) and str(dc.get_meta("st", "")) != "downloading":
+			_dl_cards.erase(id)
+
+
+func _exit_tree() -> void:
+	_set_duck(false)
 
 
 ## Esc: 入力中なら入力を終える。そうでなければ閉じる。
@@ -226,8 +300,23 @@ func handle_escape() -> void:
 ## ダウンロードの状態が変わった(main → 選曲画面 → ここ)。
 func refresh_state(set_id: int) -> void:
 	var c = _cards.get(set_id)
-	if c != null and is_instance_valid(c):
-		_sync_button(c)
+	if c == null or not is_instance_valid(c):
+		return
+	var s: Dictionary = states.get(set_id, {})
+	var st := str(s.get("state", ""))
+	var prev := str(c.get_meta("st", ""))
+	c.set_meta("st", st)
+	if st == "downloading" or st == "queued":
+		c.set_meta("dl_to", float(s.get("frac", 0.0)))
+		_dl_cards[set_id] = true
+	elif st == "done" and prev != "done":   # 取れた: ボタンが緑の「遊ぶ」になり、輪と粒が広がる
+		c.set_meta("dl_to", 1.0)
+		_dl_cards[set_id] = true
+		var b: Control = c.get_meta("btn")
+		var at := b.get_global_rect().get_center() - global_position
+		UiFx.ring(self, at, LazerStyle.GREEN, 16.0, 90.0, 0.55, 2.5)
+		UiFx.burst(self, at, LazerStyle.GREEN, 12, 190.0, 0.55, 3.0)
+	_sync_button(c)
 
 
 # --- カード ---
@@ -238,8 +327,15 @@ func _make_card(it: Dictionary) -> Control:
 	c.mouse_filter = Control.MOUSE_FILTER_PASS
 	c.set_meta("item", it)
 	c.draw.connect(func(): _draw_card(c))
+	c.pivot_offset = c.custom_minimum_size * 0.5
+	c.set_meta("st", str((states.get(int(it.id), {}) as Dictionary).get("state", "")))
 	c.mouse_entered.connect(func(): c.set_meta("hover", true); c.queue_redraw())
-	c.mouse_exited.connect(func(): c.set_meta("hover", false); c.queue_redraw())
+	c.mouse_exited.connect(func():
+		c.set_meta("hover", false)
+		c.set_meta("cover_hover", false)
+		c.mouse_default_cursor_shape = Control.CURSOR_ARROW
+		c.queue_redraw())
+	c.gui_input.connect(func(ev: InputEvent): _card_input(c, ev))
 	var b := LazerButton.new("", LazerStyle.PINK, "download")
 	b.font_size = 15
 	b.slant = 10.0
@@ -298,11 +394,18 @@ func _draw_card(c: Control) -> void:
 	var h := c.size.y
 	c.draw_style_box(LazerStyle.box(Color(1, 1, 1, 0.10 if hover else 0.06), LazerStyle.PINK if hover else LazerStyle.LINE, 1, 10), Rect2(0, 0, w, h))
 	var tex := search.cover(int(it.id), str(it.cover))
-	var cr := Rect2(8, 8, h - 16, h - 16)
-	if tex != null:
-		c.draw_texture_rect(tex, cr, false)
-	else:
+	var cr := _cover_rect()
+	var ca := float(c.get_meta("cover_a", 1.0))
+	if tex == null or ca < 1.0:
 		c.draw_rect(cr, LazerStyle.title_color(str(it.title)).darkened(0.55))
+	if tex != null:
+		c.draw_texture_rect(tex, cr, false, Color(1, 1, 1, ca))
+	_draw_preview_overlay(c, it, cr)
+	if str(c.get_meta("st", "")) == "downloading":   # ダウンロードの進み(カードの下端の棒)
+		var bx := cr.end.x + 14.0
+		var bw := w - bx - 12.0
+		c.draw_rect(Rect2(bx, h - 7.0, bw, 3.0), Color(1, 1, 1, 0.08))
+		c.draw_rect(Rect2(bx, h - 7.0, bw * clampf(float(c.get_meta("dl_a", 0.0)), 0.0, 1.0), 3.0), LazerStyle.PINK)
 	var f := LazerStyle.font()
 	var fb := LazerStyle.font_bold()
 	var x := cr.end.x + 14.0
@@ -333,3 +436,188 @@ static func _short(n: int) -> String:
 	if n >= 1000:
 		return "%.1fK" % (n / 1000.0)
 	return str(n)
+
+
+# --- 試聴(ジャケットを押すと流れる) ---
+
+static func _cover_rect() -> Rect2:
+	return Rect2(8, 8, CARD_H - 16.0, CARD_H - 16.0)
+
+
+func _card_input(c: Control, ev: InputEvent) -> void:
+	var cr := _cover_rect()
+	if ev is InputEventMouseMotion:
+		var over := cr.has_point(ev.position)
+		if over != bool(c.get_meta("cover_hover", false)):
+			c.set_meta("cover_hover", over)
+			c.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if over else Control.CURSOR_ARROW
+			c.queue_redraw()
+	elif ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT and cr.has_point(ev.position):
+		if ev.pressed:
+			c.set_meta("press_at", ev.position)
+		elif c.has_meta("press_at"):
+			var moved := (c.get_meta("press_at") as Vector2).distance_to(ev.position)
+			c.remove_meta("press_at")
+			if moved < 6.0:   # ドラッグ(一覧のスクロール)ではなく、押した
+				toggle_preview(int((c.get_meta("item") as Dictionary).id))
+				c.accept_event()
+
+
+## その曲の試聴を流す。いま流している曲なら止める。
+func toggle_preview(set_id: int) -> void:
+	if _pv_id == set_id:
+		_stop_preview()
+		return
+	_stop_preview(true)
+	_pv_id = set_id
+	_pv_state = "loading"
+	UiSfx.play("select")
+	_redraw_card(set_id)
+	search.fetch_preview(set_id)
+
+
+func _on_preview_ready(set_id: int, stream: AudioStream) -> void:
+	if set_id != _pv_id:
+		return
+	_pv_state = "playing"
+	_set_duck(true)
+	if _pv_tw != null:
+		_pv_tw.kill()
+	_pv_player.stream = stream
+	_pv_player.volume_db = -40.0 if UiStyle.animate else PREVIEW_DB
+	_pv_player.play()
+	if UiStyle.animate:
+		_pv_tw = _pv_player.create_tween()
+		_pv_tw.tween_property(_pv_player, "volume_db", PREVIEW_DB, PREVIEW_FADE * 2.0)
+	_redraw_card(set_id)
+
+
+func _on_preview_failed(set_id: int) -> void:
+	if set_id != _pv_id:
+		return
+	_pv_id = 0
+	_pv_state = ""
+	_set_duck(false)
+	var c = _cards.get(set_id)
+	if c != null and is_instance_valid(c):
+		c.set_meta("pv_msg", true)   # 「プレビューなし」を、しばらくカードに出す
+		c.queue_redraw()
+		get_tree().create_timer(2.5).timeout.connect(func():
+			if is_instance_valid(c):
+				c.set_meta("pv_msg", false)
+				c.queue_redraw())
+
+
+## 試聴を止める(小さくして止める)。switching = true: すぐ別の曲の試聴を始めるので、選曲画面の曲は小さいままにする。
+func _stop_preview(switching := false) -> void:
+	if _pv_id == 0:
+		return
+	var old := _pv_id
+	var was_playing := _pv_state == "playing"
+	search.cancel_preview()
+	_pv_id = 0
+	_pv_state = ""
+	if was_playing:
+		if _pv_tw != null:
+			_pv_tw.kill()
+		if UiStyle.animate and is_inside_tree():
+			_pv_tw = _pv_player.create_tween()
+			_pv_tw.tween_property(_pv_player, "volume_db", -40.0, PREVIEW_FADE)
+			_pv_tw.tween_callback(_pv_player.stop)
+		else:
+			_pv_player.stop()
+	if not switching:
+		_set_duck(false)
+	_redraw_card(old)
+
+
+## 閉じる前に呼ぶ: 試聴を、フェードして止める。
+func stop_preview() -> void:
+	_stop_preview()
+
+
+func _set_duck(on: bool) -> void:
+	if on != _ducked:
+		_ducked = on
+		preview_changed.emit(on)
+
+
+func _redraw_card(set_id: int) -> void:
+	var c = _cards.get(set_id)
+	if c != null and is_instance_valid(c):
+		c.queue_redraw()
+
+
+## ジャケットの上: マウスを乗せると ▶、読み込み中は回る輪、流れている間は ❚❚・棒(イコライザー風)・進みの線
+func _draw_preview_overlay(c: Control, it: Dictionary, cr: Rect2) -> void:
+	var active := int(it.id) == _pv_id
+	var over := bool(c.get_meta("cover_hover", false))
+	var ctr := cr.get_center()
+	var t := Time.get_ticks_msec() / 1000.0
+	if active or over:
+		c.draw_rect(cr, Color(0, 0, 0, 0.5 if active else 0.38))
+		if active and _pv_state == "loading":
+			c.draw_arc(ctr, 13.0, t * 5.0, t * 5.0 + PI * 1.3, 24, Color(1, 1, 1, 0.9), 2.5, true)
+		elif active:
+			c.draw_rect(Rect2(ctr.x - 8.0, ctr.y - 9.0, 5.0, 18.0), Color.WHITE)
+			c.draw_rect(Rect2(ctr.x + 3.0, ctr.y - 9.0, 5.0, 18.0), Color.WHITE)
+		else:
+			c.draw_colored_polygon(PackedVector2Array([ctr + Vector2(-6, -10), ctr + Vector2(10, 0), ctr + Vector2(-6, 10)]), Color.WHITE)
+	if active and _pv_state == "playing":
+		for k in range(4):   # 棒は、音そのものではなく、ゆるやかに伸び縮みする飾り
+			var hh := 5.0 + 9.0 * (0.5 + 0.5 * sin(t * (4.1 + k * 1.3) + k * 1.7))
+			c.draw_rect(Rect2(cr.position.x + 6.0 + k * 7.0, cr.end.y - 8.0 - hh, 4.0, hh), Color(LazerStyle.PINK.r, LazerStyle.PINK.g, LazerStyle.PINK.b, 0.95))
+		var plen := _pv_player.stream.get_length() if _pv_player.stream != null else 0.0
+		if plen > 0.0:
+			var frac := clampf(_pv_player.get_playback_position() / plen, 0.0, 1.0)
+			c.draw_rect(Rect2(cr.position.x, cr.end.y - 3.0, cr.size.x, 3.0), Color(0, 0, 0, 0.5))
+			c.draw_rect(Rect2(cr.position.x, cr.end.y - 3.0, cr.size.x * frac, 3.0), LazerStyle.PINK)
+	if bool(c.get_meta("pv_msg", false)):
+		c.draw_rect(cr, Color(0, 0, 0, 0.6))
+		c.draw_string(LazerStyle.font(), Vector2(cr.position.x, ctr.y + 5.0), "なし", HORIZONTAL_ALIGNMENT_CENTER, cr.size.x, 13, LazerStyle.TEXT_DIM)
+
+
+# --- 読み込み中の仮カード ---
+
+func _show_skeleton(on: bool) -> void:
+	if _skel_tw != null:
+		_skel_tw.kill()
+	if on:
+		_skel.modulate.a = 1.0
+		_skel.visible = true
+	elif _skel.visible:
+		if UiStyle.animate and is_inside_tree():
+			_skel_tw = _skel.create_tween()
+			_skel_tw.tween_property(_skel, "modulate:a", 0.0, 0.18)
+			_skel_tw.tween_callback(func(): _skel.visible = false)
+		else:
+			_skel.visible = false
+
+
+func _draw_skeleton() -> void:
+	var t := Time.get_ticks_msec() / 1000.0
+	for r in range(SKEL_ROWS):
+		for col in range(2):
+			var o := Vector2(col * (CARD_W + GAP), r * (CARD_H + 10.0))
+			_skel.draw_style_box(LazerStyle.box(Color(1, 1, 1, 0.04), LazerStyle.LINE, 1, 10), Rect2(o, Vector2(CARD_W, CARD_H)))
+			_skel.draw_rect(Rect2(o + Vector2(8, 8), Vector2(CARD_H - 16, CARD_H - 16)), Color(1, 1, 1, 0.05))
+			var x := o.x + CARD_H + 6.0
+			_skel.draw_rect(Rect2(x, o.y + 16.0, 260.0 - col * 40.0 + (r % 3) * 30.0, 14.0), Color(1, 1, 1, 0.06))
+			_skel.draw_rect(Rect2(x, o.y + 38.0, 180.0 + (r % 2) * 60.0, 10.0), Color(1, 1, 1, 0.045))
+			_skel.draw_rect(Rect2(x, o.y + 62.0, 120.0, 10.0), Color(1, 1, 1, 0.04))
+			# 光の帯が、左から右へ流れる(行ごとに少しずれて、波のように)
+			var u := fposmod(t * 0.7 - r * 0.10 - col * 0.05, 1.7) - 0.35
+			var bx := o.x + u * (CARD_W + 80.0)
+			var band := PackedVector2Array([Vector2(bx + 40.0, o.y), Vector2(bx + 110.0, o.y), Vector2(bx + 70.0, o.y + CARD_H), Vector2(bx, o.y + CARD_H)])
+			var card := PackedVector2Array([o, o + Vector2(CARD_W, 0), o + Vector2(CARD_W, CARD_H), o + Vector2(0, CARD_H)])
+			for part in Geometry2D.intersect_polygons(card, band):
+				if _area(part) > 4.0:   # 端にかかって潰れた形は、描かない(三角形に分けられない)
+					_skel.draw_colored_polygon(part, Color(1, 1, 1, 0.06))
+
+
+static func _area(p: PackedVector2Array) -> float:
+	var a := 0.0
+	for i in range(p.size()):
+		var q := p[(i + 1) % p.size()]
+		a += p[i].x * q.y - q.x * p[i].y
+	return absf(a) * 0.5

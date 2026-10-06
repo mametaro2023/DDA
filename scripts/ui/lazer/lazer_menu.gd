@@ -194,6 +194,7 @@ var _launching := false
 ## 曲の ID → ダウンロードの状態(main の fetch_states と同じ辞書。「探す」の行に出す)
 var fetch_states := {}
 var _finder: Control               # 「探す」タブの中身(開いている間だけある)
+var _duck_tw: Tween                # 「探す」の試聴のあいだ、選曲の曲を小さくする動き
 var _tabs: Array = []              # 上のツールバーのタブ [ソロ, 探す](Button)
 var _tab_line: ColorRect           # 選んでいるタブの下線
 var _owned := {}                   # 「アーティスト|曲名」(小文字)→ 一覧の曲のパス(「探す」で、入っている曲を見分ける)
@@ -2592,11 +2593,13 @@ func _set_tab(i: int) -> void:
 				_select_song(k)
 				_center_selected())
 		_finder.closed.connect(func(): _set_tab(0))
+		_finder.preview_changed.connect(_on_finder_preview)
 		add_child(_finder)   # いちばん上に重ねる(ツールバーの下から。タブは押せるまま)
 		UiSfx.play("open")
 	else:
 		var f := _finder
 		_finder = null
+		f.stop_preview()   # 「探す」の試聴は、フェードして止まる(選曲の曲は戻る)
 		if UiStyle.animate:
 			f.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			var tw := f.create_tween()
@@ -2612,6 +2615,20 @@ func _set_tab(i: int) -> void:
 func on_fetch_state(set_id: int, _s: Dictionary) -> void:
 	if _finder != null:
 		_finder.refresh_state(set_id)
+
+
+## 「探す」で試聴が流れている間は、選曲画面の曲を小さくする(止まったら戻す)。
+func _on_finder_preview(on: bool) -> void:
+	if _launching or _audio == null:
+		return
+	var to := -40.0 if on else -6.0
+	if _duck_tw != null:
+		_duck_tw.kill()
+	if UiStyle.animate and is_inside_tree():
+		_duck_tw = create_tween()
+		_duck_tw.tween_property(_audio, "volume_db", to, 0.3)
+	else:
+		_audio.volume_db = to
 
 
 ## 「探す」の曲が、もう一覧にあるか(アーティストと曲名が同じ曲。あればそのパス)。

@@ -95,7 +95,8 @@ func _draw() -> void:
 				var x0 := lerpf(-bw - slant, w, u)
 				var band := PackedVector2Array([Vector2(x0 + slant, 0), Vector2(x0 + slant + bw, 0), Vector2(x0 + bw, h), Vector2(x0, h)])
 				for part in Geometry2D.intersect_polygons(poly, band):
-					draw_colored_polygon(part, Color(1, 1, 1, 0.22))
+					if part.size() >= 3 and absf((part[1] - part[0]).cross(part[2] - part[0])) > 4.0:   # 端にかかって潰れた形は描かない
+						draw_colored_polygon(part, Color(1, 1, 1, 0.22))
 	var f := LazerStyle.font_bold()
 	var cap := caption if caption != "" else text.get_slice("   [", 0)   # caption が空なら、Button の text を使う(キーの案内の「   [Space]」より後ろは出さない)
 	if stacked:

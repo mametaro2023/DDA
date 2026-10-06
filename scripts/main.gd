@@ -1322,6 +1322,14 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				var t0 := Time.get_ticks_msec()
 				while Time.get_ticks_msec() - t0 < 6000:
 					await get_tree().process_frame
+				if extra.has("preview"):   # 1 つめの曲の試聴を流す(実際に b.ppy.sh から取る): --shot menu out.png finder preview
+					var pc: Array = _current._finder._grid.get_children()
+					if not pc.is_empty():
+						_current._finder.toggle_preview(int(pc[0].get_meta("item").id))
+						t0 = Time.get_ticks_msec()
+						while Time.get_ticks_msec() - t0 < 4000:
+							await get_tree().process_frame
+						print("finder preview: state=", _current._finder._pv_state, " playing=", _current._finder._pv_player.playing, " menu_db=", _current._audio.volume_db)
 				if extra.has("dl"):   # 2 つめの曲を、実際にミラーから取る(同意は済んだことにする。設定には保存しない): --shot menu out.png finder dl
 					_current.settings.mirror_consent = true
 					var cards: Array = _current._finder._grid.get_children()

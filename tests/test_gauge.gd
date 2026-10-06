@@ -337,8 +337,8 @@ func _init() -> void:
 	_check(none.size_mul == 1.0 and none.drain_time == GameSim.GAUGE_DRAIN_TIME and none.low_protect and none.score_mul == 1.0,
 		"MOD なしは既定の設定")
 	var hell: Dictionary = Mods.params(["hell", "v1"])
-	_check(hell.size_mul == 1.35 and absf(hell.drain_time - 0.15) < 1e-9 and not hell.low_protect and absf(hell.score_mul - 1.08) < 1e-9,
-		"地獄: 弾サイズ ×1.35 / 体力 150ms / 低体力の半減なし / ベーススコア ×1.08")
+	_check(hell.size_mul == 1.35 and absf(hell.drain_time - 0.15) < 1e-9 and not hell.low_protect and absf(hell.score_mul - 1.09) < 1e-9,
+		"地獄: 弾サイズ ×1.35 / 体力 150ms / 低体力の半減なし / ベーススコア ×1.09")
 	_check(Mods.params(["hell", "hell", "nope"]).ids == ["hell"], "重複・未知の MOD id は無視する")
 
 	# 17) 地獄: 当たり続けると 150ms でゲージ 0(半減がないので、20% 以下でも減る速さは変わらない)
@@ -367,21 +367,21 @@ func _init() -> void:
 	now = _run(sim, now, 1)
 	_check(absf((g_prev - sim.gauge) - full_step) < 0.001, "地獄: ゲージ 20%% 以下(%.2f)でも被ダメージは半減しない: 1 フレームで %.4f" % [g_prev, g_prev - sim.gauge])
 
-	# 18) 地獄: ベーススコア +8%。グレイズのボーナスは別(+30,000 のまま)、被ダメージ係数は全体にかかる
+	# 18) 地獄: ベーススコア +9%。グレイズのボーナスは別(+30,000 のまま)、被ダメージ係数は全体にかかる
 	a = _make(false, 10.0, [], [], hell)
 	sim = a[0]
 	sim.graze = 100000
 	now = _run(sim, 0.0, 10)
-	_check(absf(sim.score_gross - (1080000.0 + 30000.0)) < 0.5, "地獄: 係数を掛ける前の点数 = 1,080,000 + グレイズ 30,000 (%.0f)" % sim.score_gross)
+	_check(absf(sim.score_gross - (1090000.0 + 30000.0)) < 0.5, "地獄: 係数を掛ける前の点数 = 1,090,000 + グレイズ 30,000 (%.0f)" % sim.score_gross)
 	a = _make(false, 10.0, [], [], hell)
 	sim = a[0]
 	now = 0.0
 	while not sim.finished:
 		sim.step(now, DT, Vector2.ZERO, false)
 		now += DT
-	_check(absf(sim.score - 1080000.0) < 0.5 and not sim.failed, "地獄: ノーダメージ・グレイズなしの完走は 1,080,000 (%.0f)" % sim.score)
+	_check(absf(sim.score - 1090000.0) < 0.5 and not sim.failed, "地獄: ノーダメージ・グレイズなしの完走は 1,090,000 (%.0f)" % sim.score)
 
-	# 19) 効果の合成(すべて乗算)。ベーススコアは 暴風雨(1.11)と巨人(1.07)なら 1.11 × 1.07
+	# 19) 効果の合成(すべて乗算)。ベーススコアは 暴風雨(1.11)と巨人(1.09)なら 1.11 × 1.09
 	var storm: Dictionary = Mods.params(["storm"])
 	# 弾速の倍率(speed_mul)は MOD の効果の 1 つとして残してある。単独で付ける MOD は今はないので、合成の辞書を直接作って確かめる
 	var gale: Dictionary = Mods.params(["storm"])
@@ -391,11 +391,11 @@ func _init() -> void:
 	var rush: Dictionary = Mods.params(["rush"])
 	_check(storm.count_mul == 1.5 and storm.speed_mul == 1.5 and absf(storm.score_mul - 1.11) < 1e-9, "暴風雨: 弾の量 ×1.5(+50%) / 弾の速度 ×1.5(+50%) / ベーススコア ×1.11")
 	_check(Mods.find("gale").is_empty(), "疾風は暴風雨に統合された(単独の MOD としてはない)")
-	_check(giant.player_scale == 2.0 and absf(giant.score_mul - 1.07) < 1e-9, "巨人: 自機サイズ ×2(+100%) / ベーススコア ×1.07")
+	_check(giant.player_scale == 2.0 and absf(giant.score_mul - 1.09) < 1e-9, "巨人: 自機サイズ ×2(+100%) / ベーススコア ×1.09")
 	_check(rush.rate == 1.5 and absf(rush.score_mul - 1.06) < 1e-9, "加速: 再生速度 ×1.5 / ベーススコア ×1.06")
-	_check(absf(Mods.params(["storm", "giant"]).score_mul - 1.11 * 1.07) < 1e-9, "暴風雨 + 巨人は 1.11 × 1.07 = %.4f" % (1.11 * 1.07))
+	_check(absf(Mods.params(["storm", "giant"]).score_mul - 1.11 * 1.09) < 1e-9, "暴風雨 + 巨人は 1.11 × 1.09 = %.4f" % (1.11 * 1.09))
 	var all4: Dictionary = Mods.params(["hell", "storm", "giant", "rush"])
-	_check(absf(all4.score_mul - 1.08 * 1.11 * 1.07 * 1.06) < 1e-9, "4 つ重ねると 1.08 × 1.11 × 1.07 × 1.06 = %.4f" % all4.score_mul)
+	_check(absf(all4.score_mul - 1.09 * 1.11 * 1.09 * 1.06) < 1e-9, "4 つ重ねると 1.09 × 1.11 × 1.09 × 1.06 = %.4f" % all4.score_mul)
 	_check(all4.size_mul == 1.35 and all4.count_mul == 1.5 and all4.speed_mul == 1.5 and all4.player_scale == 2.0 and all4.rate == 1.5,
 		"重ねても、それぞれの効果は自分の倍率のまま")
 	_check(Mods.names(["hell", "rush"]) == "地獄 + 加速", "MOD 名の表示")
@@ -649,8 +649,8 @@ func _init() -> void:
 	now = _run(sim, now, 300)
 	_check(sim.gauge == g0 and g0 < 1.0, "無回復: 被弾したあと 5 秒たっても回復しない (%.3f → %.3f)" % [g0, sim.gauge])
 	var heaven: Dictionary = Mods.params(["heaven", "v1"])
-	_check(is_equal_approx(heaven.size_mul, 0.7) and absf(heaven.drain_time - 0.5) < 1e-9 and heaven.low_protect and absf(heaven.low_threshold - 0.35) < 1e-9 and absf(heaven.score_mul - 0.65) < 1e-9,
-		"天国: 弾サイズ ×0.7 / 体力 500ms / 半減は 35%% 以下から / ベーススコア ×0.65")
+	_check(is_equal_approx(heaven.size_mul, 0.7) and absf(heaven.drain_time - 0.5) < 1e-9 and heaven.low_protect and absf(heaven.low_threshold - 0.35) < 1e-9 and absf(heaven.score_mul - 0.6) < 1e-9,
+		"天国: 弾サイズ ×0.7 / 体力 500ms / 半減は 35%% 以下から / ベーススコア ×0.6")
 	_check(absf(Mods.params(["heaven"]).drain_time - 0.6) < 1e-9, "天国 + 弾幕 v2(初期状態)は 500ms × 1.2 = 600ms")
 	a = _make(true, 10.0, [], [], heaven)
 	sim = a[0]

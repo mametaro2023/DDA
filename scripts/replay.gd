@@ -36,17 +36,18 @@ static var force_record := false
 
 
 ## ゲームの組み立て(弾幕・MOD・シム)。プレイ画面と、リプレイの再生が、同じ手順で同じ sim を作る。
-## settings は mods / density_mul を使う。study_cond: 弾速の実験の条件("" なら通常)。pre: 選曲で作っておいた {gen}(同じ作り方のときだけ使う)。
+## settings は mods / density_mul / size_exp(Lv の弾サイズの指数。リプレイは記録したときの値。省略は PatternGen.SIZE_EXP)を使う。study_cond: 弾速の実験の条件("" なら通常)。pre: 選曲で作っておいた {gen}(同じ作り方のときだけ使う)。
 ## 戻り値: {sim, gen, mods, rate, end_time}
 static func build_game(field: Node2D, bm, settings: Dictionary, study_cond: String, pre: Dictionary, practice_extra := false) -> Dictionary:
 	var dm := float(settings.get("density_mul", 1.0))
 	var sc: Dictionary = SpeedStudy.CONDITIONS.get(study_cond, SpeedStudy.CONDITIONS.base)
-	var plain := is_equal_approx(dm, 1.0) and is_equal_approx(sc.speed_mul, 1.0) and is_equal_approx(sc.density_mul, 1.0)
+	var sexp := float(settings.get("size_exp", PatternGen.SIZE_EXP))
+	var plain := is_equal_approx(dm, 1.0) and is_equal_approx(sc.speed_mul, 1.0) and is_equal_approx(sc.density_mul, 1.0) and is_equal_approx(sexp, PatternGen.SIZE_EXP)
 	var mods := Mods.params(settings.get("mods", []))
 	var v2: bool = mods.gen_v2   # MOD「弾幕 v2」: 弾幕の作り方そのものを切り替える(選曲で作ったものも、同じ作り方のときだけ使う)
 	var pre_gen: Dictionary = pre.get("gen", {})
 	var same_style := (str(pre_gen.get("style", "v1")) == "v2") == v2
-	var gen_opts := {"density_mul": dm * float(sc.density_mul), "speed_mul": float(sc.speed_mul)}
+	var gen_opts := {"density_mul": dm * float(sc.density_mul), "speed_mul": float(sc.speed_mul), "size_exp": sexp}
 	var gen: Dictionary = pre_gen if (not pre_gen.is_empty() and plain and same_style) else (PatternGenV2.generate(bm, gen_opts) if v2 else PatternGen.generate(bm, gen_opts))
 	gen = Mods.apply(gen, mods)   # MOD を掛け、その弾幕で難易度(Lv)を測り直す
 	var rate: float = mods.rate
@@ -268,6 +269,14 @@ class Player extends RefCounted:
 
 
 # --- ファイル ---
+
+## リプレイの settings(弾幕の作り方)。Lv の弾サイズの指数を記録していない前の版のリプレイは、前の指数(SIZE_EXP_LEGACY)で作る(同じ弾幕になる)。
+static func play_settings(d: Dictionary) -> Dictionary:
+	var st: Dictionary = (d.get("settings", {}) as Dictionary).duplicate()
+	if not st.has("size_exp"):
+		st["size_exp"] = PatternGen.SIZE_EXP_LEGACY
+	return st
+
 
 ## 保存する中身を作る。meta: {md5, title, artist, version(難易度名), settings, cond, fp}。stats: GameScreen._stats()(bg は除く)。
 static func make_data(rec: Recorder, meta: Dictionary, stats: Dictionary) -> Dictionary:

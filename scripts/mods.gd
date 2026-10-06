@@ -36,6 +36,9 @@ const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 ##   天国: Lv −15%(弾サイズ)に加え、倒れるまでの被弾時間が約 2.25 倍(360 → 810ms。地獄の 0.5 倍の逆向き。地獄の +5% に当たる分が約 −6%)。
 ##         0.2 倍の決まりなら約 −9%。ボットが倒れた数は 15 → 0(どの MOD よりも易しい)。→ −35%(倒れない「練習」の −50% よりは小さく)
 ##   無回復: ボットが倒れた数は 15 → 26(加速と同じくらい)だが、加算はユーザーの指定で +3%
+## v0.15(SIZE_EXP 1.0 → 1.3)で測り直した(mods jobs=14 sexp=1.0 と 1.3 を、同じ 46 譜面・同じ測り方で比べた。Lv の比は v2 の表で数える):
+##   MOD で上がる Lv: 巨人 +42.5% → +57.4%(1.35 倍)/ 地獄 +19.5% → +25.1%(1.29 倍)/ 天国 −16.2% → −21.2%(1.31 倍)。暴風雨・加速・減速は ±1% 以内で変わらない。
+##   加算の Lv の部分を、この比で大きくした: 巨人 +7% → +9% / 地獄(Lv の部分 +3% → +4%、体力の上乗せ +5% はそのまま)+8% → +9% / 天国 −35% → −40%(同じ 4.4 倍の決まり)。
 ## MOD や譜面の仕様を変えたら、測り直して見直す。
 ## 弾幕 v2(初期状態)の被弾時間の倍率(250ms → 300ms)
 const V2_DRAIN_MUL := 1.2
@@ -43,8 +46,8 @@ const V2_DRAIN_MUL := 1.2
 const ALL := [
 	{
 		"id": "hell", "name": "地獄", "tag": "HELL", "color": Color(1.0, 0.32, 0.3),
-		"desc": "弾サイズ +35% / 体力 150ms / 低体力の被ダメージ半減なし / ベーススコア +8%",
-		"size_mul": 1.35, "drain_time": 0.15, "low_protect": false, "score_mul": 1.08, "excl": ["heaven"],
+		"desc": "弾サイズ +35% / 体力 150ms / 低体力の被ダメージ半減なし / ベーススコア +9%",
+		"size_mul": 1.35, "drain_time": 0.15, "low_protect": false, "score_mul": 1.09, "excl": ["heaven"],
 	},
 	{
 		"id": "storm", "name": "暴風雨", "tag": "STORM", "color": Color(0.5, 0.8, 1.0),
@@ -53,8 +56,8 @@ const ALL := [
 	},
 	{
 		"id": "giant", "name": "巨人", "tag": "GIANT", "color": Color(1.0, 0.75, 0.35),
-		"desc": "自機サイズ +100% / ベーススコア +7%",
-		"player_scale": 2.0, "score_mul": 1.07,
+		"desc": "自機サイズ +100% / ベーススコア +9%",
+		"player_scale": 2.0, "score_mul": 1.09,
 	},
 	{
 		"id": "rush", "name": "加速", "tag": "RUSH", "color": Color(0.82, 0.6, 1.0),
@@ -85,8 +88,8 @@ const ALL := [
 	# 易しくする MOD(ベーススコアは減る)。減らし方は、難しくする MOD の加算より大きくした(上の score_mul の決め方)
 	{
 		"id": "heaven", "name": "天国", "tag": "HEAVEN", "color": Color(1.0, 0.72, 0.88),
-		"desc": "弾サイズ −30% / 体力 500ms / 体力 35% 以下で被ダメージ半減(通常は 20%) / ベーススコア −35%",
-		"size_mul": 0.7, "drain_time": 0.5, "low_threshold": 0.35, "score_mul": 0.65, "excl": ["hell"],
+		"desc": "弾サイズ −30% / 体力 500ms / 体力 35% 以下で被ダメージ半減(通常は 20%) / ベーススコア −40%",
+		"size_mul": 0.7, "drain_time": 0.5, "low_threshold": 0.35, "score_mul": 0.6, "excl": ["hell"],
 	},
 	{
 		"id": "slow", "name": "減速", "tag": "SLOW", "color": Color(0.62, 0.9, 0.45),
@@ -265,11 +268,12 @@ static func apply(gen: Dictionary, p: Dictionary) -> Dictionary:
 		out.breaks = breaks
 	out["time_rate"] = rate
 	# MOD 適用後の弾幕で難易度を測り直す
-	var rating := PatternGen.measure(events, out.get("breaks", []), float(gen.size) * float(p.size_mul) if bool(gen.get("size_weight", false)) else 0.0)   # 休憩地帯は、再生速度を反映したもの。弾幕 v2 は弾ごとの大きさも数える
+	var sexp := float(gen.get("size_exp", PatternGen.SIZE_EXP))   # 弾幕を作ったときと同じ指数で測る(前の版のリプレイは、前の指数)
+	var rating := PatternGen.measure(events, out.get("breaks", []), float(gen.size) * float(p.size_mul) if bool(gen.get("size_weight", false)) else 0.0, sexp)   # 休憩地帯は、再生速度を反映したもの。弾幕 v2 は弾ごとの大きさも数える
 	var speed: float = float(gen.speed) * float(p.speed_mul)
 	var size: float = float(gen.size) * float(p.size_mul)
 	out.rating = rating
 	out.speed = speed
 	out.size = size
-	out.level = PatternGen.level_of(rating.score, speed, size, PatternGen.PLAYER_HIT_R * float(p.player_scale), rating.duration, float(gen.get("speed_ref", PatternGen.BASE_SPEED)), gen.get("table", PatternGen.TARGET_TABLE))
+	out.level = PatternGen.level_of(rating.score, speed, size, PatternGen.PLAYER_HIT_R * float(p.player_scale), rating.duration, float(gen.get("speed_ref", PatternGen.BASE_SPEED)), gen.get("table", PatternGen.TARGET_TABLE), sexp)
 	return out

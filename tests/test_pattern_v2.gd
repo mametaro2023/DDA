@@ -580,10 +580,13 @@ func _test_sizes() -> void:
 		return [{"t": 1.0, "pos": Vector2(480, 360), "warn": true, "shots": [{"n": 40, "speed": 150.0, "a0": 0.0, "spread": TAU, "fan": false, "aim": false, "size": size, "color": 0, "turn": 0.0}], "sfx": ""},
 			{"t": 20.0, "pos": Vector2(480, 360), "warn": true, "shots": [], "sfx": ""},
 			{"t": 21.0, "pos": Vector2(480, 360), "warn": true, "shots": [{"n": 1, "speed": 150.0, "a0": 0.0, "spread": TAU, "fan": false, "aim": false, "size": size, "color": 0, "turn": 0.0}], "sfx": ""}]
-	var small: Dictionary = PatternGen.measure(mk.call(6.0), [], 6.0)
+	var small: Dictionary = PatternGen.measure(mk.call(6.0), [], 6.0)   # 基準の大きさの弾は、指数によらず重み 1
 	var big: Dictionary = PatternGen.measure(mk.call(6.0 * PatternGenV2.SIZE_LARGE), [], 6.0)
-	var ratio := PatternGen.danger_radius(6.0 * PatternGenV2.SIZE_LARGE) / PatternGen.danger_radius(6.0)
-	_check(absf(big.mean / small.mean - ratio) < 0.01, "重み: 大きい弾の mean は %.2f 倍(危険半径の比 %.2f)" % [big.mean / small.mean, ratio])
+	var ratio := pow(PatternGen.danger_radius(6.0 * PatternGenV2.SIZE_LARGE) / PatternGen.danger_radius(6.0), PatternGen.SIZE_EXP)
+	_check(absf(big.mean / small.mean - ratio) < 0.01, "重み: 大きい弾の mean は %.2f 倍(危険半径の比の SIZE_EXP 乗 %.2f)" % [big.mean / small.mean, ratio])
+	var legacy: Dictionary = PatternGen.measure(mk.call(6.0 * PatternGenV2.SIZE_LARGE), [], 6.0, PatternGen.SIZE_EXP_LEGACY)
+	var ratio1 := PatternGen.danger_radius(6.0 * PatternGenV2.SIZE_LARGE) / PatternGen.danger_radius(6.0)
+	_check(absf(legacy.mean / small.mean - ratio1) < 0.01, "前の指数(1.0)を渡すと、危険半径の比そのもの(%.2f 倍。前の版のリプレイ用)" % (legacy.mean / small.mean))
 	_check(is_equal_approx(PatternGen.measure(mk.call(6.0)).mean, PatternGen.measure(mk.call(6.0 * PatternGenV2.SIZE_LARGE)).mean), "size_ref なし(v1)では、弾の大きさは数えない")
 
 

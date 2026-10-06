@@ -88,7 +88,7 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 			break
 		# 遅い弾は画面に長く残るので、弾数を最小まで減らしても Lv(= 画面内の弾数)が★の目標に下がりきらない譜面がある(低 ★ × 低 AR)。
 		# そのときだけ、目標に届くまで弾速を AR の値から上げる(Lv が★に合うことを優先する。ほとんどの譜面は AR のまま)
-		var dev: float = float(PatternGen.level_of(out.rating.score, out.speed, out.size, PatternGen.PLAYER_HIT_R, PatternGen.LENGTH_REF, out.speed_ref, out.table)) / maxf(float(out.target_level), 0.01) - 1.0
+		var dev: float = float(PatternGen.level_of(out.rating.score, out.speed, out.size, PatternGen.PLAYER_HIT_R, PatternGen.LENGTH_REF, out.speed_ref, out.table, float(out.size_exp))) / maxf(float(out.target_level), 0.01) - 1.0
 		if dev <= SPEED_FIT_TOL:
 			break
 		sk = minf(sk * maxf(pow(1.0 + dev, 1.5), 1.05), 1.0)

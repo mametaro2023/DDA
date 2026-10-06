@@ -43,7 +43,8 @@ const SPEED_VAR := 0.15
 ## 0.5 では速い弾ほど Lv が下がってしまうため 1 を超える値にした(1.5 は大きすぎたので 1.25)(MOD「暴風雨」の弾速上昇で顕在化)。実測が難しいので控えめな値。
 const SPEED_EXP := 1.25
 ## 危険半径 = 弾の当たり判定半径 + 自機の当たり判定半径(実際の当たり判定と同じ式。HIT_SCALE は bullet_field.gd と同じ値。tests/test_rating.gd で確かめる)。
-## Lv は危険半径の SIZE_EXP 乗に比例する(ボット実験: 弾サイズ 4 倍の幅 ≒ 弾数 2.5 倍の幅で、指数はおよそ 1)。
+## Lv は危険半径の SIZE_EXP 乗に比例する。1.3: ボットで弾数・弾サイズを少しずつ変えて被弾の増え方を比べた値(tools/difficulty_study.gd の elastic。
+## 強い・弱い・人間に近いボットで 1.0〜1.8、多くは 1.3 前後。v0.14 までは 1.0)。弾 1 発の大きさの重み(_weight)と、弾サイズの吸収も、この指数で数える。
 const HIT_SCALE := 0.7
 const PLAYER_HIT_R := 3.5
 ## 実際の弾・自機の大きさの倍率(見た目と当たり判定。game_sim.gd はこの値を使う)。v0.5.0 で、表示する Lv は変えずに、実際の大きさだけを大きくした
@@ -52,9 +53,9 @@ const PLAYER_HIT_R := 3.5
 const BULLET_SIZE_MUL := 1.25
 const PLAYER_SIZE_MUL := 1.15
 const DANGER_REF := HIT_SCALE * BULLET_SIZE_MUL * 6.75 + PLAYER_HIT_R * PLAYER_SIZE_MUL   # 弾サイズ 6.75 のときの危険半径
-const SIZE_EXP := 1.0
-## 実際に使う指数(ふだんは SIZE_EXP。調査ツール tools/difficulty_study.gd の sizeexp が、別の値で Lv を試すために差し替える)
-static var size_exp := SIZE_EXP
+const SIZE_EXP := 1.3
+## v0.14 までの SIZE_EXP。この指数を記録していない(前の版の)リプレイは、これで弾幕を作り直す(Replay.build_game)
+const SIZE_EXP_LEGACY := 1.0
 const SIZE_ABSORB_MIN := 0.6
 const SIZE_ABSORB_MAX := 1.4
 ## 星(基準)が変わったとき、これ以上は Lv を追わない
@@ -127,7 +128,8 @@ static func to_arena(p: Vector2) -> Vector2:
 ##       density_mul(目標の弾数にかかる倍率), size_mul(弾サイズの倍率。実験用),
 ##       speed_mul(弾速の倍率。弾速の実験用(scripts/speed_study.gd)。目標の Lv は変えないので、弾数が自動で増減して同じ Lv になる),
 ##       speed_k(基準の弾速に掛ける倍率。省略は★に応じた SPEED_VAR の範囲。弾幕 v2 は譜面の AR から決めて渡す),
-##       speed_ref(Lv の弾速補正が 1 になる基準の弾速。省略は BASE_SPEED。弾幕 v2 は AR の弾速を渡す = AR の違いは Lv に入れない。speed_mul はその上で効く)
+##       speed_ref(Lv の弾速補正が 1 になる基準の弾速。省略は BASE_SPEED。弾幕 v2 は AR の弾速を渡す = AR の違いは Lv に入れない。speed_mul はその上で効く),
+##       size_exp(Lv の弾サイズの効きの指数。省略は SIZE_EXP。前の版のリプレイの再生・調査用。結果の "size_exp" に入れ、Mods.apply が同じ指数で測り直す)
 ## 戻り値: events, gizmos, warn_lead, rating{mean,p95,peak,score}, level(Lv), speed, speed_ref, size, stars, target_level
 static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	var stars := reference_stars(bm)
@@ -146,20 +148,21 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	# 1) 弾数の倍率 mul を自動調整して、adj を目標に合わせる
 	var gfn: Callable = opts.get("gen_fn", _generate)
 	var weighted := bool(opts.get("size_weight", false))   # 弾ごとの大きさを Lv に入れる(弾幕 v2)
+	var sexp := float(opts.get("size_exp", SIZE_EXP))
 	var mul := 1.0
 	var out := {}
 	var rating := {}
 	for i in range(6):
 		out = gfn.call(bm, k, mul, speed, size)
-		rating = measure(out.events, br, size if weighted else 0.0)
-		var adj := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref)
+		rating = measure(out.events, br, size if weighted else 0.0, sexp)
+		var adj := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref, sexp)
 		if rating.score < 0.5 or absf(adj - target_adj) <= target_adj * 0.05:
 			break
 		mul = clampf(mul * target_adj / adj, 0.1, 6.0)
 	# 2) 弾数の下限/上限で合わせきれなかった分は、弾サイズで吸収する(弾数 N(t) は変わらない)
-	var adj_now := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref)
+	var adj_now := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref, sexp)
 	if rating.score >= 0.5 and absf(adj_now - target_adj) > target_adj * 0.03:
-		var danger := danger_radius(size) * pow(target_adj / adj_now, 1.0 / size_exp)   # adj は危険半径の size_exp 乗に比例する
+		var danger := danger_radius(size) * pow(target_adj / adj_now, 1.0 / sexp)   # adj は危険半径の sexp 乗に比例する
 		var absorbed := clampf((danger - PLAYER_HIT_R * PLAYER_SIZE_MUL) / (HIT_SCALE * BULLET_SIZE_MUL), size * SIZE_ABSORB_MIN, size * SIZE_ABSORB_MAX)
 		if not is_equal_approx(absorbed, size):
 			size = absorbed
@@ -168,7 +171,8 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	out["size_weight"] = weighted   # Mods.apply が、測り直すときに同じ数え方をする
 	out["rating"] = rating
 	out["breaks"] = br
-	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration, speed_ref, tbl)
+	out["level"] = level_of(rating.score, speed, size, PLAYER_HIT_R, rating.duration, speed_ref, tbl, sexp)
+	out["size_exp"] = sexp   # Mods.apply が、測り直すときに同じ指数を使う
 	out["table"] = tbl   # Mods.apply が、測り直すときに同じ表で Lv にする
 	out["speed"] = speed
 	out["speed_ref"] = speed_ref   # Mods.apply が、測り直すときに同じ基準で補正する
@@ -208,8 +212,8 @@ static func danger_radius(size: float, player_r := PLAYER_HIT_R) -> float:
 
 ## 弾速・弾サイズの補正をかけた難易度スコア adj。
 ## speed_ref = 弾速が補正 1 になる基準(省略は BASE_SPEED)。弾幕 v2 は譜面の AR で決まる弾速を基準にするので、AR の違いは補正に入らない(MOD の弾速の倍率だけが入る)。
-static func adjusted_score(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, speed_ref := BASE_SPEED) -> float:
-	return score * pow(speed / speed_ref, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, size_exp)
+static func adjusted_score(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, speed_ref := BASE_SPEED, sexp := SIZE_EXP) -> float:
+	return score * pow(speed / speed_ref, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, sexp)
 
 
 ## 長さ(持久力)の補正の倍率。duration = 最初のノーツ〜最後の発射の秒数(休憩地帯を除く。0 以下なら補正なし)。
@@ -220,8 +224,8 @@ static func length_factor(duration: float) -> float:
 
 
 ## Lv(本家の星と同じ目盛り)= adj(× 長さの補正)を TARGET_TABLE で逆引きした★換算値から、LEVEL_SHIFT を引いたもの。
-static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF, speed_ref := BASE_SPEED, tbl: Array = TARGET_TABLE) -> float:
-	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r, speed_ref) * length_factor(duration), tbl) - LEVEL_SHIFT, 0.0)
+static func level_of(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, duration := LENGTH_REF, speed_ref := BASE_SPEED, tbl: Array = TARGET_TABLE, sexp := SIZE_EXP) -> float:
+	return maxf(stars_for_score(adjusted_score(score, speed, size, player_r, speed_ref, sexp) * length_factor(duration), tbl) - LEVEL_SHIFT, 0.0)
 
 
 ## TARGET_TABLE(★→スコア)の逆引き。表の外は端の傾きで延長する(下側は原点へ向かう)。
@@ -760,10 +764,10 @@ static func _mark_span(diff: PackedFloat64Array, cells: int, t0: float, t1: floa
 
 ## 弾 1 発の重み(弾幕 v2 の弾サイズの 3 段階)。弾サイズが基準 size_ref と違うぶんを、Lv の弾サイズ補正と同じ式(危険半径の比の SIZE_EXP 乗)で数える。
 ## size_ref <= 0 なら 1(v1 は、弾ごとの大きさを見ない)。
-static func _weight(size: float, size_ref: float) -> float:
+static func _weight(size: float, size_ref: float, sexp := SIZE_EXP) -> float:
 	if size_ref <= 0.0:
 		return 1.0
-	return pow(danger_radius(size) / danger_radius(size_ref), size_exp)
+	return pow(danger_radius(size) / danger_radius(size_ref), sexp)
 
 
 ## Danmaku 難易度 v1: 画面内の弾数 N(t) から {mean, p95, peak, score, duration} を返す(events は時刻順)。
@@ -771,7 +775,7 @@ static func _weight(size: float, size_ref: float) -> float:
 ##   duration = 最初〜最後の発射の秒数から、休憩地帯 breaks([[始まり, 終わり], ...] 秒)と重なる時間を引いたもの(長さの補正に使う)
 ## size_ref > 0(弾幕 v2): 弾 1 発を、弾サイズ(shot.size)と size_ref(基準の弾サイズ)の危険半径の比で重みづけして数える(大きい弾ほど重い)。
 ##   adjusted_score が譜面全体の弾サイズ(size_ref)の補正を掛けるので、弾ごとの違いだけをここで入れる。
-static func measure(events: Array, breaks := [], size_ref := 0.0) -> Dictionary:
+static func measure(events: Array, breaks := [], size_ref := 0.0, sexp := SIZE_EXP) -> Dictionary:
 	if events.is_empty():
 		return {"mean": 0.0, "p95": 0.0, "peak": 0.0, "score": 0.0, "duration": 0.0}
 	# 計測の区間は「最初のノーツ(最初に弾を撃つイベント)」から「最後の発射」まで。
@@ -797,9 +801,9 @@ static func measure(events: Array, breaks := [], size_ref := 0.0) -> Dictionary:
 			var base: float = s.a0
 			if s.aim:
 				base += (AIM_REF - p).angle()
-			var w := _weight(float(s.size), size_ref) if size_ref > 0.0 else 1.0
+			var w := _weight(float(s.size), size_ref, sexp) if size_ref > 0.0 else 1.0
 			if s.has("beh"):   # 弾幕 v2: 挙動のある弾(寿命・子弾を見積もる)
-				var wc := _weight(float(s.size) * BulletField.SPLIT_SIZE, size_ref) if size_ref > 0.0 else 1.0
+				var wc := _weight(float(s.size) * BulletField.SPLIT_SIZE, size_ref, sexp) if size_ref > 0.0 else 1.0
 				for i in range(s.n):
 					_mark_behaving(diff, cells, e.t, p, shot_angle(s, base, i), s, w, wc)
 				continue

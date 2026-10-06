@@ -331,6 +331,7 @@ func setup_replay(p_loader, p_bm, p_settings: Dictionary, data: Dictionary) -> v
 	settings = p_settings.duplicate()
 	settings["mods"] = (data.settings as Dictionary).get("mods", [])
 	settings["density_mul"] = float((data.settings as Dictionary).get("density_mul", 1.0))
+	settings["size_exp"] = float(Replay.play_settings(data).size_exp)   # 前の版のリプレイは、前の指数で弾幕を作る
 	settings["control"] = "keyboard"   # 再生では、マウスを捕まえない(操作パネルを使うため)
 	settings["speed_study"] = false
 
@@ -2273,7 +2274,7 @@ func _save_replay(st: Dictionary) -> void:
 	var rec = _rec
 	_rec = null
 	var meta := {"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version,
-		"settings": {"mods": _mods.ids.duplicate(), "density_mul": float(settings.get("density_mul", 1.0))},
+		"settings": {"mods": _mods.ids.duplicate(), "density_mul": float(settings.get("density_mul", 1.0)), "size_exp": float(gen.get("size_exp", PatternGen.SIZE_EXP))},
 		"cond": _study_cond, "fp": _rp_fp}
 	Replay.prune(Records.replay_names(), 1)
 	var name := Replay.save_async(Replay.make_data(rec, meta, st))

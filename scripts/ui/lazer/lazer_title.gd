@@ -257,6 +257,8 @@ func _restyle(animated: bool) -> void:
 		var b: Control = _cards[i]
 		var sel := i == _sel
 		(b as LazerButton).emphasized = sel
+		if sel:   # 選んだボタンの光が隣に隠れないよう、ボタンの中では最前面へ(パネルは、あとから足されるので、その上に重なる)
+			move_child(b, (_cards.back() as Node).get_index())
 		b.queue_redraw()
 		var to_y := STRIP_Y - 6.0 if sel else STRIP_Y + 8.0
 		var to_h := STRIP_H + 12.0 if sel else STRIP_H - 16.0

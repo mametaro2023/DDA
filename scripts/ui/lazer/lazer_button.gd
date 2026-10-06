@@ -20,7 +20,6 @@ var emphasized := false:
 		if emphasized == v:
 			return
 		emphasized = v
-		z_index = 1 if v else 0   # 光が、隣のボタンの下に隠れないように
 		_sheen_t = 0.0
 		set_process(v and UiStyle.animate)
 		queue_redraw()

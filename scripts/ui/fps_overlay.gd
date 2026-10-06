@@ -5,7 +5,7 @@ extends CanvasLayer
 ##   判定 … プレイ中だけ。弾の動きと当たり判定の計算(GameSim の 1 ステップ)の回数。1 ms 刻みなので、約 1000/s が正常で、
 ##          これが大きく落ちるときは処理が間に合っていない
 
-const GameSim = preload("res://scripts/game/game_sim.gd")
+const GAME_SIM := "res://scripts/game/game_sim.gd"   # 表示するときだけ読む(起動のとき、ゲーム本体まで読み込まないため)
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 
 const INTERVAL := 0.5   # 数え直す間隔(秒)
@@ -59,21 +59,24 @@ func _process(delta: float) -> void:
 		_loops = 0
 		_draws = 0
 		_t = 0.0
-		_steps_before = GameSim.steps_total
+		_steps_before = -1   # 表示を始めたとき、そこから数え直す
 		return
+	if _steps_before < 0:
+		_steps_before = load(GAME_SIM).steps_total
 	_loops += 1
 	_t += delta
 	if _t < INTERVAL:
 		return
 	var text := "描画 %d FPS\n処理 %d FPS" % [int(round(_draws / _t)), int(round(_loops / _t))]
-	var steps := GameSim.steps_total - _steps_before
+	var steps_now: int = load(GAME_SIM).steps_total
+	var steps := steps_now - _steps_before
 	if steps > 0:
 		text += "\n判定 %d /s" % int(round(steps / _t))
 	_label.text = text
 	_loops = 0
 	_draws = 0
 	_t = 0.0
-	_steps_before = GameSim.steps_total
+	_steps_before = steps_now
 
 
 func _unhandled_key_input(event: InputEvent) -> void:

@@ -1,50 +1,42 @@
 extends Node
 ## 画面遷移(メニュー → プレイ → リザルト)。
 
-const TitleScreen = preload("res://scripts/ui/title_screen.gd")
-const MenuScreen = preload("res://scripts/ui/menu_screen.gd")
-const GameScreen = preload("res://scripts/game/game_screen.gd")
+const P_GameScreen := "res://scripts/game/game_screen.gd"
 const RESULT_IN_VIDEO := 7.0   # 動画の最後に撮る、リザルト画面の秒数
-const ResultScreen = preload("res://scripts/ui/result_screen.gd")
-const MultiScreen = preload("res://scripts/ui/multi_screen.gd")
-const NetScript = preload("res://scripts/net/net.gd")
+const P_NetScript := "res://scripts/net/net.gd"
 const SongLibrary = preload("res://scripts/song_library.gd")
-const OszLoader = preload("res://scripts/osu/osz_loader.gd")
+const P_OszLoader := "res://scripts/osu/osz_loader.gd"
 const Settings = preload("res://scripts/settings.gd")
 const UserDirMigrate = preload("res://scripts/user_dir_migrate.gd")
 const FileAssoc = preload("res://scripts/file_assoc.gd")
-const Mods = preload("res://scripts/mods.gd")
-const Boss = preload("res://scripts/game/boss.gd")
+const P_Mods := "res://scripts/mods.gd"
+const P_Boss := "res://scripts/game/boss.gd"
 const SfxBank = preload("res://scripts/sfx_bank.gd")
-const HpGraph = preload("res://scripts/ui/hp_graph.gd")
+const P_HpGraph := "res://scripts/ui/hp_graph.gd"
 const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
 const HitchLog = preload("res://scripts/hitch_log.gd")
 const SongArt = preload("res://scripts/song_art.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const UiSets = preload("res://scripts/ui/ui_sets.gd")
-const Records = preload("res://scripts/records.gd")
-const GameSim = preload("res://scripts/game/game_sim.gd")
-const Replay = preload("res://scripts/replay.gd")
+const P_Records := "res://scripts/records.gd"
+const P_Replay := "res://scripts/replay.gd"
 const UiFx = preload("res://scripts/ui/ui_fx.gd")
 const Volume = preload("res://scripts/volume.gd")
 const NowPlaying = preload("res://scripts/ui/lazer/now_playing.gd")
 const Playlist = preload("res://scripts/playlist.gd")
 const Profile = preload("res://scripts/profile.gd")
-const LazerPlayer = preload("res://scripts/ui/lazer/lazer_player.gd")
-const LazerPlaylist = preload("res://scripts/ui/lazer/lazer_playlist.gd")
-const LazerProfile = preload("res://scripts/ui/lazer/lazer_profile.gd")
+const P_LazerPlayer := "res://scripts/ui/lazer/lazer_player.gd"
+const P_LazerPlaylist := "res://scripts/ui/lazer/lazer_playlist.gd"
+const P_LazerProfile := "res://scripts/ui/lazer/lazer_profile.gd"
 const HudOverlay = preload("res://scripts/ui/hud_overlay.gd")
 const Updater = preload("res://scripts/updater.gd")
 const UPDATE_RECHECK_SEC := 1800.0   # 起動したままの間、新しいバージョンを確かめ直す間隔(GitHub の API は、1 時間に 60 回まで)
 const UPDATE_TOAST_TIME := 7.0       # 新しいバージョンの知らせを出しておく秒数
-const UpdatePanel = preload("res://scripts/ui/update_panel.gd")
-const HowToPanel = preload("res://scripts/ui/howto_panel.gd")
-const OszImport = preload("res://scripts/osz_import.gd")
-const SongDownload = preload("res://scripts/song_download.gd")
+const P_OszImport := "res://scripts/osz_import.gd"
+const P_SongDownload := "res://scripts/song_download.gd"
 const SongSources = preload("res://scripts/song_sources.gd")
 const SingleInstance = preload("res://scripts/single_instance.gd")
 const CursorOverlay = preload("res://scripts/ui/cursor_overlay.gd")
-const OptionsPanel = preload("res://scripts/ui/options_panel.gd")
 const UiSfx = preload("res://scripts/ui/ui_sfx.gd")
 const Juice = preload("res://scripts/ui/juice.gd")
 const ScreenWipe = preload("res://scripts/ui/screen_wipe.gd")
@@ -101,7 +93,7 @@ func _ready() -> void:
 	for a in args:   # 開発用の確認・スクリーンショットでは、使う人のプレイ記録を残さない
 		var a_s := str(a)
 		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
-			Records.enabled = false
+			load(P_Records).enabled = false
 			Playlist.file_path = "user://dev_playlists.json"   # 確認用の起動は、使う人のプレイリストを書き換えない
 			UiSets.override_id = "classic"   # 確認用の起動は、内部の変数を見る確認が多いので classic が既定(--ui で変えられる。下)
 			_play_loader = false   # 確認用の起動は、開始前画面を挟まない(挟むのは、--smoke-loader だけ)
@@ -119,8 +111,8 @@ func _ready() -> void:
 		UiSets.override_id = args[ui_i + 1]
 	var ri := args.find("--replay-export")   # 動画の書き出しの子プロセス(親が --write-movie 付きで起動する)。-- --replay-export <ファイル> <軌道のモード> <軌道の秒> --chart <曲の場所>
 	if ri >= 0 and args.size() > ri + 1:
-		Records.enabled = false
-		Replay.enabled = false
+		load(P_Records).enabled = false
+		load(P_Replay).enabled = false
 		UiSfx.enabled = bool(first_settings.ui_sound)   # リザルト画面の効果音(数え上げ・ランクの判子など)も、動画に入れる
 		SfxBank.preload_all(["pop", "whistle", "clap", "boom", "tick", "hit", "explosion"])
 		add_child(UiSfx.new())
@@ -305,11 +297,29 @@ func _ready() -> void:
 		_on_open_osz(osz)   # 起動したので、取り込んで選曲画面へ
 	else:
 		show_title()
+	_warm_up()
+
+
+## 起動のとき読まなかった画面(選曲・プレイ・リザルト・遊び方など)のスクリプトを、タイトルが出たあとに裏のスレッドで読んでおく。
+## 起動を軽くするため、これらは使うときに load() している。先に読んでおけば、初めて開くときも待たない。
+const WARM_UP_SCRIPTS := [
+	"res://scripts/ui/lazer/lazer_menu.gd", "res://scripts/ui/lazer/lazer_game.gd", "res://scripts/ui/lazer/lazer_result.gd",
+	"res://scripts/ui/lazer/lazer_howto.gd", "res://scripts/ui/lazer/lazer_quit.gd", "res://scripts/ui/lazer/lazer_options.gd",
+	"res://scripts/ui/lazer/lazer_multi.gd", "res://scripts/ui/lazer/lazer_mods.gd", "res://scripts/ui/lazer/lazer_update.gd",
+	"res://scripts/ui/lazer/lazer_loader.gd", "res://scripts/ui/lazer/lazer_playlist.gd", "res://scripts/ui/lazer/lazer_profile.gd",
+	"res://scripts/ui/replay_list.gd", "res://scripts/records.gd", "res://scripts/replay.gd", "res://scripts/mods.gd",
+]
+
+
+func _warm_up() -> void:
+	await get_tree().create_timer(0.5).timeout   # タイトルの最初の動きが始まってから
+	for path in WARM_UP_SCRIPTS:
+		ResourceLoader.load_threaded_request(path)
 
 
 ## 開発用: 実時間で数秒プレイ(音声クロック/入力の確認)。-- --smoke
 func _smoke() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[1]
 	var mouse := OS.get_cmdline_user_args().has("mouse")
@@ -435,7 +445,7 @@ func _on_open_osz(path: String) -> void:
 
 ## このアプリで開く(取り込んで、選曲画面でその曲を選んだ状態にする)。
 func _open_in_dda(path: String) -> void:
-	var r := OszImport.import_file(path)
+	var r = load(P_OszImport).import_file(path)
 	if not r.ok:
 		if overlay != null:
 			overlay.toast(str(r.error))
@@ -469,11 +479,11 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 		UiFx.ring(_current, Vector2(640, 360), UiStyle.ACCENT, 30.0, 560.0, 0.7, 3.0)
 	var imported := 0
 	for i in range(oszs.size() - 1):   # 最後の 1 つ以外は、取り込みだけ
-		if OszImport.import_file(oszs[i]).ok:
+		if load(P_OszImport).import_file(oszs[i]).ok:
 			imported += 1
 	var last: String = oszs[oszs.size() - 1]
 	if _kind == "menu":
-		var r := OszImport.import_file(last)
+		var r = load(P_OszImport).import_file(last)
 		if not r.ok:
 			if overlay != null:
 				overlay.toast(str(r.error))
@@ -546,7 +556,7 @@ func fetch_song_set(set_id: int, label := "", select := true) -> void:
 func _ensure_fetch() -> void:
 	if _fetch != null:
 		return
-	_fetch = SongDownload.new()
+	_fetch = load(P_SongDownload).new()
 	add_child(_fetch)   # main の子なので、画面を移ってもダウンロードは続く
 	_fetch.progress.connect(func(frac: float, text: String):
 		var now := Time.get_ticks_msec()
@@ -685,7 +695,7 @@ func _update_settings_button() -> void:
 ## 設定パネルを開く(section: 0=操作 1=音 2=画面 3=曲 4=その他)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
 func _exit_tree() -> void:
 	SongLibrary.stop_warmup()   # 裏で索引を作っているスレッドを、閉じる前に止める
-	Replay.flush()   # リプレイを書いている途中なら、書き終わるのを待つ
+	load(P_Replay).flush()   # リプレイを書いている途中なら、書き終わるのを待つ
 
 
 func open_settings(section := 0) -> void:
@@ -715,14 +725,14 @@ func open_settings(section := 0) -> void:
 
 ## プレイリストのパネルを開く(上のツールバーのプレイヤーの「≡」)。
 func open_playlist() -> void:
-	_open_aux(LazerPlaylist.new())
+	_open_aux(load(P_LazerPlaylist).new())
 
 
 ## 名前とアイコンを変えるパネルを開く(上のツールバーの右端の名前)。いまの画面が設定の辞書(settings)を持っていれば、それを直接変える。
 func open_profile() -> void:
 	if _current == null:
 		return
-	var p := LazerProfile.new()
+	var p = load(P_LazerProfile).new()
 	var st = _current.get("settings")
 	p.setup(st if st is Dictionary else Settings.load_all())
 	_open_aux(p)
@@ -841,7 +851,7 @@ func show_menu(pick := false) -> void:
 ## 通信層(net.gd)。マルチプレイを開くときに作り、以後は使い回す(部屋を出ても、作り直さない)。
 func _get_net():
 	if net == null:
-		net = NetScript.new()
+		net = load(P_NetScript).new()
 		add_child(net)
 		net.prepare_game.connect(_on_prepare_game)
 		net.left.connect(_on_net_left)
@@ -863,7 +873,7 @@ func _on_song_picked(loader, bm, settings: Dictionary, level: float) -> void:
 	var n = _get_net()
 	if n.is_host():
 		n.set_song({"md5": bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": level, "set_id": bm.beatmapset_id, "map_id": bm.beatmap_id},
-			Mods.multi_ok(settings.mods), 1.0, loader, bm)   # 撃破はひとり用
+			load(P_Mods).multi_ok(settings.mods), 1.0, loader, bm)   # 撃破はひとり用
 	show_multi()
 
 
@@ -930,7 +940,7 @@ func start_game(loader, bm, settings: Dictionary, debug_seek := -1.0, debug_deat
 ## music: クリアで引き継いだ曲(鳴ったまま、リザルトでも流し続ける。メニュー/リトライで消える)。画面は間を置かずに切り替える。
 func show_result(stats: Dictionary, music: AudioStreamPlayer = null) -> void:
 	if not stats.has("new_best"):   # リプレイから戻ったときは、もう記録した
-		stats["new_best"] = Records.record_stats(stats)   # ひとりでクリアしたものだけ記録される(これまでの最高を超えたとき true)
+		stats["new_best"] = load(P_Records).record_stats(stats)   # ひとりでクリアしたものだけ記録される(これまでの最高を超えたとき true)
 	var r = UiSets.current().make_result()
 	r.setup(stats, net)
 	if stats.has("mp"):   # マルチプレイ: ロビーへ戻る(リトライはない)
@@ -952,12 +962,12 @@ func show_result(stats: Dictionary, music: AudioStreamPlayer = null) -> void:
 
 ## リプレイを再生する。name: user://replays/ の中のファイル名。on_close: 閉じたあとに出す画面を作る関数。
 func show_replay(name: String, on_close: Callable) -> void:
-	var data := Replay.load_file(name)
+	var data = load(P_Replay).load_file(name)
 	if data.is_empty():
 		if overlay != null:
 			overlay.toast("リプレイを読めません(消えたか、別のバージョンで作られたものです)")
 		return
-	var found := Replay.find_chart(str(data.md5))
+	var found = load(P_Replay).find_chart(str(data.md5))
 	if found.is_empty():
 		if overlay != null:
 			overlay.toast("このリプレイの曲が見つかりません: %s" % str(data.get("title", "")))
@@ -979,12 +989,12 @@ var _export_timer: Timer
 
 ## 動画の書き出しの子プロセス: 操作パネルなしで、リプレイを 1 倍の速さで最後まで流し、続けてリザルト画面を数秒撮って、自分で終了する。
 func _replay_export_child(path: String, trail_mode: int, trail_sec: float, chart_path := "") -> void:
-	var data := Replay.load_file(path)
+	var data = load(P_Replay).load_file(path)
 	var found := {}
 	if not data.is_empty():
-		found = Replay.open_chart(chart_path, str(data.get("md5", ""))) if chart_path != "" else {}
+		found = load(P_Replay).open_chart(chart_path, str(data.get("md5", ""))) if chart_path != "" else {}
 		if found.is_empty():
-			found = Replay.find_chart(str(data.get("md5", "")))
+			found = load(P_Replay).find_chart(str(data.get("md5", "")))
 	if data.is_empty() or found.is_empty():
 		printerr("replay-export: リプレイまたは曲を読めません: ", path)
 		get_tree().quit(1)
@@ -998,7 +1008,7 @@ func _replay_export_child(path: String, trail_mode: int, trail_sec: float, chart
 		show_result(st, music)   # リザルト画面(ボタンなし)を、数秒撮ってから終わる
 		get_tree().create_timer(RESULT_IN_VIDEO).timeout.connect(func():
 			print("replay-export: UI の効果音 %d 回" % (UiSfx.inst.log.size() if UiSfx.inst != null else -1))
-			Replay.write_progress(1.0)
+			load(P_Replay).write_progress(1.0)
 			get_tree().quit()))
 	_stop_music()
 	_swap(g)
@@ -1030,9 +1040,9 @@ func _replay_export(name: String, data: Dictionary, opts: Dictionary, screen, ch
 	if not OS.has_feature("template"):   # 書き出した版は、自分の中にプロジェクトを持っている
 		args.append_array(["--path", ProjectSettings.globalize_path("res://")])
 	args.append_array(["--write-movie", avi, "--fixed-fps", str(int(opts.get("fps", 60))), "--resolution", "%dx%d" % [int(opts.get("w", 1280)), int(opts.get("h", 720))], "--windowed", "--",
-		"--replay-export", ProjectSettings.globalize_path(Replay.dir.path_join(name)), str(int(opts.get("trail_mode", 1))), str(float(opts.get("trail_sec", 3.0))),
+		"--replay-export", ProjectSettings.globalize_path(load(P_Replay).dir.path_join(name)), str(int(opts.get("trail_mode", 1))), str(float(opts.get("trail_sec", 3.0))),
 		"--chart", chart_path])
-	Replay.write_progress(0.0)
+	load(P_Replay).write_progress(0.0)
 	var pid := OS.create_process(OS.get_executable_path(), args)
 	if pid <= 0:
 		if overlay != null:
@@ -1079,12 +1089,12 @@ func _export_poll() -> void:
 		return
 	if _export.phase == "movie":
 		if OS.is_process_running(int(_export.pid)):
-			_export_status("動画を書き出し中 %d%%(別のウィンドウ。閉じないでください)" % int(Replay.read_progress() * 100.0))
+			_export_status("動画を書き出し中 %d%%(別のウィンドウ。閉じないでください)" % int(load(P_Replay).read_progress() * 100.0))
 			return
 		if not FileAccess.file_exists(str(_export.avi)):
 			_export_finish("動画を書き出せませんでした")
 			return
-		if Replay.read_progress() < 0.98:   # 途中でウィンドウを閉じた
+		if load(P_Replay).read_progress() < 0.98:   # 途中でウィンドウを閉じた
 			DirAccess.remove_absolute(str(_export.avi))
 			_export_finish("動画の書き出しが途中で終わったので、取り消しました")
 			return
@@ -1259,7 +1269,7 @@ func _shot_aux(extra: Array) -> void:
 	if extra.has("seekhot"):   # プレイヤーの線にマウスを乗せた状態(飛ぶ先の時刻)
 		await get_tree().create_timer(2.0).timeout
 		for c in _current.find_children("*", "Control", true, false):
-			if c.get_script() == LazerPlayer:
+			if c.get_script() == load(P_LazerPlayer):
 				c._bar_hover = true
 				c._hover_f = 0.4
 				c._hot = 1.0
@@ -1304,12 +1314,12 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			await _shot_aux(extra)
 		"menu":
 			show_menu()
-			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))   # 例: --shot menu out.png rush storm
+			_current.debug_set_mods(extra.filter(func(x): return not load(P_Mods).find(x).is_empty()))   # 例: --shot menu out.png rush storm
 			if extra.has("toggle"):   # 読み込みのあとで MOD を付ける(弾幕 v1 の入り切りで、曲を読み直す流れ): --shot menu out.png toggle v1
 				while _current._job_pending or _current._diff_cards.is_empty():
 					await get_tree().process_frame
 				print("toggle: 読み込み後 v2=%s Lv=%.2f" % [str(_current._gens_v2), float(_current._ratings[_current._diff_sel].level)])
-				_current.settings.mods = extra.filter(func(x): return not Mods.find(x).is_empty())
+				_current.settings.mods = extra.filter(func(x): return not load(P_Mods).find(x).is_empty())
 				_current._on_mods_changed()
 				while _current._job_pending:
 					await get_tree().process_frame
@@ -1380,7 +1390,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			show_menu()   # 開始前画面(lazer 風)。例: --shot loader out.png rush storm(MOD を付ける)。自動では進まない
 			while _current._job_pending or _current._diff_cards.is_empty():
 				await get_tree().process_frame
-			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
+			_current.debug_set_mods(extra.filter(func(x): return not load(P_Mods).find(x).is_empty()))
 			var info: Dictionary = _current.browser.launch_info()
 			var ld = UiSets.current().make_loader()
 			if ld == null:
@@ -1394,14 +1404,14 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 			show_menu()   # MOD パネル。例: --shot mod out.png rush storm
 			while _current._job_pending or _current._diff_cards.is_empty():   # 曲の読み込みを待つ
 				await get_tree().process_frame
-			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
+			_current.debug_set_mods(extra.filter(func(x): return not load(P_Mods).find(x).is_empty()))
 			_current.open_mods()
 		"options":
 			show_menu()   # 例: --shot options out.png 2(先頭の数字はセクション 0=操作 1=音 2=画面 3=曲 4=その他)
-			_current.debug_set_mods(extra.filter(func(x): return not Mods.find(x).is_empty()))
+			_current.debug_set_mods(extra.filter(func(x): return not load(P_Mods).find(x).is_empty()))
 			_current.open_options(int(extra[0]) if extra.size() > 0 and extra[0].is_valid_int() else 0)
 		"game":
-			var loader := OszLoader.new()
+			var loader = load(P_OszLoader).new()
 			var path := "C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"
 			if extra.size() > 3 and extra[3] == "soleily":
 				path = "C:/Desktop/my_apps/DDA/241526 Soleily - Renatus.osz"
@@ -1413,7 +1423,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				if d.version.contains(want):
 					bm = d
 			var gs := {"offset_ms": 0, "density_mul": 1.0, "eye_comfort": not extra.has("sharp"),   # sharp: 目に優しい表示を切る(既定は入)
-				"mods": extra.filter(func(x): return not Mods.find(x).is_empty())}   # 例: ... Extra 40 hell rush
+				"mods": extra.filter(func(x): return not load(P_Mods).find(x).is_empty())}   # 例: ... Extra 40 hell rush
 			var death_t := -1.0
 			if extra.size() > 2 and extra[2].begins_with("death"):
 				death_t = float(extra[2].trim_prefix("death"))
@@ -1476,7 +1486,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 					for k in range(kinds.size()):
 						b.items.append({"kind": kinds[k], "p": _current.sim.player_pos + Vector2(-120.0 + 60.0 * k, -110.0), "v": Vector2.ZERO, "t": 0.0})
 					for k in range(16):
-						b.shots.append(_current.sim.player_pos + Vector2(Boss.WIDE_OFFSETS[1][k % 4], -20.0 - 30.0 * float(k / 4)))
+						b.shots.append(_current.sim.player_pos + Vector2(load(P_Boss).WIDE_OFFSETS[1][k % 4], -20.0 - 30.0 * float(k / 4)))
 				if extra.has("bossdown"):
 					_current._update_boss_hud(10.0)   # ゲージを出しきってから倒す
 					b.hp = 0.0
@@ -1556,7 +1566,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"mpresult":
 			var nn = _get_net()
 			nn.results = {1: {"name": "Alice", "score": 903120.0, "hits": 0, "graze": 214, "hit_ms": 0, "dmg": 0.00, "damage": 0.00}, 2: {"name": "Bob", "score": 871400.0, "hits": 3, "graze": 180, "hit_ms": 480, "dmg": 0.43, "damage": 0.43,
-				"hp": HpGraph.downsample(HpGraph.points_from_log(_fake_hp(2, 118.0, false, 3).hp_log, 0.25, 118.0, 0.7), 48), "dur": 118.0}}
+				"hp": load(P_HpGraph).downsample(load(P_HpGraph).points_from_log(_fake_hp(2, 118.0, false, 3).hp_log, 0.25, 118.0, 0.7), 48), "dur": 118.0}}
 			var mode_r := "coop" if extra.has("coop") else "versus"
 			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": false, "progress": 1.0, "hits": 3, "hit_ms": 480, "dmg": 0.43, "damage": 0.43, "graze": 394, "score": 903120.0, "score_gross": 1013000.0,
 				"damage_factor": 0.89, "score_graze": 13000.0, "practice": false, "score_base": 1000000.0, "mod_ids": [], "mods": "",
@@ -1565,7 +1575,7 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 		"bullets":
 			_shot_bullets()
 		"result":
-			var rl := OszLoader.new()
+			var rl = load(P_OszLoader).new()
 			rl.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 			var rbm = rl.difficulties[rl.difficulties.size() - 1]
 			show_result({"title": "Reol - No title [Insane]", "level": 5.8, "mean": 105.0, "peak": 141.0, "failed": extra.size() > 0 and extra[0] == "failed", "progress": 0.63, "hits": 0 if extra.has("ss") else 2, "hit_ms": 180, "dmg": 0.16, "damage": 0.16, "graze": 123, "score": 1013000.0 if extra.has("ss") or extra.has("s") else (300000.0 if extra.has("f") else 830660.0), "score_gross": 1013000.0, "damage_factor": 0.82, "score_graze": 13000.0, "practice": false, "keyboard": extra.has("kb"),
@@ -1637,7 +1647,7 @@ func _fake_hp(seed_n: int, dur: float, fail: bool, n_hits: int) -> Dictionary:
 ## 撃破 MOD の曲の繰り返し: 周の最後のノーツの少し前へ飛ばし、ボーナスタイムの早送りで次の周の始まりに着くこと
 ## (早送りで速くなる・曲クロックが戻らない・着いたあと曲と曲クロックがそろっている・ゲームが終わらない)。
 func _smoke_bossloop() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	start_game(loader, loader.difficulties[0], {"mods": ["boss", "practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
 	var g = _current
@@ -1671,7 +1681,7 @@ func _smoke_bossloop() -> void:
 
 
 func _smoke_death() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[3]
 	start_game(loader, bm, {"mods": [], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 70})
@@ -1839,7 +1849,7 @@ func _smoke_ui() -> void:
 	print("Space after wait -> paused=%s (expect false)  bullets_visible=%s (expect true)  ship_only=%s (expect false)" % [str(g._paused), str(g.field.visible), str(g._view_under.ship_only)])
 	await _key(KEY_ESCAPE)   # 再開した直後は、またポーズできない(連続ポーズで、止めた弾を観察する悪用を防ぐ)
 	print("Esc right after resume -> paused=%s (expect false: クールダウン %.1fs)  bullets_alpha=%.2f (expect < 1 か 1: 弾が現れていく)" % [str(g._paused), g._pause_cd, g.field.modulate.a])
-	await get_tree().create_timer(GameScreen.PAUSE_COOLDOWN + 0.2).timeout
+	await get_tree().create_timer(load(P_GameScreen).PAUSE_COOLDOWN + 0.2).timeout
 	await _key(KEY_ESCAPE)   # もう一度ポーズ
 	print("Esc after cooldown -> paused=%s (expect true)  bullets_alpha=%.2f" % [str(g._paused), g.field.modulate.a])
 	await _key(KEY_Q)
@@ -1899,7 +1909,7 @@ func _smoke_start() -> void:
 			get_viewport().get_texture().get_image().save_png("%s_%d.png" % [shots, k])
 		k += 1
 	if g != null and is_instance_valid(g):
-		var ship_at: Vector2 = GameScreen.ARENA_POS + g.sim.player_pos
+		var ship_at: Vector2 = load(P_GameScreen).ARENA_POS + g.sim.player_pos
 		print("ship start (screen) = %s   cursor flew to = %s   in_place=%s" % [str(ship_at), str(cur._fly_to), str(g._start_in_place)])
 	Settings.restore(orig)
 	get_tree().quit()
@@ -1917,7 +1927,7 @@ func _key(code: Key) -> void:
 
 ## 開発用: MOD「加速」(再生速度 ×1.5)の曲クロックを実時間で確認する。-- --smoke-rush
 func _smoke_rush() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[2]   # Normal: 最初のノーツは 2.40 秒(加速で 1.60 秒)
 	start_game(loader, bm, {"offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "mods": ["practice", "rush"]})
@@ -2005,7 +2015,7 @@ func _smoke_player() -> void:
 	chk.call(NowPlaying.is_playing(), "タイトルの曲が流れている(%s)" % NowPlaying.title)
 	var pl: Control = null
 	for c in _current.find_children("*", "Control", true, false):
-		if c.get_script() == LazerPlayer:
+		if c.get_script() == load(P_LazerPlayer):
 			pl = c
 	chk.call(pl != null, "ツールバーにプレイヤーがある")
 	if pl == null:
@@ -2019,8 +2029,8 @@ func _smoke_player() -> void:
 		pl._gui_input(e)
 	# 1. 線を押して飛ぶ(半分のところ)
 	var total := NowPlaying.length()
-	var bx: float = LazerPlayer.TEXT_X
-	var bw: float = LazerPlayer.W - LazerPlayer.TEXT_X - 8.0
+	var bx: float = load(P_LazerPlayer).TEXT_X
+	var bw: float = load(P_LazerPlayer).W - load(P_LazerPlayer).TEXT_X - 8.0
 	mouse.call(Vector2(bx + bw * 0.5, 30.0), true)
 	mouse.call(Vector2(bx + bw * 0.5, 30.0), false)
 	await get_tree().create_timer(0.4).timeout
@@ -2054,7 +2064,7 @@ func _smoke_player() -> void:
 			await get_tree().process_frame
 		chk.call(NowPlaying.title == str(tracks[0].title) and NowPlaying.path == str(tracks[0].path), "1 曲目が流れる(%s)" % NowPlaying.title)
 		chk.call(NowPlaying.position() < 3.0, "頭から流れる(%.1f 秒)" % NowPlaying.position())
-		mouse.call(Vector2(LazerPlayer.BTN_X[2], 20.0), true)   # 「次」
+		mouse.call(Vector2(load(P_LazerPlayer).BTN_X[2], 20.0), true)   # 「次」
 		t0 = Time.get_ticks_msec()
 		while (NowPlaying.title != str(tracks[1].title) or not NowPlaying.is_playing()) and Time.get_ticks_msec() - t0 < 20000:
 			await get_tree().process_frame
@@ -2976,7 +2986,7 @@ func _prof_frames() -> void:
 	var args := OS.get_cmdline_user_args()
 	var i := args.find("--prof-frames")
 	var rest := Array(args.slice(i + 1))
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open(rest[0])
 	var bm = loader.difficulties[loader.difficulties.size() - 1]
 	if rest.size() > 1:
@@ -2984,7 +2994,7 @@ func _prof_frames() -> void:
 			if d.version.contains(rest[1]):
 				bm = d
 	var secs: float = float(rest[2]) if rest.size() > 2 else 60.0
-	var mods: Array = rest.slice(3).filter(func(x): return not Mods.find(x).is_empty())
+	var mods: Array = rest.slice(3).filter(func(x): return not load(P_Mods).find(x).is_empty())
 	if mods.is_empty():
 		mods = ["practice"]
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
@@ -3184,7 +3194,7 @@ func _smoke_break() -> void:
 	var args := OS.get_cmdline_user_args()
 	var si := args.find("--shots")
 	var shots: String = str(args[si + 1]) if si >= 0 and args.size() > si + 1 else ""
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 	start_game(loader, loader.difficulties[0], {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
 	var g = _current
@@ -3213,7 +3223,7 @@ func _smoke_break() -> void:
 ## 開発用: プレイ中の R 長押しでリトライできるか確かめる。-- --smoke-retryhold
 ## 短く押しただけではリトライしない / 長押しでリトライ / 押したまま新しいプレイが始まっても、離すまでは次のリトライをしない。
 func _smoke_retryhold() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 	var bm = loader.difficulties[0]
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -3250,8 +3260,8 @@ func _smoke_retryhold() -> void:
 func _smoke_focus() -> void:
 	DisplayServer.window_move_to_foreground()   # 起動したウィンドウが裏にあると、本物のフォーカス外れでポーズになってしまう
 	await get_tree().create_timer(0.5).timeout
-	GameScreen.focus_pause_in_dev = true
-	var loader := OszLoader.new()
+	load(P_GameScreen).focus_pause_in_dev = true
+	var loader = load(P_OszLoader).new()
 	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 	var bm = loader.difficulties[0]
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -3278,7 +3288,7 @@ func _smoke_focus() -> void:
 
 ## 開発用: ゲームオーバーで、弾の動きが曲のテープストップと同じように遅くなって止まるか確かめる。-- --smoke-tapestop
 func _smoke_tapestop() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open(_dev_osz("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz"))
 	var bm = loader.difficulties[loader.difficulties.size() - 1]
 	start_game(loader, bm, {"mods": [], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -3316,10 +3326,10 @@ func _smoke_replay() -> void:
 	var args := OS.get_cmdline_user_args()
 	var si := args.find("--shots")
 	var shots: String = str(args[si + 1]) if si >= 0 and args.size() > si + 1 else ""
-	Replay.dir = "user://replays_smoke"
-	Replay.force_record = true
-	for n in DirAccess.get_files_at(Replay.dir):
-		DirAccess.remove_absolute(Replay.dir.path_join(n))
+	load(P_Replay).dir = "user://replays_smoke"
+	load(P_Replay).force_record = true
+	for n in DirAccess.get_files_at(load(P_Replay).dir):
+		DirAccess.remove_absolute(load(P_Replay).dir.path_join(n))
 	var fails := [0]
 	var chk := func(ok: bool, msg: String):
 		print(("ok:   " if ok else "FAIL: ") + msg)
@@ -3328,7 +3338,7 @@ func _smoke_replay() -> void:
 	var shot := func(tag: String):
 		if shots != "":
 			get_viewport().get_texture().get_image().save_png("%s_%s.png" % [shots, tag])
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[0]
 	var key := func(code: Key):
@@ -3350,12 +3360,12 @@ func _smoke_replay() -> void:
 	await get_tree().create_timer(0.8).timeout
 	g._skip_intro()
 	await get_tree().create_timer(9.0).timeout
-	chk.call(g._rec != null and g._rec.frames.size() > 600 * Replay.STRIDE / 2, "プレイ中に入力が記録される(%d フレーム)" % (g._rec.frames.size() / Replay.STRIDE if g._rec != null else 0))
+	chk.call(g._rec != null and g._rec.frames.size() > 600 * load(P_Replay).STRIDE / 2, "プレイ中に入力が記録される(%d フレーム)" % (g._rec.frames.size() / load(P_Replay).STRIDE if g._rec != null else 0))
 	var st: Dictionary = g._stats()
 	g._save_replay(st)
-	Replay.flush()
+	load(P_Replay).flush()
 	var name := str(st.get("replay", ""))
-	chk.call(name != "" and FileAccess.file_exists(Replay.dir.path_join(name)), "終わりに保存される: %s" % name)
+	chk.call(name != "" and FileAccess.file_exists(load(P_Replay).dir.path_join(name)), "終わりに保存される: %s" % name)
 	# 2) リプレイを開く
 	var closed := [false]
 	show_replay(name, func(): closed[0] = true)
@@ -3542,11 +3552,11 @@ func _smoke_replay() -> void:
 	shot.call("result")
 	var res = _current
 	var rname := ""
-	var files: Array = Array(DirAccess.get_files_at(Replay.dir))
+	var files: Array = Array(DirAccess.get_files_at(load(P_Replay).dir))
 	files.sort()
 	rname = str(files[files.size() - 1]) if not files.is_empty() else ""
-	Replay.flush()
-	var d2 := Replay.load_file(rname)
+	load(P_Replay).flush()
+	var d2 = load(P_Replay).load_file(rname)
 	chk.call(not d2.is_empty() and bool(d2.stats.failed), "失敗したプレイも保存される(%s)" % rname)
 	chk.call(res.has_signal("replay_requested") and str(res.stats.get("replay", "")) == rname, "リザルトの stats にリプレイのファイル名が入り、ボタンが出る")
 	var closed2 := [false]
@@ -3563,7 +3573,7 @@ func _smoke_replay() -> void:
 	var rt_before: float = r2._rt
 	r2._replay_jump_hit(-1)
 	chk.call(r2._rt < rt_before - 0.3 and r2._rt <= float(r2._rp_hits[r2._rp_hits.size() - 1]) - 1.5 + 0.05, "「前の被弾」で、最後の被弾の少し前へ飛ぶ(%.2f)" % r2._rt)
-	chk.call(not Replay.verify(r2.sim, {"hits": 999, "graze": 0, "score": 0.0}), "記録の結果と違えば、ずれとして見つかる")
+	chk.call(not load(P_Replay).verify(r2.sim, {"hits": 999, "graze": 0, "score": 0.0}), "記録の結果と違えば、ずれとして見つかる")
 	r2.replay_trail_mode = 2
 	r2.replay_trail_sec = 5.0
 	r2._replay_apply_trail()
@@ -3601,7 +3611,7 @@ func _smoke_replay() -> void:
 	await get_tree().create_timer(10.0).timeout
 	var st3: Dictionary = g3._stats()
 	g3._save_replay(st3)
-	Replay.flush()
+	load(P_Replay).flush()
 	var closed3 := [false]
 	show_replay(str(st3.get("replay", "")), func(): closed3[0] = true)
 	await get_tree().create_timer(0.8).timeout
@@ -3647,7 +3657,7 @@ func _smoke_replay() -> void:
 		show_replay(name, func(): pass)
 		await get_tree().create_timer(0.8).timeout
 		var r4 = _current
-		_replay_export(name, r4.replay_data, {"w": 1280, "h": 720, "fps": 30, "trail_mode": 1, "trail_sec": 3.0}, r4, str(Replay.find_chart(str(r4.replay_data.md5)).get("path", "")))
+		_replay_export(name, r4.replay_data, {"w": 1280, "h": 720, "fps": 30, "trail_mode": 1, "trail_sec": 3.0}, r4, str(load(P_Replay).find_chart(str(r4.replay_data.md5)).get("path", "")))
 		chk.call(not _export.is_empty() and OS.is_process_running(int(_export.pid)), "動画出力を押すと、子プロセスが始まる")
 		await get_tree().create_timer(1.5).timeout
 		var shown: String = r4._rp_bar._status_l.text
@@ -3684,7 +3694,7 @@ func _smoke_replay() -> void:
 	tt._activate(2)
 	await get_tree().create_timer(0.8).timeout
 	var lp = tt._overlay
-	var all_n: int = Replay.list().size()
+	var all_n: int = load(P_Replay).list().size()
 	chk.call(lp != null and lp.has_signal("replay_requested") and lp._items.size() == all_n and lp._cards.size() == all_n and all_n >= 3, "「リプレイ」で一覧が開く(%d 件)" % all_n)
 	shot.call("list")
 	# 長い曲名・長い難易度名・MOD が多い行でも、パネルが広がらず、はみ出さない
@@ -3698,11 +3708,11 @@ func _smoke_replay() -> void:
 	await get_tree().process_frame
 	shot.call("list_long")
 	chk.call(lp._panel.size.x <= 1140.5 and lp._panel.get_global_rect().end.x <= 1280.0, "長い曲名・MOD が多くても、一覧のパネルが画面からはみ出さない(幅 %.0f)" % lp._panel.size.x)
-	lp._items = Replay.list()
+	lp._items = load(P_Replay).list()
 	lp._rebuild()
 	var first_name := str(lp._shown[0].name)
 	lp._toggle_keep(0)
-	chk.call(Replay.kept_names().has(first_name), "「保存」すると、保存済みになる")
+	chk.call(load(P_Replay).kept_names().has(first_name), "「保存」すると、保存済みになる")
 	lp._filter = 3
 	lp._rebuild()
 	chk.call(lp._shown.size() == 1 and str(lp._shown[0].name) == first_name, "「保存済み」で絞り込める")
@@ -3715,18 +3725,18 @@ func _smoke_replay() -> void:
 	lp._filter = 0
 	lp._rebuild()
 	# 自動の整理は、保存済みのものを消さず、件数にも入れない
-	Replay.prune(Records.replay_names(), 0)
-	chk.call(FileAccess.file_exists(Replay.dir.path_join(first_name)), "保存済みは、自動の整理で消えない")
+	load(P_Replay).prune(load(P_Records).replay_names(), 0)
+	chk.call(FileAccess.file_exists(load(P_Replay).dir.path_join(first_name)), "保存済みは、自動の整理で消えない")
 	var del_idx: int = lp._shown.size() - 1
 	var del_name := str(lp._shown[del_idx].name)
 	lp._delete(del_idx)
-	chk.call(FileAccess.file_exists(Replay.dir.path_join(del_name)) and lp._del_name == del_name, "「削除」を 1 度押しただけでは、消えない(確認待ち)")
+	chk.call(FileAccess.file_exists(load(P_Replay).dir.path_join(del_name)) and lp._del_name == del_name, "「削除」を 1 度押しただけでは、消えない(確認待ち)")
 	lp._delete(del_idx)
-	chk.call(not FileAccess.file_exists(Replay.dir.path_join(del_name)) and lp._items.size() == all_n - 1, "もう一度押すと、消える")
+	chk.call(not FileAccess.file_exists(load(P_Replay).dir.path_join(del_name)) and lp._items.size() == all_n - 1, "もう一度押すと、消える")
 	lp._play(0)   # 一覧の先頭(いま「保存」したもの)を再生する
 	await get_tree().create_timer(1.0).timeout
 	var rl = _current
-	chk.call(rl != tt and rl.kind == "game" and rl.get("_rp") != null and str(rl.replay_data.get("md5", "")) == str(Replay.load_file(first_name).get("md5", "x")), "一覧から選ぶと、そのリプレイが再生される")
+	chk.call(rl != tt and rl.kind == "game" and rl.get("_rp") != null and str(rl.replay_data.get("md5", "")) == str(load(P_Replay).load_file(first_name).get("md5", "x")), "一覧から選ぶと、そのリプレイが再生される")
 	rl._replay_close()
 	await get_tree().create_timer(2.0).timeout
 	var tt2 = _current
@@ -3734,14 +3744,14 @@ func _smoke_replay() -> void:
 	tt2._overlay.close_panel()
 	await get_tree().create_timer(0.6).timeout
 	chk.call(tt2._overlay == null, "一覧を閉じると、タイトルへ戻る")
-	Replay.set_kept(first_name, false)
+	load(P_Replay).set_kept(first_name, false)
 	print("smoke-replay: ", "OK" if fails[0] == 0 else "%d FAILED" % fails[0])
 	get_tree().quit(fails[0])
 
 
 ## 開発用: イントロのスキップを実時間で確認する(READY 中 / 再生中の 2 通り)。-- --smoke-skip
 func _smoke_skip() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[0]   # Beginner: 最初のノーツが約 12 秒
 	var space := InputEventKey.new()
@@ -3810,7 +3820,7 @@ func _smoke_skip() -> void:
 
 ## 開発用: 表示スコアのイージングをフレームごとに記録して確認する。-- --smoke-score
 func _smoke_score() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[2]   # Normal: 最初のノーツが約 2.4 秒
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -3852,7 +3862,7 @@ func _smoke_score() -> void:
 
 ## 開発用: クリアの流れを実時間で確認する(弾が抜けたら即クリア → リザルトでも曲が流れ続ける)。-- --smoke-clear
 func _smoke_clear() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[0]
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -3895,7 +3905,7 @@ func _smoke_speed_study() -> void:
 		print(("  ok   " if c else "  FAIL ") + m)
 		if not c:
 			fails += 1
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[0]
 	var conds: Array = []
@@ -3927,7 +3937,7 @@ func _smoke_speed_study() -> void:
 
 ## 開発用: 曲クロック(_now)の増分が、実際のフレーム時間とどれだけずれるか(= 弾の移動距離のばらつき)を測る。-- --smoke-clock
 func _smoke_clock() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[0]
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -4080,9 +4090,9 @@ func _smoke_preview() -> void:
 		zp.close()
 		src.close()
 		var real := ProjectSettings.globalize_path(out_path)
-		var l := OszLoader.new()
+		var l = load(P_OszLoader).new()
 		chk.call(l.open(real) and l.difficulties.size() == 2, "確認用の .osz(2 難易度)を開けた")
-		var sb = preload("res://scripts/song_browser.gd").new()
+		var sb = load("res://scripts/song_browser.gd").new()
 		sb.loader = l
 		var a0 = l.difficulties[0]
 		var pv0 = sb.preview_of(l.load_audio(a0.audio_filename), int(a0.preview_time), str(a0.audio_filename))
@@ -4214,7 +4224,7 @@ func _smoke_loader() -> void:
 
 ## 開発用: 実時間で曲を進め、スライダーの軌道の描画(CanvasGroup)を撮る。-- --smoke-slider <出力の接頭辞>
 func _smoke_slider() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/241526 Soleily - Renatus.osz")
 	var bm = loader.difficulties[loader.difficulties.size() - 1]
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -4230,7 +4240,7 @@ func _smoke_slider() -> void:
 
 ## 開発用: キアイ中の光が、拍に合わせて出入りすることを実時間で確認する。-- --smoke-kiai
 func _smoke_kiai() -> void:
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[loader.difficulties.size() - 1]   # キアイは 50〜70 秒、BPM 200(1 拍 0.3 秒)
 	start_game(loader, bm, {"mods": ["practice"], "offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0})
@@ -4327,16 +4337,15 @@ func _smoke_title() -> void:
 
 ## 開発用: 通信層(net.gd)を、同じプロセス内のホストと参加者で確認する(localhost。UPnP は使わない)。-- --smoke-net
 func _smoke_net() -> void:
-	var NetScript = load("res://scripts/net/net.gd")
 	var st := {"fails": 0}   # ラムダの中から増やせるように、辞書に持つ
 	var chk := func(cond: bool, msg: String):
 		print(("  ok   " if cond else "  FAIL ") + msg)
 		if not cond:
 			st.fails += 1
-	var a = NetScript.new()
+	var a = load(P_NetScript).new()
 	a.use_upnp = false
 	add_child(a)
-	var b = NetScript.new()
+	var b = load(P_NetScript).new()
 	b.use_upnp = false
 	add_child(b)
 	chk.call(a.host_room("versus", "Alice"), "ホストが待ち受けを始める(port %d)" % a.port)
@@ -4393,7 +4402,7 @@ func _smoke_net() -> void:
 	chk.call(got.go_a > 0.0 and got.go_b > 0.0 and absf(got.go_a - got.go_b) < 0.001, "開始の合図(共通の時計): %.3f / %.3f" % [got.go_a, got.go_b])
 	chk.call(a.room.phase == "playing" and b.room.phase == "playing", "phase = playing")
 	# 開始後は参加できない
-	var c = NetScript.new()
+	var c = load(P_NetScript).new()
 	c.use_upnp = false
 	add_child(c)
 	var cf := {"r": ""}
@@ -4432,7 +4441,7 @@ func _smoke_net() -> void:
 	await get_tree().create_timer(0.5).timeout
 	chk.call(a.players.size() == 2 and b.players.size() == 2, "参加者が抜けると名簿から消える")
 	# 抜けたスロットは次の人が使う
-	var d = NetScript.new()
+	var d = load(P_NetScript).new()
 	d.use_upnp = false
 	add_child(d)
 	var dj := {"ok": false}
@@ -4454,7 +4463,7 @@ func _smoke_net() -> void:
 		await get_tree().process_frame
 	chk.call(lf.reason != "-" and lf.reason != "" , "ホストが閉じると参加者に届く: '%s' (%d ms)" % [lf.reason, Time.get_ticks_msec() - t0])
 	# 不正なコード・つながらない行き先
-	var e = NetScript.new()
+	var e = load(P_NetScript).new()
 	e.use_upnp = false
 	add_child(e)
 	var ef := {"r": ""}
@@ -4482,10 +4491,10 @@ func _smoke_mp() -> void:
 		print(("  ok   " if cond else "  FAIL ") + msg)
 		if not cond:
 			st.fails += 1
-	var a = NetScript.new()
+	var a = load(P_NetScript).new()
 	a.use_upnp = false
 	add_child(a)
-	var b = NetScript.new()
+	var b = load(P_NetScript).new()
 	b.use_upnp = false
 	add_child(b)
 	var lag := 0.0
@@ -4503,12 +4512,12 @@ func _smoke_mp() -> void:
 	while not joined.ok:
 		await get_tree().process_frame
 	await get_tree().create_timer(0.4).timeout
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[loader.difficulties.size() - 1 if args.has("hard") else 2]   # 既定は Normal(最初のノーツは 2.4 秒)。hard は最上位(自機狙い・弾数が多い)
 	var found := SongLibrary.find_by_md5(bm.md5)
 	chk.call(not found.is_empty(), "参加者が、MD5 から曲を見つけられる: %s" % str(found.get("path", "")).get_file())
-	var lb := OszLoader.new()
+	var lb = load(P_OszLoader).new()
 	lb.open(found.path)
 	var bmb = null
 	for d in lb.difficulties:
@@ -4524,7 +4533,7 @@ func _smoke_mp() -> void:
 	var settings := {"offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "mods": []}
 	var make := func(n, key: String, dodge: bool):
 		n.prepare_game.connect(func(info):
-			var g := GameScreen.new()
+			var g = load(P_GameScreen).new()
 			g.setup_multi(n, info, n.song_loader, n.song_bm, settings)
 			g.finished.connect(func(stats, music): done[key] = stats)
 			if dodge:
@@ -4639,12 +4648,12 @@ func _mp_room(mode: String, nosong: bool, three: bool) -> void:
 	var n = _get_net()
 	n.use_upnp = false
 	n.host_room(mode, "Alice")
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[2]
 	var names := ["Bob", "Carol"] if three else ["Bob"]
 	for nm in names:
-		var b = NetScript.new()
+		var b = load(P_NetScript).new()
 		b.use_upnp = false
 		add_child(b)
 		_shot_nets.append(b)
@@ -4655,7 +4664,7 @@ func _mp_room(mode: String, nosong: bool, three: bool) -> void:
 			await get_tree().process_frame
 		b.report_song(true, loader, bm)
 		b.prepare_game.connect(func(info):
-			var g := GameScreen.new()
+			var g = load(P_GameScreen).new()
 			g.setup_multi(b, info, loader, bm, {"offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "mods": []})
 			g.debug_move = func(): return _bot_dodge(g)
 			g.visible = false
@@ -4695,7 +4704,7 @@ func _smoke_mp_ui() -> void:
 	await get_tree().create_timer(0.3).timeout
 	chk.call(m._page == "lobby" and n.role == "host" and n.code != "", "部屋を作るとロビー(招待コード %s)" % n.code)
 	# 参加者(ボット)
-	var b = NetScript.new()
+	var b = load(P_NetScript).new()
 	b.use_upnp = false
 	add_child(b)
 	var ok := {"v": false, "left": "-"}
@@ -4735,7 +4744,7 @@ func _smoke_mp_ui() -> void:
 	chk.call((m.get("kind") == "multi") and n.room.song.get("md5") == want_md5, "決定でロビーへ戻り、部屋に曲が設定される: %s" % str(n.room.song.get("title", "")))
 	# 参加者は、MD5 から曲を探す(ロビー画面と同じ処理)
 	var found := SongLibrary.find_by_md5(want_md5)
-	var lb := OszLoader.new()
+	var lb = load(P_OszLoader).new()
 	lb.open(found.path)
 	var bmb = null
 	for d in lb.difficulties:
@@ -4743,7 +4752,7 @@ func _smoke_mp_ui() -> void:
 			bmb = d
 	b.report_song(true, lb, bmb)
 	b.prepare_game.connect(func(info):
-		var g := GameScreen.new()
+		var g = load(P_GameScreen).new()
 		g.setup_multi(b, info, lb, bmb, {"offset_ms": 0, "density_mul": 1.0, "control": "keyboard", "sfx_volume": 0, "mods": []})
 		g.visible = false
 		add_child(g))
@@ -4781,12 +4790,12 @@ func _smoke_mp_ui() -> void:
 
 ## 開発用(スクリーンショット): 自分は参加者、ホストはボット。nosong なら、自分はその曲を持っていない状態にする。
 func _mp_guest_room(nosong: bool) -> void:
-	var h = NetScript.new()
+	var h = load(P_NetScript).new()
 	h.use_upnp = false
 	add_child(h)
 	_shot_nets.append(h)
 	h.host_room("coop", "Alice")
-	var loader := OszLoader.new()
+	var loader = load(P_OszLoader).new()
 	loader.open("C:/Desktop/my_apps/DDA/320118 Reol - No title.osz")
 	var bm = loader.difficulties[3]
 	h.set_song({"md5": "0".repeat(32) if nosong else bm.md5, "title": bm.title, "artist": bm.artist, "version": bm.version, "level": 4.62, "set_id": bm.beatmapset_id, "map_id": bm.beatmap_id}, ["dark"], 1.0, loader, bm)   # nosong: 参加者の手元にない曲(MD5 が見つからない)
@@ -4805,7 +4814,7 @@ func _mp_guest_room(nosong: bool) -> void:
 ## 開発用: UPnP を使う本番と同じ部屋作り(ルーターのポートを一時的に開けて、すぐ閉じる)。招待コードの中身を確認する。-- --smoke-upnp
 func _smoke_upnp() -> void:
 	var InviteCode = load("res://scripts/net/invite_code.gd")
-	var n = NetScript.new()
+	var n = load(P_NetScript).new()
 	add_child(n)
 	var ev := {"code": false}
 	n.code_changed.connect(func(): ev.code = true)

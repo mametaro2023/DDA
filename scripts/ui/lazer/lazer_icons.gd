@@ -1,6 +1,6 @@
 extends Control
 ## lazer 風 UI のアイコン(線画。フォントに頼らず、描画で作る)。Control として置くか、static の draw で CanvasItem に直接描く。
-## kind: gear / back / shuffle / search / star / plus / dots / play / folder / clock / user / users / power / retry / download / alert / book / mods / list / x / up / down / repeat / pencil / trash / image / note
+## kind: mod_hell / mod_storm / mod_giant / mod_rush / mod_dark / mod_shrink / mod_noregen / mod_boss / mod_heaven / mod_slow / mod_v1 / mod_practice(MOD の絵)/ gear / back / shuffle / search / star / plus / dots / play / folder / clock / user / users / power / retry / download / alert / book / mods / list / x / up / down / repeat / pencil / trash / image / note
 
 var kind := "star"
 var col := Color.WHITE
@@ -101,6 +101,80 @@ static func draw_icon(ci: CanvasItem, k: String, c: Vector2, r: float, col: Colo
 			for i in range(3):   # 重なった 3 枚の札
 				var o := Vector2((i - 1) * r * 0.32, (1 - i) * r * 0.22)
 				ci.draw_rect(Rect2(c + o - Vector2(r * 0.42, r * 0.58), Vector2(r * 0.84, r * 1.16)), col, false, w)
+		# --- MOD の絵(MOD パネルの札。id ごと) ---
+		"mod_hell":   # 炎
+			var f := PackedVector2Array([c + Vector2(0, -r * 0.95), c + Vector2(r * 0.38, -r * 0.35), c + Vector2(r * 0.7, r * 0.1), c + Vector2(r * 0.55, r * 0.62),
+				c + Vector2(0, r * 0.92), c + Vector2(-r * 0.55, r * 0.62), c + Vector2(-r * 0.7, r * 0.1), c + Vector2(-r * 0.3, -r * 0.2), c + Vector2(-r * 0.12, -r * 0.55), c + Vector2(0, -r * 0.95)])
+			ci.draw_polyline(f, col, w, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(0, r * 0.15), c + Vector2(r * 0.25, r * 0.5), c + Vector2(0, r * 0.72), c + Vector2(-r * 0.25, r * 0.5), c + Vector2(0, r * 0.15)]), col, w * 0.9, true)
+		"mod_storm":   # 雨(斜めの線 3 本)
+			for i in range(3):
+				var o := Vector2((i - 1) * r * 0.55, (0.15 if i == 1 else -0.1) * r)
+				ci.draw_line(c + o + Vector2(r * 0.3, -r * 0.55), c + o + Vector2(-r * 0.3, r * 0.5), col, w, true)
+			ci.draw_arc(c + Vector2(0, -r * 0.55), r * 0.5, PI, TAU, 14, col, w * 0.9, true)
+		"mod_giant":   # 小さな円から大きな円へ(外向きの印)
+			ci.draw_arc(c, r * 0.3, 0.0, TAU, 20, col, w, true)
+			for i in range(4):
+				var d := Vector2.from_angle(PI * 0.25 + PI * 0.5 * float(i))
+				ci.draw_line(c + d * r * 0.55, c + d * r * 0.95, col, w, true)
+				ci.draw_polyline(PackedVector2Array([c + d * r * 0.95 + d.rotated(PI * 0.75) * r * 0.26, c + d * r * 0.95, c + d * r * 0.95 + d.rotated(-PI * 0.75) * r * 0.26]), col, w, true)
+		"mod_rush":   # 進む向きの二重の山形
+			for i in range(2):
+				var x := (i - 0.5) * r * 0.85
+				ci.draw_polyline(PackedVector2Array([c + Vector2(x - r * 0.3, -r * 0.65), c + Vector2(x + r * 0.3, 0), c + Vector2(x - r * 0.3, r * 0.65)]), col, w * 1.15, true)
+		"mod_dark":   # 三日月
+			var cr := PackedVector2Array()
+			for i in range(0, 21):
+				var a := lerpf(PI * 0.62, TAU - PI * 0.62, float(i) / 20.0) + PI
+				cr.append(c + Vector2.from_angle(a) * r * 0.85)
+			var inner := PackedVector2Array()
+			for i in range(0, 21):
+				var a2 := lerpf(PI * 0.5, -PI * 0.5, float(i) / 20.0) + PI
+				inner.append(c + Vector2(r * 0.32, 0) + Vector2.from_angle(a2) * r * 0.62)
+			cr.append_array(inner)
+			cr.append(cr[0])
+			ci.draw_polyline(cr, col, w, true)
+		"mod_shrink":   # 四隅から内側へ
+			for sx in [-1.0, 1.0]:
+				for sy in [-1.0, 1.0]:
+					var kc := c + Vector2(sx, sy) * r * 0.85
+					ci.draw_polyline(PackedVector2Array([kc + Vector2(-sx * r * 0.5, 0), kc, kc + Vector2(0, -sy * r * 0.5)]), col, w, true)
+			ci.draw_rect(Rect2(c - Vector2(r * 0.28, r * 0.28), Vector2(r * 0.56, r * 0.56)), col, false, w)
+		"mod_noregen":   # ハートに斜線
+			var h := PackedVector2Array()
+			for i in range(0, 33):
+				var t := TAU * float(i) / 32.0
+				h.append(c + Vector2(16.0 * pow(sin(t), 3.0), -(13.0 * cos(t) - 5.0 * cos(2.0 * t) - 2.0 * cos(3.0 * t) - cos(4.0 * t))) * r * 0.052 + Vector2(0, r * 0.05))
+			ci.draw_polyline(h, col, w, true)
+			ci.draw_line(c + Vector2(-r * 0.9, -r * 0.8), c + Vector2(r * 0.9, r * 0.85), col, w * 1.2, true)
+		"mod_boss":   # 照準
+			ci.draw_arc(c, r * 0.62, 0.0, TAU, 28, col, w, true)
+			ci.draw_circle(c, r * 0.12, col)
+			for i in range(4):
+				var d := Vector2.from_angle(PI * 0.5 * float(i))
+				ci.draw_line(c + d * r * 0.45, c + d * r * 1.0, col, w, true)
+		"mod_heaven":   # 光の輪と雲
+			ci.draw_arc(c + Vector2(0, -r * 0.55), r * 0.5, 0.0, TAU, 24, col, w, true)
+			ci.draw_arc(c + Vector2(-r * 0.4, r * 0.4), r * 0.35, PI * 0.5, PI * 1.5, 12, col, w, true)
+			ci.draw_arc(c + Vector2(0, r * 0.28), r * 0.45, PI, TAU, 14, col, w, true)
+			ci.draw_arc(c + Vector2(r * 0.4, r * 0.4), r * 0.35, -PI * 0.5, PI * 0.5, 12, col, w, true)
+			ci.draw_line(c + Vector2(-r * 0.4, r * 0.75), c + Vector2(r * 0.4, r * 0.75), col, w, true)
+		"mod_slow":   # 戻る向きの二重の山形
+			for i in range(2):
+				var x := (i - 0.5) * r * 0.85
+				ci.draw_polyline(PackedVector2Array([c + Vector2(x + r * 0.3, -r * 0.65), c + Vector2(x - r * 0.3, 0), c + Vector2(x + r * 0.3, r * 0.65)]), col, w * 1.15, true)
+		"mod_v1":   # 巻き戻した時計
+			ci.draw_arc(c, r * 0.8, 0.9, 0.9 + TAU * 0.82, 28, col, w, true)
+			var tp := c + Vector2.from_angle(0.9) * r * 0.8
+			ci.draw_polyline(PackedVector2Array([tp + Vector2(-r * 0.05, -r * 0.42), tp, tp + Vector2(r * 0.42, -r * 0.1)]), col, w, true)
+			ci.draw_polyline(PackedVector2Array([c + Vector2(0, -r * 0.4), c, c + Vector2(r * 0.32, r * 0.2)]), col, w, true)
+		"mod_practice":   # 無限(∞)
+			var lm := PackedVector2Array()
+			for i in range(0, 41):
+				var t2 := TAU * float(i) / 40.0
+				var dn := 1.0 + sin(t2) * sin(t2)
+				lm.append(c + Vector2(cos(t2) / dn, sin(t2) * cos(t2) / dn) * r * 1.0 * 1.35)
+			ci.draw_polyline(lm, col, w * 1.15, true)
 		"check":
 			ci.draw_polyline(PackedVector2Array([c + Vector2(-r * 0.7, 0.0), c + Vector2(-r * 0.2, r * 0.55), c + Vector2(r * 0.75, -r * 0.55)]), col, w * 1.2, true)
 		"list":   # 3 本の行(左に点)

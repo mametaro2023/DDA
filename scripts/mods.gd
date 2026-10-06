@@ -19,6 +19,7 @@ extends RefCounted
 ##   boss         … 発射位置へ動くボスを、自機の自動の連射で倒す(scripts/game/boss.gd)。倒すまで曲が繰り返し、危険エリアは出ない。ひとり用。1 つでも true なら true
 ##   gen_v1       … 弾幕の作り方を、旧い v1(scripts/game/pattern_gen.gd)に切り替える MOD「弾幕 v1」。生成の段階で効くので、apply() は何もしない。1 つでも true なら true
 ##   gen_v2       … 弾幕の作り方が v2(scripts/game/pattern_gen_v2.gd。初期状態)か。gen_v1 でなければ true(MOD の効果ではなく、gen_v1 から決まる)
+##   short / group … 画面の札に出す要点(1 行)と、分類(up = 難しくする / down = 易しくする / special = それ以外)。効果ではなく表示用
 ##   excl         … 同時に付けられない MOD の id(片方を付けると、もう片方は外れる。conflicts() は両向きに見る。params() は後のほうを無視する)
 ## MOD を足すときは ALL に 1 件足すだけ(メニュー・HUD・リザルトは ALL を見て表示する)。
 ##
@@ -47,64 +48,76 @@ const ALL := [
 	{
 		"id": "hell", "name": "地獄", "tag": "HELL", "color": Color(1.0, 0.32, 0.3),
 		"desc": "弾サイズ +35% / 体力 150ms / 低体力の被ダメージ半減なし / ベーススコア +9%",
+		"short": "弾が大きく、体力が少ない", "group": "up",
 		"size_mul": 1.35, "drain_time": 0.15, "low_protect": false, "score_mul": 1.09, "excl": ["heaven"],
 	},
 	{
 		"id": "storm", "name": "暴風雨", "tag": "STORM", "color": Color(0.5, 0.8, 1.0),
 		"desc": "弾の量 +50% / 弾の速度 +50% / ベーススコア +11%",
+		"short": "弾が増えて、速くなる", "group": "up",
 		"count_mul": 1.5, "speed_mul": 1.5, "score_mul": 1.11,
 	},
 	{
 		"id": "giant", "name": "巨人", "tag": "GIANT", "color": Color(1.0, 0.75, 0.35),
 		"desc": "自機サイズ +100% / ベーススコア +9%",
+		"short": "自機が 2 倍の大きさになる", "group": "up",
 		"player_scale": 2.0, "score_mul": 1.09,
 	},
 	{
 		"id": "rush", "name": "加速", "tag": "RUSH", "color": Color(0.82, 0.6, 1.0),
 		"desc": "譜面の再生速度 +50%(曲の音程も上がる) / ベーススコア +6%",
+		"short": "譜面が 1.5 倍の速さになる", "group": "up",
 		"rate": 1.5, "score_mul": 1.06, "excl": ["slow"],
 	},
 	{
 		"id": "dark", "name": "暗闇", "tag": "DARK", "color": Color(0.55, 0.65, 0.95),
 		"desc": "自機の周囲しか弾が見えない(離れるほど消える。発射地点は見える) / ベーススコア +5%",
+		"short": "自機の周りしか見えない", "group": "up",
 		"dark": true, "score_mul": 1.05,
 	},
 	# 小型化・無回復・撃破のベーススコアの加算は、遊んだ感触で決めた値(弾幕を変えないので Lv には出ない)
 	{
 		"id": "shrink", "name": "小型化", "tag": "SHRINK", "color": Color(0.45, 0.95, 0.75),
 		"desc": "自機が動ける範囲が、盤面の中央の縦横 50% になる(発射位置は今までどおり。危険エリアも範囲の中) / ベーススコア +4%",
+		"short": "動ける範囲が半分になる", "group": "up",
 		"field_scale": 0.5, "score_mul": 1.04,
 	},
 	{
 		"id": "noregen", "name": "無回復", "tag": "NOREGEN", "color": Color(0.85, 0.62, 0.5),
 		"desc": "被弾していないときの自然回復がなくなる(癒しのエリア・撃破で当てたときの回復は今までどおり) / ベーススコア +3%",
+		"short": "自然回復がなくなる", "group": "up",
 		"regen": false, "score_mul": 1.03,
 	},
 	{
 		"id": "boss", "name": "撃破", "tag": "BOSS", "color": Color(1.0, 0.5, 0.42),
 		"desc": "発射位置を追って動くボスを連射で倒す / 倒すまで曲が繰り返す・当てると回復・危険エリアなし(ひとり用) / ベーススコア +5%",
+		"short": "ボスを連射で倒す", "group": "up",
 		"boss": true, "score_mul": 1.05, "solo": true,
 	},
 	# 易しくする MOD(ベーススコアは減る)。減らし方は、難しくする MOD の加算より大きくした(上の score_mul の決め方)
 	{
 		"id": "heaven", "name": "天国", "tag": "HEAVEN", "color": Color(1.0, 0.72, 0.88),
 		"desc": "弾サイズ −30% / 体力 500ms / 体力 35% 以下で被ダメージ半減(通常は 20%) / ベーススコア −40%",
+		"short": "弾が小さく、体力が多い", "group": "down",
 		"size_mul": 0.7, "drain_time": 0.5, "low_threshold": 0.35, "score_mul": 0.6, "excl": ["hell"],
 	},
 	{
 		"id": "slow", "name": "減速", "tag": "SLOW", "color": Color(0.62, 0.9, 0.45),
 		"desc": "譜面の再生速度 ×2/3(曲の音程も下がる) / ベーススコア −20%",
+		"short": "譜面が 2/3 の速さになる", "group": "down",
 		"rate": 2.0 / 3.0, "score_mul": 0.8, "excl": ["rush"],
 	},
 	# 弾幕 v1: 難しくする MOD ではなく、旧い弾幕の作り方への切り替え(スコア倍率 ×1.0)。初期状態は弾幕 v2。難易度(Lv)は v1 の弾幕で測る
 	{
 		"id": "v1", "name": "弾幕 v1", "tag": "V1", "color": Color(0.45, 0.85, 1.0),
 		"desc": "旧い弾幕の作り方(ノーツの位置から均等に撃つ、どの譜面も似た形の弾幕) / 危険エリアが旧来の 3×3 のマスに(デバフを受ける) / 体力 250ms(弾幕 v2 は 300ms) / ベーススコアは変わらない",
+		"short": "旧い弾幕の作り方にする", "group": "special",
 		"gen_v1": true, "score_mul": 1.0,
 	},
 	{
 		"id": "practice", "name": "練習", "tag": "PRACTICE", "color": Color(1.0, 0.82, 0.35),
 		"desc": "ゲージが 0 になってもゲームオーバーにならず、最後まで続けられる / ベーススコア −50%",
+		"short": "ゲームオーバーにならない", "group": "down",
 		"practice": true, "score_mul": 0.5,
 	},
 ]

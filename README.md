@@ -480,7 +480,7 @@ UI の音(ホバー・クリック・選択・決定・開閉・スタンプな�
 ## 配布(ベータ版)
 本体のみを配布します(**曲・譜面は同梱しません**。プレイヤーが `.osz` を追加します)。現在は **ベータ版 v0.15.0**(`project.godot` の `config/version = "0.15.0-beta"`。マルチプレイは、全員が同じ版であることが条件です)。
 - **書き出し設定**: `export_presets.cfg`(Windows Desktop / x86_64)。実行ファイルにパックを埋め込んだ単一の `Danmaku.exe`。テスト・`.osz`・README・ビルド用ファイルは含めない(`exclude_filter`)。書き出し先は `build/Danmaku_beta/`。
-- **ビルド**(`build.bat`。ASCII のみ・CRLF で書いてあり、cmd から実行できます。実際にビルド済みで、`Danmaku.exe` 約 109MB / zip 約 38MB。書き出した `.exe` を単体で起動し、`songs/` の曲でタイトル → プレイの流れが動くことも確認済み): `build.bat` が、書き出し → `README.txt` / `LICENSE-Godot.txt` / `songs/`(曲の置き場)の同梱 → `build/Danmaku_beta_v<版>.zip` の作成までを行います。
+- **ビルド**(`build.bat`。ASCII のみ・CRLF で書いてあり、cmd から実行できます。実際にビルド済みで、`Danmaku.exe` 約 109MB / zip 約 38MB。書き出した `.exe` を単体で起動し、`songs/` の曲でタイトル → プレイの流れが動くことも確認済み): `build.bat` が、(exe にアイコンを埋め込む `tools/rcedit-x64.exe`〔electron/rcedit v2.0.0、MIT〕を Godot の設定に登録 → )書き出し → `README.txt` / `LICENSE-Godot.txt` / `songs/`(曲の置き場)の同梱 → `build/Danmaku_beta_v<版>.zip` の作成までを行います。
 - **事前に必要なもの**: Godot 4.7.2 の**エクスポートテンプレート**(Godot エディタの「エクスポートテンプレートを管理」からインストール)。この開発環境では、Windows 用のみを `%APPDATA%/Godot/export_templates/4.7.2.stable/` に導入済みです。未導入だと `.exe` は作れません(パック `--export-pack` までは作れます)。
 - **同梱物**(`dist_files/`): プレイヤー向け `README.txt`(遊び方の案内・曲の追加方法・設定の保存場所・ベータ版の注意)、Godot の MIT ライセンス表記、`songs/README.txt`。
 - **曲の場所**: 配布版では、exe の隣の `songs/`(と、ユーザーデータ内の `songs/`)を探します。

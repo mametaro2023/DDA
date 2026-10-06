@@ -5,6 +5,8 @@ rem See README.md ("Haifu") for details.
 cd /d "%~dp0"
 set "G=%LOCALAPPDATA%\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Microsoft.Winget.Source_8wekyb3d8bbwe\Godot_v4.7.2-stable_win64_console.exe"
 if not exist "%G%" set "G=godot"
+rem Register rcedit in the Godot editor settings so the exe gets the icon (tools\set_rcedit.ps1)
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\set_rcedit.ps1
 set "OUT=build\Danmaku_beta"
 if exist build rmdir /s /q build
 mkdir "%OUT%\songs"

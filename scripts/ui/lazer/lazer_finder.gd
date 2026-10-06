@@ -332,9 +332,8 @@ func _make_card(it: Dictionary) -> Control:
 	c.mouse_entered.connect(func(): c.set_meta("hover", true); c.queue_redraw())
 	c.mouse_exited.connect(func():
 		c.set_meta("hover", false)
-		c.set_meta("cover_hover", false)
-		c.mouse_default_cursor_shape = Control.CURSOR_ARROW
 		c.queue_redraw())
+	c.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND   # 押すと試聴(右のボタンの上は、ボタンの矢印)
 	c.gui_input.connect(func(ev: InputEvent): _card_input(c, ev))
 	var b := LazerButton.new("", LazerStyle.PINK, "download")
 	b.font_size = 15
@@ -445,14 +444,8 @@ static func _cover_rect() -> Rect2:
 
 
 func _card_input(c: Control, ev: InputEvent) -> void:
-	var cr := _cover_rect()
-	if ev is InputEventMouseMotion:
-		var over := cr.has_point(ev.position)
-		if over != bool(c.get_meta("cover_hover", false)):
-			c.set_meta("cover_hover", over)
-			c.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if over else Control.CURSOR_ARROW
-			c.queue_redraw()
-	elif ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT and cr.has_point(ev.position):
+	# 右のボタンの上は、ボタンが受ける(ここには届かない)。それ以外のカードのどこを押しても、試聴
+	if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
 		if ev.pressed:
 			c.set_meta("press_at", ev.position)
 		elif c.has_meta("press_at"):
@@ -551,7 +544,7 @@ func _redraw_card(set_id: int) -> void:
 ## ジャケットの上: マウスを乗せると ▶、読み込み中は回る輪、流れている間は ❚❚・棒(イコライザー風)・進みの線
 func _draw_preview_overlay(c: Control, it: Dictionary, cr: Rect2) -> void:
 	var active := int(it.id) == _pv_id
-	var over := bool(c.get_meta("cover_hover", false))
+	var over := bool(c.get_meta("hover", false))   # カードにマウスを乗せている(右のボタンの上は含まない)
 	var ctr := cr.get_center()
 	var t := Time.get_ticks_msec() / 1000.0
 	if active or over:

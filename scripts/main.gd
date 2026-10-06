@@ -1322,10 +1322,21 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 				var t0 := Time.get_ticks_msec()
 				while Time.get_ticks_msec() - t0 < 6000:
 					await get_tree().process_frame
-				if extra.has("preview"):   # 1 つめの曲の試聴を流す(実際に b.ppy.sh から取る): --shot menu out.png finder preview
+				if extra.has("preview"):   # 1 つめの曲の試聴を流す(実際に b.ppy.sh から取る): --shot menu out.png finder preview [click]。click: カードの真ん中を、マウスで押す
 					var pc: Array = _current._finder._grid.get_children()
 					if not pc.is_empty():
-						_current._finder.toggle_preview(int(pc[0].get_meta("item").id))
+						if extra.has("click"):
+							var at: Vector2 = (pc[0] as Control).get_global_rect().get_center() - Vector2(60, 0)
+							for down in [true, false]:
+								var me := InputEventMouseButton.new()
+								me.button_index = MOUSE_BUTTON_LEFT
+								me.pressed = down
+								me.position = at
+								me.global_position = at
+								get_viewport().push_input(me)
+								await get_tree().process_frame
+						else:
+							_current._finder.toggle_preview(int(pc[0].get_meta("item").id))
 						t0 = Time.get_ticks_msec()
 						while Time.get_ticks_msec() - t0 < 4000:
 							await get_tree().process_frame

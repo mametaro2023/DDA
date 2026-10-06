@@ -15,6 +15,8 @@ signal song_load_failed(error: String, bad: int)
 signal song_reloading
 ## 選んでいる曲の、k 番の譜面の弾幕(発射の一覧を含む全部)が、そろった(統計だけだった弾幕が、プレイに使える形になった)。画面は、プレイを押せるようにする
 signal gen_ready(k: int)
+## rate_all_async の結果が、ratings に入った(MOD を付け外ししたあと、難易度の Lv を出し直す合図)
+signal ratings_updated
 ## 選んだ難易度の音声が、いま流れている音声と別のファイルで、読み込めた(res は song_loaded の res と同じ audio・audio_from・audio_offset・audio_full・audio_file)。
 ## request_audio が true を返したあとに、必ず 1 度届く(読み込めなかったときは届かない)。画面は、試聴を流し直す
 signal audio_switched(res: Dictionary)
@@ -513,6 +515,40 @@ func _on_load_done(res: Dictionary) -> void:
 func rate_all() -> void:
 	var p := Mods.params(settings.mods)
 	ratings = gens.map(func(g): return PatternGen.summary(Mods.apply(g, p)))
+
+
+var _rate_job := 0   # rate_all_async の何回目か(新しい要求が来たら、前の結果は捨てる)
+
+
+## rate_all を、裏のスレッド(難易度ごとに並列)でやる。終わると ratings を入れ替えて ratings_updated を出す(それまでは前の値のまま)。
+## 全難易度の測り直しは、MOD によっては 100 ms を超え、押した瞬間に画面が止まるため、画面は、こちらを使う。
+func rate_all_async() -> void:
+	var p := Mods.params(settings.mods)
+	var src: Array = gens.duplicate()
+	_rate_job += 1
+	var my := _rate_job
+	var out: Array = []
+	out.resize(src.size())
+	if src.is_empty():
+		return
+	var gid := WorkerThreadPool.add_group_task(func(i: int): out[i] = PatternGen.summary(Mods.apply(src[i], p)), src.size())
+	_wait_rate(gid, my, out)
+
+
+## 並列の測り直しが終わるのを、フレームごとに見て待つ(裏のスレッドの中で待つと、ほかの読み込みと取り合うため)。
+func _wait_rate(gid: int, job: int, out: Array) -> void:
+	var tree := Engine.get_main_loop() as SceneTree
+	while not WorkerThreadPool.is_group_task_completed(gid):
+		await tree.process_frame
+	WorkerThreadPool.wait_for_group_task_completion(gid)
+	_rate_done(job, out)
+
+
+func _rate_done(job: int, out: Array) -> void:
+	if job != _rate_job or out.size() != gens.size():   # 新しい要求が来た・曲が変わった: 捨てる
+		return
+	ratings = out
+	ratings_updated.emit()
 
 
 ## 難易度を選ぶ(難易度の数の範囲に収める)。選べなければ -2、選べたら選ぶ前の番号を返す。

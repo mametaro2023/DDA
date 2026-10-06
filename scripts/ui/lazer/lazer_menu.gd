@@ -213,6 +213,7 @@ func _ready() -> void:
 	browser.song_load_failed.connect(_on_song_load_failed)
 	browser.song_reloading.connect(func(): _set_loading(true))   # 弾幕 v2 の入り切りで、同じ曲を読み直している
 	browser.audio_switched.connect(_start_preview)   # 難易度によって音声のファイルが違う曲: 選んだ難易度の音声を流し直す
+	browser.ratings_updated.connect(_on_ratings_updated)   # MOD を付け外ししたあとの、難易度の測り直し(裏のスレッド)が終わった
 	browser.gen_ready.connect(_on_gen_ready)   # 統計だけで開いた曲の、選んだ譜面の発射の一覧がそろった
 	browser.sort_mode = str(settings.get("song_sort", "title"))
 	browser.charts_of = _charts_of
@@ -2781,7 +2782,11 @@ func _on_mods_changed() -> void:
 	if browser.needs_style_reload():   # 弾幕 v2 の入り切り: 弾幕そのものが変わるので、曲を読み直す(終わったら難易度も出る)
 		browser.reload_for_style()
 		return
-	_rate_all()
+	browser.rate_all_async()   # 全難易度の測り直しは重い(100 ms 超)ので、裏でやる。終わったら _on_ratings_updated
+
+
+## 難易度の測り直しが終わった: 一覧・詳細・MOD パネルの数字を出し直す。
+func _on_ratings_updated() -> void:
 	_refresh_mod_bar()
 	_fill_diffs()
 	_update_detail()

@@ -405,29 +405,31 @@ func _build_screen() -> Control:
 		bool(settings.vsync), "", func(on: bool):
 			settings.vsync = on
 			Settings.apply_vsync(on)))
-	# UI の見た目(クラシック / lazer 風など)。選んだあと、設定を閉じると、いまのタイトル・選曲画面から切り替わる
-	var gap_u := Control.new()
-	gap_u.custom_minimum_size = Vector2(0, 8)
-	v.add_child(gap_u)
-	v.add_child(UiStyle.label("UI の見た目", 16, UiStyle.TEXT, true))
+	# UI の見た目(選べる UI が複数あるとき)。選んだあと、設定を閉じると、いまのタイトル・選曲画面から切り替わる
+	# (選べる UI が 1 つだけのあいだは、選ぶ欄を出さない)
 	var ui_sets = load("res://scripts/ui/ui_sets.gd")   # (preload だと、UI セット ↔ このパネルが循環するので、使うときに読む)
-	var ui_seg := HBoxContainer.new()
-	ui_seg.add_theme_constant_override("separation", 8)
-	var ui_group := ButtonGroup.new()
-	for id in ui_sets.ids():
-		var ub := Button.new()
-		ub.text = str(ui_sets.get_set(id).display_name())
-		ub.toggle_mode = true
-		ub.button_group = ui_group
-		ub.focus_mode = Control.FOCUS_NONE
-		ub.custom_minimum_size = Vector2(150, 34)
-		ub.set_pressed_no_signal(str(settings.get("ui_style", "lazer")) == id)
-		var ui_id: String = id
-		ub.pressed.connect(func():
-			settings.ui_style = ui_id
-			changed.emit("ui_style"))
-		ui_seg.add_child(ub)
-	v.add_child(ui_seg)
+	if ui_sets.selectable_ids().size() > 1:
+		var gap_u := Control.new()
+		gap_u.custom_minimum_size = Vector2(0, 8)
+		v.add_child(gap_u)
+		v.add_child(UiStyle.label("UI の見た目", 16, UiStyle.TEXT, true))
+		var ui_seg := HBoxContainer.new()
+		ui_seg.add_theme_constant_override("separation", 8)
+		var ui_group := ButtonGroup.new()
+		for id in ui_sets.selectable_ids():
+			var ub := Button.new()
+			ub.text = str(ui_sets.get_set(id).display_name())
+			ub.toggle_mode = true
+			ub.button_group = ui_group
+			ub.focus_mode = Control.FOCUS_NONE
+			ub.custom_minimum_size = Vector2(150, 34)
+			ub.set_pressed_no_signal(str(settings.get("ui_style", "lazer")) == id)
+			var ui_id: String = id
+			ub.pressed.connect(func():
+				settings.ui_style = ui_id
+				changed.emit("ui_style"))
+			ui_seg.add_child(ub)
+		v.add_child(ui_seg)
 	var ui_gap := Control.new()
 	ui_gap.custom_minimum_size = Vector2(0, 8)
 	v.add_child(ui_gap)

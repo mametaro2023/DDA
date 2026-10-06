@@ -33,6 +33,7 @@ func _contract(label: String, n: Node, signals: Array, methods: Array, props: Ar
 func _init() -> void:
 	_check(UiSets.ids().has("classic") and UiSets.ids().has("lazer"), "UI セットに classic と lazer がある")
 	_check(UiSets.get_set("no-such-ui").id() == "lazer", "知らない名前は lazer(既定)に戻る")
+	_check(UiSets.selectable_ids() == ["lazer"], "設定で選べるのは lazer だけ(classic は選べない)")
 	for id in UiSets.ids():
 		var ui = UiSets.get_set(id)
 		_check(ui.id() == id and ui.display_name() != "", "%s: 名前を持つ" % id)

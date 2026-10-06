@@ -54,6 +54,10 @@ func _init() -> void:
 	var e1 := run.song_done({"failed": false, "score": 900000.0, "level": 4.0, "hp_end": 0.5, "title": "A"})
 	_check(is_equal_approx(e1.points, 900000.0) and is_equal_approx(run.total, 900000.0), "Lv 4 の曲は f = 1(点はそのまま)")
 	_check(is_equal_approx(run.gauge, 0.75) and run.picks == 1, "ゲージは持ち越して、曲の間に 25%% 回復(%.2f)。3 択が 1 回" % run.gauge)
+	run.levels["max_gauge"] = 2   # 体力の上限 1.3: 上限が増えても、いまの体力(絶対量)は増えない
+	var gp := run.game_params()
+	_check(is_equal_approx(float(gp.drain_mul), 1.3) and is_equal_approx(float(gp.gauge), 0.75 / 1.3) and is_equal_approx(float(gp.regen), 0.01), "最大ゲージ: 上限だけ増え、いまの体力・自然回復(毎秒 1%%)は絶対量のまま")
+	run.levels.erase("max_gauge")
 	_check(is_equal_approx(run.target_level(), 4.3), "2 曲目の目標は +0.3")
 	run.choose("bet")
 	_check(is_equal_approx(run.target_level(), 4.8), "背水で、次の曲の目標が +0.5")
@@ -80,6 +84,23 @@ func _init() -> void:
 	var r2 := SurvivalRun.new()
 	r2.start(4.0, ["noregen"], 5)
 	_check(r2.excluded_upgrades().has("regen"), "無回復のときは、自然回復の強化を出さない")
+
+	# --- 回復は初期の体力に対する量(体力を増やしても、絶対量は増えない)/ 被ダメージ半減は初期の体力の 30% 以下 ---
+	var fu := BulletField.new()
+	var su := GameSim.new()
+	su.setup(fu, {"events": [], "gizmos": [], "warn_lead": 0.6, "breaks": []}, 30.0, false, {})
+	su.drain_time *= 1.5
+	su.gauge_unit = 1.0 / 1.5
+	su.regen_rate = 0.01
+	su.low_threshold = 0.30 * su.gauge_unit
+	su.gauge = 0.5
+	var nu := 0.0
+	for i in range(120):
+		su.step(nu, 1.0 / 60.0, Vector2.ZERO, false)
+		nu += 1.0 / 60.0
+	_check(absf((su.gauge - 0.5) * 1.5 - 0.02) < 0.001, "体力 1.5 倍でも、自然回復は 2 秒で初期の体力の 2%%(絶対量 %.4f)" % ((su.gauge - 0.5) * 1.5))
+	_check(absf(su.low_threshold * 1.5 - 0.30) < 1e-6, "被ダメージ半減の境目は、初期の体力の 30%%(いまの体力の %.1f%%)" % (su.low_threshold * 100.0))
+	fu.free()
 
 	# --- 身代わり ---
 	var f := BulletField.new()

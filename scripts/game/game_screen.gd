@@ -274,7 +274,7 @@ var _beat_glow := 0.0     # 今の光の強さ 0..1(キアイ中、拍の頭で�
 var pre: Dictionary = {}
 
 ## サバイバル(scripts/survival/survival_run.gd の game_params)。空ならふつうのプレイ。
-## {gauge: 始めのゲージ, drain_mul: ゲージ満タンぶんの被弾時間の倍率, regen_add: 自然回復の上乗せ, guard: 身代わりの残り, guard_gauge, no: 何曲目か, total: これまでの合計点}
+## {gauge: 始めのゲージ, drain_mul: ゲージ満タンぶんの被弾時間の倍率, regen: 自然回復(初期の体力に対する割合 / 秒), low_line: 被ダメージ半減の境目(同), guard: 身代わりの残り, guard_gauge, no: 何曲目か, total: これまでの合計点}
 ## リトライ・リプレイの記録はなく、ポーズの「メニューへ」は「あきらめる」(そこまでの点で終わる)。
 var survival: Dictionary = {}
 var _sv_total_l: Label        # 右のパネルの合計点(これまでの合計 + この曲の点 × f)
@@ -423,8 +423,11 @@ func _ready() -> void:
 	sim = built.sim
 	_hp_w = HP_W * clampf(_mods.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.2)   # 体力が少ない MOD ほどバーが短い(地獄: 150ms ÷ 250ms = 0.6 倍)
 	if not survival.is_empty():   # サバイバル: ゲージを持ち越し、強化(最大ゲージ・自然回復・身代わり)を掛ける
-		sim.drain_time *= float(survival.get("drain_mul", 1.0))
-		sim.regen_rate += float(survival.get("regen_add", 0.0))
+		var dm := float(survival.get("drain_mul", 1.0))
+		sim.drain_time *= dm
+		sim.gauge_unit = 1.0 / dm   # 回復・半減の境目は、初期の体力に対する量(体力を増やしても、絶対量は増えない)
+		sim.regen_rate = float(survival.get("regen", GameSim.GAUGE_REGEN))
+		sim.low_threshold = maxf(sim.low_threshold, float(survival.get("low_line", sim.low_threshold))) * sim.gauge_unit
 		sim.guard = int(survival.get("guard", 0))
 		sim.guard_gauge = float(survival.get("guard_gauge", sim.guard_gauge))
 		sim.gauge = clampf(float(survival.get("gauge", 1.0)), 0.01, 1.0)

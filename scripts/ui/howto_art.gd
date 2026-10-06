@@ -318,7 +318,7 @@ const ZONE_ORDER_TRIAL := ["slow", "fragile", "poison", "flow", "haste"]
 const ZONE_ORDER_BOON := ["heal", "precise", "bonus", "warp"]
 const ZONE_EFFECT := {
 	"slow": "移動 0.45 倍", "fragile": "被ダメージ 2 倍", "poison": "ゲージが毎秒 10% 減る", "flow": "一定の向きへ押される", "haste": "中の弾が 1.5 倍の速さ",
-	"heal": "ゲージが毎秒 5% 回復", "precise": "当たり判定 0.6 倍・移動 0.75 倍", "bonus": "グレイズの点が 2 倍", "warp": "中の弾が 0.55 倍の速さ",
+	"heal": "自然回復 + 毎秒 1% 回復", "precise": "当たり判定 0.6 倍・移動 0.75 倍", "bonus": "グレイズの点が 2 倍", "warp": "中の弾が 0.55 倍の速さ",
 }
 
 func _zones(w: float, h: float) -> void:

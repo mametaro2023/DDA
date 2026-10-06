@@ -1,5 +1,6 @@
 extends "res://scripts/ui/lazer/lazer_screen.gd"
-## lazer 風のタイトル画面。左に DDA のロゴ、右に横に並ぶ 7 つのボタン(プレイ / マルチプレイ / サバイバル / リプレイ / 遊び方 / 設定 / 終了)。
+## lazer 風のタイトル画面。左に DDA のロゴ、右に横に並ぶ 6 つのボタン(プレイ / マルチプレイ / リプレイ / 遊び方 / 設定 / 終了)。
+## 「プレイ」は 2 段: 押すと、同じ帯に「ソロ / サバイバル / 戻る」が出る(ソロ = 選曲画面。Esc・戻るで元の 6 つへ)。
 ## 背景は、ランダムに選んだ曲の画像(暗く)で、その曲を流しておく(曲が終わったら、別のランダムな曲へ)。遊び方と設定は、この画面の上に重ねるパネル(曲は流れ続ける)。
 ## 契約は classic のタイトル(title_screen.gd)と同じ: signal play_requested / multi_requested / replays_requested / update_requested / settings_requested、
 ## (lazer だけ)survival_requested。
@@ -28,24 +29,30 @@ const MUSIC_DB := -4.0
 const ITEMS := [
 	["プレイ", "play", LazerStyle.PINK, Color(0.2, 0.04, 0.11), "play"],
 	["マルチプレイ", "users", LazerStyle.PURPLE, Color(0.1, 0.04, 0.22), "multi"],
-	["サバイバル", "repeat", LazerStyle.GREEN, Color(0.08, 0.18, 0.02), "survival"],
 	["リプレイ", "clock", LazerStyle.YELLOW, Color(0.18, 0.12, 0.0), "replays"],
 	["遊び方", "search", LazerStyle.BLUE, Color(0.03, 0.12, 0.2), "howto"],
 	["設定", "gear", Color(0.3, 0.28, 0.38), LazerStyle.TEXT, "settings"],
 	["終了", "power", LazerStyle.RED, Color(0.2, 0.03, 0.06), "quit"],
 ]
-const PITCHES := [1.0, 1.122, 1.26, 1.335, 1.5, 1.68, 1.888]   # 項目ごとの選択音の高さ(選ぶたびに音階のように聞こえる)
+## 「プレイ」の 2 段目
+const PLAY_ITEMS := [
+	["ソロ", "play", LazerStyle.PINK, Color(0.2, 0.04, 0.11), "solo"],
+	["サバイバル", "repeat", LazerStyle.GREEN, Color(0.08, 0.18, 0.02), "survival"],
+	["戻る", "back", Color(0.3, 0.28, 0.38), LazerStyle.TEXT, "back"],
+]
+const PITCHES := [1.0, 1.122, 1.26, 1.335, 1.5, 1.68]   # 項目ごとの選択音の高さ(選ぶたびに音階のように聞こえる)
 const LOGO_C := Vector2(310, 360)
 const STRIP_Y := 300.0
 const STRIP_H := 120.0
-const BTN_X := 462.0
-const BTN_W := 130.0
-const BTN_STEP := 112.0
+const BTN_X := 470.0
+const BTN_W := 140.0
+const BTN_STEP := 126.0
 
 var kind := "title"
 var update_info: Dictionary = {}   # 新しいバージョンがあるとき、main が渡す(あとから見つかった場合は show_update)
 var _sel := 0
-var _cards: Array = []             # 項目のボタン
+var _cards: Array = []             # 項目のボタン(いま出している段のもの)
+var _sub := false                  # 「プレイ」の 2 段目を出している
 var _logo: Control
 var _audio: AudioStreamPlayer
 var _last_path := ""
@@ -68,20 +75,7 @@ func _ready() -> void:
 	_logo.position = LOGO_C - _logo.size * 0.5
 	add_child(_logo)
 	_logo.pressed.connect(func(): _activate(0))
-	for i in range(ITEMS.size()):
-		var it: Array = ITEMS[i]
-		var b := LazerButton.new(it[0], it[2], it[1], it[3])
-		b.stacked = true
-		b.font_size = 16
-		b.slant = 16.0
-		b.position = Vector2(BTN_X + i * BTN_STEP, STRIP_Y + 8.0)
-		b.size = Vector2(BTN_W, STRIP_H - 16.0)
-		b.mouse_entered.connect(func(): _select(i))
-		b.pressed.connect(func(): _activate(i))
-		if i == ITEMS.size() - 1:
-			b.set_meta("juice_sound", "back")
-		add_child(b)
-		_cards.append(b)
+	_build_cards()
 	_restyle(false)
 	_ver_l = LazerStyle.label("Danmaku      BETA v%s" % _version(), 14, LazerStyle.TEXT_MUTE)
 	_ver_l.position = Vector2(28, 720 - 38)
@@ -254,6 +248,55 @@ func _select(i: int) -> void:
 	_restyle(true)
 
 
+## いまの段の項目。
+func _items() -> Array:
+	return PLAY_ITEMS if _sub else ITEMS
+
+
+## いまの段のボタンを並べる。
+func _build_cards() -> void:
+	_cards.clear()
+	var items := _items()
+	for i in range(items.size()):
+		var it: Array = items[i]
+		var b := LazerButton.new(it[0], it[2], it[1], it[3])
+		b.stacked = true
+		b.font_size = 18
+		b.slant = 16.0
+		b.position = Vector2(BTN_X + i * BTN_STEP, STRIP_Y + 8.0)
+		b.size = Vector2(BTN_W, STRIP_H - 16.0)
+		b.mouse_entered.connect(func(): _select(i))
+		b.pressed.connect(func(): _activate(i))
+		if i == items.size() - 1:
+			b.set_meta("juice_sound", "back")
+		add_child(b)
+		_cards.append(b)
+
+
+## 段を切り替える(プレイ ⇄ ソロ / サバイバル / 戻る)。今のボタンは右へ流れて消え、新しいボタンが右から順に滑り込む。
+func _switch_level(sub: bool) -> void:
+	if sub == _sub:
+		return
+	var old := _cards.duplicate()
+	for k in range(old.size()):
+		var c: Control = old[k]
+		c.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		if UiStyle.animate:
+			var t := c.create_tween().set_parallel(true)
+			t.tween_property(c, "modulate:a", 0.0, 0.16).set_delay(0.02 * k)
+			t.tween_property(c, "position:x", c.position.x + 40.0, 0.18).set_delay(0.02 * k).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+			t.chain().tween_callback(c.queue_free)
+		else:
+			c.queue_free()
+	_sub = sub
+	_sel = 0
+	_build_cards()
+	_restyle(false)
+	if UiStyle.animate:
+		for i in range(_cards.size()):
+			UiStyle.pop_in(_cards[i], 0.08 + 0.05 * i, Vector2(50, 0), 0.4)
+
+
 ## 選んでいる項目は、上下へ少し伸びて明るくなる。
 func _restyle(animated: bool) -> void:
 	for i in range(_cards.size()):
@@ -274,10 +317,11 @@ func _restyle(animated: bool) -> void:
 		t.tween_property(b, "size:y", to_h, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
-## 項目の id("play" / "multi" / "survival" / "replays" / "howto" / "settings" / "quit")の番号。
+## いまの段の項目の id の番号(1 段目: "play" / "multi" / "replays" / "howto" / "settings" / "quit"、2 段目: "solo" / "survival" / "back")。
 func item_index(id: String) -> int:
-	for i in range(ITEMS.size()):
-		if ITEMS[i][4] == id:
+	var items := _items()
+	for i in range(items.size()):
+		if items[i][4] == id:
 			return i
 	return -1
 
@@ -288,8 +332,14 @@ func _activate(i: int) -> void:
 	if i != _sel:
 		_sel = i
 		_restyle(true)
-	match str(ITEMS[i][4]):
-		"play", "multi", "survival":
+	match str(_items()[i][4]):
+		"play":
+			UiSfx.play("open")
+			_switch_level(true)
+		"back":
+			UiSfx.play("back")
+			_switch_level(false)
+		"solo", "multi", "survival":
 			UiSfx.play("confirm")
 			_leaving = true
 			_fade_music(0.35)
@@ -299,8 +349,8 @@ func _activate(i: int) -> void:
 			_slide_out()
 			if UiStyle.animate:
 				await get_tree().create_timer(0.3).timeout
-			match str(ITEMS[i][4]):
-				"play":
+			match str(_items()[i][4]):
+				"solo":
 					play_requested.emit()
 				"multi":
 					multi_requested.emit()
@@ -340,10 +390,10 @@ func _input(event: InputEvent) -> void:
 		return
 	match event.keycode:
 		KEY_UP, KEY_LEFT:
-			_select(posmod(_sel - 1, ITEMS.size()))
+			_select(posmod(_sel - 1, _items().size()))
 			get_viewport().set_input_as_handled()
 		KEY_DOWN, KEY_RIGHT:
-			_select(posmod(_sel + 1, ITEMS.size()))
+			_select(posmod(_sel + 1, _items().size()))
 			get_viewport().set_input_as_handled()
 		KEY_ENTER, KEY_KP_ENTER:
 			if not event.echo:
@@ -351,5 +401,5 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		KEY_ESCAPE:
 			if not event.echo:
-				_activate(ITEMS.size() - 1)   # 終了の確認
+				_activate(_items().size() - 1)   # 1 段目: 終了の確認 / 2 段目: 戻る
 			get_viewport().set_input_as_handled()

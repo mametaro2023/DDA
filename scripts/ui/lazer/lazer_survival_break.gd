@@ -174,13 +174,13 @@ func _build_result() -> void:
 	g_row.add_child(_gauge_l)
 	_gauge_shown = gauge_from
 	_set_gauge_text()
-	UiStyle.tween(self, "_gauge_shown", gauge_from, float(run.gauge), 0.7, 0.75, Tween.TRANS_CUBIC, Tween.EASE_OUT)
+	UiStyle.tween(self, "_gauge_shown", gauge_from, float(run.gauge_frac()), 0.7, 0.75, Tween.TRANS_CUBIC, Tween.EASE_OUT)
 	UiStyle.pop_in(card, 0.08, Vector2(0, 18), 0.45)
 
 
 func _set_gauge_text() -> void:
 	if _gauge_l != null:
-		_gauge_l.text = "%d%%  →  %d%%" % [int(round(gauge_from * 100.0)), int(round(float(run.gauge) * 100.0))]
+		_gauge_l.text = "%d%%  →  %d%%" % [int(round(gauge_from * 100.0)), int(round(float(run.gauge_frac()) * 100.0))]
 
 
 func _draw_gauge() -> void:

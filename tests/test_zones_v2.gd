@@ -318,7 +318,7 @@ func _test_effects() -> void:
 	_run(s2, 0.0, 0.5, right)
 	_check(absf((s1.player_pos.x - MID.x) / (s2.player_pos.x - MID.x) - GameSim.ZONE_PRECISE_SPEED) < 0.03, "精密: 移動が %.2f 倍" % GameSim.ZONE_PRECISE_SPEED)
 	_check(absf(s.hit_mult_at(MID, 0.05) - GameSim.ZONE_PRECISE_HIT) < 1e-9, "他の人の当たり判定の倍率も、精密のエリアの中は %.1f 倍" % GameSim.ZONE_PRECISE_HIT)
-	# 癒し: ゲージが毎秒 5% 回復(累計ダメージからは引かない)。休憩の間は回復しない
+	# 癒し: 自然回復に上乗せして、ゲージが毎秒 1% 回復(累計ダメージからは引かない)。休憩の間は回復しない
 	var s3 = _make([_zone([_all("heal")])])[0]
 	s3.gauge = 0.5
 	s3.player_pos = MID
@@ -327,7 +327,7 @@ func _test_effects() -> void:
 	s3b.gauge = 0.5
 	s3b.player_pos = MID
 	_run(s3b, 0.0, 2.0)
-	_check(absf((s3.gauge - s3b.gauge) - 0.10) < 0.01 and s3.damage_total == 0.0 and s3.zone_debuff == "heal", "癒し: 2 秒で約 10%% 回復する(エリアなしより +%.3f)" % (s3.gauge - s3b.gauge))
+	_check(absf((s3.gauge - s3b.gauge) - 2.0 * GameSim.ZONE_HEAL_RATE) < 0.003 and s3.damage_total == 0.0 and s3.zone_debuff == "heal", "癒し: 2 秒で、自然回復より約 %d%% 多く回復する(エリアなしより +%.3f)" % [int(round(200.0 * GameSim.ZONE_HEAL_RATE)), s3.gauge - s3b.gauge])
 	var s3c = _make([_zone([_all("heal")])], 1, true, [[0.0, 50.0]])[0]
 	s3c.gauge = 0.5
 	s3c.player_pos = MID
@@ -491,7 +491,7 @@ func _test_coop() -> void:
 	sc.player_pos = MID
 	_run(sc, 0.0, 2.0)
 	var rep: Dictionary = sc.take_contact()
-	_check(rep.get("hl", 0.0) > 0.01 and sc.gauge == 1.0, "参加者: 癒しは自分のゲージには足さず、報告に溜める(%.3f 秒ぶん)" % rep.get("hl", 0.0))
+	_check(absf(float(rep.get("hl", 0.0)) - 2.0 * GameSim.ZONE_HEAL_RATE * GameSim.GAUGE_DRAIN_TIME) < 0.001 and sc.gauge == 1.0, "参加者: 癒しは自分のゲージには足さず、報告に溜める(%.3f 秒ぶん)" % rep.get("hl", 0.0))
 	var host = _make([], 2, true)
 	host[0].gauge = 0.5
 	host[0].ext_report(0.0, 0, 0, 0.0, rep.hl, 0.0)

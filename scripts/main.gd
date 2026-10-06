@@ -1451,6 +1451,8 @@ func _shot(kind: String, out: String, extra: Array, animated := false) -> void:
 						if sc.is_visible_in_tree():
 							sc.scroll_vertical = int(extra[2])
 					await get_tree().create_timer(0.3).timeout
+			elif extra.size() > 0 and extra[0] == "play":   # lazer 風: 「プレイ」の 2 段目(ソロ / サバイバル / 戻る)
+				_current._activate(_title_idx("play", 0))
 			elif extra.size() > 0 and extra[0] == "options":
 				_current._activate(_title_idx("settings", 3))
 			elif extra.size() > 0 and extra[0] == "quit":
@@ -4077,7 +4079,7 @@ func _smoke_survival() -> void:
 	show_survival()
 	await get_tree().create_timer(0.5).timeout
 	var s = _current
-	chk.call(_kind == "survival_setup", "タイトルの「サバイバル」から準備画面")
+	chk.call(_kind == "survival_setup", "サバイバルの準備画面が開く")
 	await wait_for.call(func(): return not s._charts.is_empty() and not s._reading, 40.0)
 	chk.call(not s._charts.is_empty(), "準備画面: 統計のある譜面 %d(曲 %d)" % [s._charts.size(), SurvivalPicker.song_count(s._charts)])
 	await get_tree().create_timer(1.0).timeout

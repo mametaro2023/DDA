@@ -16,7 +16,7 @@ extends RefCounted
 ## ## 特殊エリア(MOD「弾幕 v2」)
 ## gen.zones の各要素が areas(形 + 種類のリスト。形は zone_area.gd)を持つとき(= 弾幕 v2)は、3×3 のマスではなく、その形が特殊エリアになる。種類は 3 系統:
 ##   試練(自機が不利): 鈍足・脆弱・毒(+ v1 の巨大)。中でグレイズすると、ボーナス用のグレイズが ZONE_GRAZE_TRIAL 倍ぶん、上乗せされる(リスクの見返り)
-##   恩恵(自機が有利): 癒し(heal: ゲージが ZONE_HEAL_DRAIN(/秒)で回復)/ 精密(precise: 当たり判定 ZONE_PRECISE_HIT 倍・移動 ZONE_PRECISE_SPEED 倍)/ 稼ぎ(bonus: グレイズの上乗せ ZONE_GRAZE_BONUS 倍 + グレイズごとに、失った被ダメージ係数を ZONE_GRAZE_REFUND の割合ずつ取り戻す)
+##   恩恵(自機が有利): 癒し(heal: 自然回復に上乗せして、ゲージが ZONE_HEAL_RATE(/秒)で回復)/ 精密(precise: 当たり判定 ZONE_PRECISE_HIT 倍・移動 ZONE_PRECISE_SPEED 倍)/ 稼ぎ(bonus: グレイズの上乗せ ZONE_GRAZE_BONUS 倍 + グレイズごとに、失った被ダメージ係数を ZONE_GRAZE_REFUND の割合ずつ取り戻す)
 ##   変質(弾に作用): 時の淀み(warp: エリアの中の弾が ZONE_WARP 倍の速さで進む)/ 時の急流(haste: ZONE_HASTE 倍。試練)。弾の位置だけで決まるので、協力でも全員が同じ弾を見る。
 ##     弾の速さの倍率は、目標へなめらかに近づく(入るときは速く、出たあとはゆっくり戻る。BulletField.WARP_ENTER / WARP_EXIT)ので、エリアが消えても弾が急に元の速さへ戻らない。
 ##   流れ(flow: 試練): 自機が、エリアごとの向き(area.dir)へ、入力に関係なく ZONE_FLOW_SPEED で押される。
@@ -73,7 +73,7 @@ const ZONE_SLOW := 0.45            # 鈍足: 移動の倍率
 const ZONE_FRAGILE := 2.0          # 脆弱: 被ダメージの倍率
 const ZONE_BIG := 1.8              # 巨大: 自機の当たり判定の倍率(見た目の当たり判定の点も大きくなる)
 const ZONE_POISON_DRAIN := 0.10    # 毒: ゲージの減る速さ(ゲージ全体に対する割合 / 秒)
-const ZONE_HEAL_DRAIN := 0.05      # 癒し: ゲージの増える速さ(ゲージ全体に対する割合 / 秒。自然回復 GAUGE_REGEN の約 3 倍)
+const ZONE_HEAL_RATE := 0.01       # 癒し: 自然回復に上乗せする、ゲージの増える速さ(ゲージ全体に対する割合 / 秒。協力では 1 人ぶんのゲージに対して)。強すぎたので 5% から 1% にした
 const ZONE_PRECISE_HIT := 0.6      # 精密: 自機の当たり判定の倍率
 const ZONE_PRECISE_SPEED := 0.75   # 精密: 移動の倍率
 const ZONE_WARP := 0.55            # 時の淀み: エリアの中の弾の速さの倍率
@@ -148,7 +148,10 @@ var drain_time := GAUGE_DRAIN_TIME    # ゲージ満タンぶんの被弾時間(
 var low_protect := true               # ゲージが low_threshold 以下で被ダメージが半分になるか
 var low_threshold := GAUGE_LOW_THRESHOLD   # その境目(MOD「天国」で 35%)
 var regen := true                     # 被弾していないときの自然回復(MOD「無回復」で false)
-var regen_rate := GAUGE_REGEN         # その回復の速さ(ゲージ全体に対する割合 / 秒。サバイバルの強化で上がる)
+var regen_rate := GAUGE_REGEN         # その回復の速さ(初期の体力に対する割合 / 秒。サバイバルは 1% + 強化)
+## 初期の体力 ÷ いまの体力(サバイバルの「最大ゲージ」の強化で 1 より小さくなる)。回復(自然回復・癒し)と、被ダメージ半減の境目は、初期の体力に対する量で決めるので、
+## ゲージ(いまの体力に対する割合)へは、これを掛けて換算する(体力を増やしても、回復の絶対量は増えない)。ふつうのプレイは 1
+var gauge_unit := 1.0
 var guard := 0                        # サバイバルの「身代わり」の残り: ゲージが 0 になるとき、guard_gauge で踏みとどまり、盤面の弾を消す
 var guard_gauge := 0.4
 var guard_t := -1.0                   # 最後に身代わりを使った時刻(-1 = 使っていない。画面が演出に使う)
@@ -590,7 +593,7 @@ func _update(now: float, dt: float) -> void:
 	else:
 		_no_hit_time += dt
 		if regen and not resting and authority and _ext_hit_t <= 0.0:
-			gauge = minf(gauge + regen_rate * dt, 1.0)
+			gauge = minf(gauge + regen_rate * gauge_unit * dt, 1.0)
 
 	_update_poison(dt, resting)
 	_update_heal(dt, resting)
@@ -833,7 +836,7 @@ func _apply_boss_picks() -> void:
 func _update_heal(dt: float, resting: bool) -> void:
 	if zone_debuff != "heal" or resting:
 		return
-	var hs := ZONE_HEAL_DRAIN * GAUGE_DRAIN_TIME * dt
+	var hs := ZONE_HEAL_RATE * gauge_unit * drain_time / float(players_n) * dt   # 1 人ぶんのゲージに対する割合を、被弾時間に換算
 	if authority:
 		gauge = minf(gauge + hs / drain_time, 1.0)
 	else:

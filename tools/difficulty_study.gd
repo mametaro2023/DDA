@@ -6,6 +6,7 @@ extends SceneTree
 ##   godot --headless --path . --script tools/difficulty_study.gd -- mods [dir=<osz のフォルダ>] [part=k/n]   MOD ごと: Lv の変化と、ボットが倒れる回数(ベーススコアの倍率を決める材料)
 ##   godot --headless --path . --script tools/difficulty_study.gd -- elastic [jobs=12] [minlv=0] [bots=human hd=0.26 he=0.15]  弾数・弾の大きさ・弾速の効き(並列。下の _elastic)
 ##   godot --headless --path . --script tools/difficulty_study.gd -- calib [jobs=14]   人間に近いボットを、保存されたリプレイ(使う人のプレイ)に合わせる(下の _calib)
+##   godot --headless --path . --script tools/difficulty_study.gd -- sizeexp [exp=1.3] [jobs=14]   SIZE_EXP を変えたときの、全譜面の Lv の変化(下の _sizeexp)
 ## 出力は CSV ふうの行(先頭が "row," / "factor," / "mod," / "el,")。
 
 const OszLoader = preload("res://scripts/osu/osz_loader.gd")
@@ -31,6 +32,8 @@ func _init() -> void:
 		_elastic(args)
 	elif args.has("calib"):
 		_calib(args)
+	elif args.has("sizeexp"):
+		_sizeexp(args)
 	else:
 		var filters: Array = []
 		for a in args:
@@ -761,3 +764,126 @@ func _parallel(mode_args: Array, jobs: int, prefix: String) -> Array:
 					lines.append(l)
 	print("%s: %d 本の結果(%d 並列、%.0f 秒)" % [str(mode_args[0]), lines.size(), jobs, (Time.get_ticks_msec() - t0) / 1000.0])
 	return lines
+
+
+# --- SIZE_EXP を変えたときの Lv の変化(sizeexp) ---
+## 全譜面(弾幕 v2)で、いまの SIZE_EXP と exp の 2 通りを比べる:
+##   ① 同じ弾幕のまま測り直した Lv(表示が変わる量)。MOD「地獄」(弾サイズ ×1.35)・「巨人」(自機 ×2)・「天国」(弾サイズ ×0.7)を付けたときも
+##   ② exp で弾幕を作り直したとき: Lv(目標に合わせるので、ほぼ同じ)と、弾の数・弾サイズの変化(実際に遊ぶ弾幕が変わる量)
+##   godot --headless --path . --script tools/difficulty_study.gd -- sizeexp [exp=1.3] [jobs=14] [dir=<osz のフォルダ>]
+func _sizeexp(args: Array) -> void:
+	var dir := "C:/Desktop/my_apps/DDA"
+	var e1 := 1.3
+	var jobs := 1
+	var part := 0
+	var parts := 1
+	var out := ""
+	for a in args:
+		var s := str(a)
+		if s.begins_with("dir="):
+			dir = s.trim_prefix("dir=")
+		elif s.begins_with("exp="):
+			e1 = float(s.trim_prefix("exp="))
+		elif s.begins_with("jobs="):
+			jobs = int(s.trim_prefix("jobs="))
+		elif s.begins_with("out="):
+			out = s.trim_prefix("out=")
+		elif s.begins_with("part="):
+			var kn: PackedStringArray = s.trim_prefix("part=").split("/")
+			part = int(kn[0])
+			parts = int(kn[1])
+	if jobs > 1 and out == "":
+		_sizeexp_report(_parallel(["sizeexp", "dir=" + dir, "exp=%f" % e1], jobs, "sx,"), e1)
+		return
+	var e0 := PatternGen.SIZE_EXP
+	var mods := {"hell": Mods.params(["hell"]), "giant": Mods.params(["giant"]), "heaven": Mods.params(["heaven"])}
+	var lines: Array = []
+	var k := 0
+	for path in _osz_files(dir):
+		var loader := OszLoader.new()
+		if not loader.open(path):
+			continue
+		for bm in loader.difficulties:
+			k += 1
+			if (k - 1) % parts != part:
+				continue
+			PatternGen.size_exp = e0
+			var gen := PatternGenV2.generate(bm, {})
+			var lv0 := float(gen.level)
+			var m0 := {}
+			for id in mods:
+				m0[id] = float(Mods.apply(gen, mods[id]).level)
+			PatternGen.size_exp = e1
+			var lv1 := _relevel(gen)   # ① 同じ弾幕を、新しい指数で測り直す
+			var m1 := {}
+			for id in mods:
+				m1[id] = float(Mods.apply(gen, mods[id]).level)
+			var gen2 := PatternGenV2.generate(bm, {})   # ② 新しい指数で作り直す
+			PatternGen.size_exp = e0
+			lines.append("sx,%s,%s,%.2f,%.3f,%.2f,%.2f,%.2f,%d,%d,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f" % [str(path).get_file().substr(0, 14).replace(",", " "), str(bm.version).replace(",", " "),
+				float(gen.stars), float(gen.size) / (6.75 * PatternGenV2.V2_SIZE_MUL), lv0, lv1, float(gen2.level), _shots(gen), _shots(gen2), float(gen2.size) / maxf(float(gen.size), 0.001),
+				m0.hell, m1.hell, m0.giant, m1.giant, m0.heaven, m1.heaven])
+	if out != "":
+		var f := FileAccess.open(out, FileAccess.WRITE)
+		f.store_string("\n".join(lines) + "\n")
+		f.close()
+	else:
+		_sizeexp_report(lines, e1)
+
+
+## 同じ弾幕の Lv を、いまの指数(PatternGen.size_exp)で測り直す(Mods.apply の最後と同じ式)。
+func _relevel(gen: Dictionary) -> float:
+	var rating := PatternGen.measure(gen.events, gen.get("breaks", []), float(gen.size) if bool(gen.get("size_weight", false)) else 0.0)
+	return PatternGen.level_of(rating.score, float(gen.speed), float(gen.size), PatternGen.PLAYER_HIT_R, rating.duration, float(gen.get("speed_ref", PatternGen.BASE_SPEED)), gen.get("table", PatternGen.TARGET_TABLE))
+
+
+func _shots(gen: Dictionary) -> int:
+	var n := 0
+	for e in gen.events:
+		for s in e.shots:
+			n += int(s.n)
+	return n
+
+
+func _sizeexp_report(lines: Array, e1: float) -> void:
+	print("sx,set,version,stars,size(基準比),lv(いま),lv(測り直し),lv(作り直し),弾数(いま),弾数(作り直し),弾サイズ(作り直し/いま),地獄(いま),地獄(新),巨人(いま),巨人(新),天国(いま),天国(新)")
+	var rows: Array = []
+	for l in lines:
+		print(l)
+		rows.append(str(l).split(","))
+	rows.sort_custom(func(a, b): return float(a[4]) < float(b[4]))
+	var n := float(rows.size())
+	if n == 0:
+		return
+	var sum_d := 0.0
+	var sum_ad := 0.0
+	var max_up := -99.0
+	var max_dn := 99.0
+	var cnt := 0.0
+	var gsz := 0.0
+	var dm := {"hell": 0.0, "giant": 0.0, "heaven": 0.0}
+	for r in rows:
+		var d := float(r[6]) - float(r[5])
+		sum_d += d
+		sum_ad += absf(d)
+		max_up = maxf(max_up, d)
+		max_dn = minf(max_dn, d)
+		cnt += log(float(r[9]) / maxf(float(r[8]), 1.0))
+		gsz += log(float(r[10]))
+		dm.hell += (float(r[12]) - float(r[6])) - (float(r[11]) - float(r[5]))
+		dm.giant += (float(r[14]) - float(r[6])) - (float(r[13]) - float(r[5]))
+		dm.heaven += (float(r[16]) - float(r[6])) - (float(r[15]) - float(r[5]))
+	print("sx_sum: 譜面 %d、SIZE_EXP %.2f → %.2f" % [rows.size(), PatternGen.SIZE_EXP, e1])
+	print("sx_sum: ① 同じ弾幕の Lv の変化: 平均 %+.2f、絶対値の平均 %.2f、最大 %+.2f / 最小 %+.2f" % [sum_d / n, sum_ad / n, max_up, max_dn])
+	print("sx_sum: ② 作り直したとき: 弾数 ×%.3f(幾何平均)、弾サイズ ×%.3f" % [exp(cnt / n), exp(gsz / n)])
+	print("sx_sum: MOD を付けたときの Lv の上がり幅の変化(新 − いま、平均): 地獄 %+.2f / 巨人 %+.2f / 天国 %+.2f" % [dm.hell / n, dm.giant / n, dm.heaven / n])
+	# 弾サイズの大きさ別(基準比)の、① の変化
+	for b in [[0.0, 0.9], [0.9, 1.1], [1.1, 9.0]]:
+		var s := 0.0
+		var c := 0
+		for r in rows:
+			if float(r[4]) >= float(b[0]) and float(r[4]) < float(b[1]):
+				s += float(r[6]) - float(r[5])
+				c += 1
+		if c > 0:
+			print("sx_sum: 弾サイズ(基準比)%.1f〜%.1f の譜面 %d: ① の平均 %+.2f" % [b[0], minf(b[1], 9.0), c, s / c])

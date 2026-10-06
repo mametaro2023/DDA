@@ -53,6 +53,8 @@ const BULLET_SIZE_MUL := 1.25
 const PLAYER_SIZE_MUL := 1.15
 const DANGER_REF := HIT_SCALE * BULLET_SIZE_MUL * 6.75 + PLAYER_HIT_R * PLAYER_SIZE_MUL   # 弾サイズ 6.75 のときの危険半径
 const SIZE_EXP := 1.0
+## 実際に使う指数(ふだんは SIZE_EXP。調査ツール tools/difficulty_study.gd の sizeexp が、別の値で Lv を試すために差し替える)
+static var size_exp := SIZE_EXP
 const SIZE_ABSORB_MIN := 0.6
 const SIZE_ABSORB_MAX := 1.4
 ## 星(基準)が変わったとき、これ以上は Lv を追わない
@@ -157,7 +159,7 @@ static func generate(bm: Beatmap, opts := {}) -> Dictionary:
 	# 2) 弾数の下限/上限で合わせきれなかった分は、弾サイズで吸収する(弾数 N(t) は変わらない)
 	var adj_now := adjusted_score(rating.score, speed, size, PLAYER_HIT_R, speed_ref)
 	if rating.score >= 0.5 and absf(adj_now - target_adj) > target_adj * 0.03:
-		var danger := danger_radius(size) * target_adj / adj_now
+		var danger := danger_radius(size) * pow(target_adj / adj_now, 1.0 / size_exp)   # adj は危険半径の size_exp 乗に比例する
 		var absorbed := clampf((danger - PLAYER_HIT_R * PLAYER_SIZE_MUL) / (HIT_SCALE * BULLET_SIZE_MUL), size * SIZE_ABSORB_MIN, size * SIZE_ABSORB_MAX)
 		if not is_equal_approx(absorbed, size):
 			size = absorbed
@@ -207,7 +209,7 @@ static func danger_radius(size: float, player_r := PLAYER_HIT_R) -> float:
 ## 弾速・弾サイズの補正をかけた難易度スコア adj。
 ## speed_ref = 弾速が補正 1 になる基準(省略は BASE_SPEED)。弾幕 v2 は譜面の AR で決まる弾速を基準にするので、AR の違いは補正に入らない(MOD の弾速の倍率だけが入る)。
 static func adjusted_score(score: float, speed: float, size: float, player_r := PLAYER_HIT_R, speed_ref := BASE_SPEED) -> float:
-	return score * pow(speed / speed_ref, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, SIZE_EXP)
+	return score * pow(speed / speed_ref, SPEED_EXP) * pow(danger_radius(size, player_r) / DANGER_REF, size_exp)
 
 
 ## 長さ(持久力)の補正の倍率。duration = 最初のノーツ〜最後の発射の秒数(休憩地帯を除く。0 以下なら補正なし)。
@@ -761,7 +763,7 @@ static func _mark_span(diff: PackedFloat64Array, cells: int, t0: float, t1: floa
 static func _weight(size: float, size_ref: float) -> float:
 	if size_ref <= 0.0:
 		return 1.0
-	return pow(danger_radius(size) / danger_radius(size_ref), SIZE_EXP)
+	return pow(danger_radius(size) / danger_radius(size_ref), size_exp)
 
 
 ## Danmaku 難易度 v1: 画面内の弾数 N(t) から {mean, p95, peak, score, duration} を返す(events は時刻順)。

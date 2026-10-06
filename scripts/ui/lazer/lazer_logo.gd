@@ -5,7 +5,7 @@ extends Control
 ##   中 … 「Danmaku」の文字(丸い端の太い線。影つき)。
 ##   下 … 自機(矢じり)と、当たり判定の黄色い点。弾をよけるように、ゆっくり左右へ揺れる。
 ##   周り … 欠けのある輪(端ほど薄い)がゆっくり回り、その外を、ゲームと同じ形の弾(色の輪 + 白い芯)が、尾を引いて周回する。
-## 動きはゆっくりした回転・流れ・揺れと、ごくわずかな拍動だけ(点滅・フラッシュはしない)。押せる(pressed)。マウスが乗ると少し大きくなり、弾が少し速くなる。
+## 動きはゆっくりした回転・流れ・揺れだけ(点滅・フラッシュはしない)。押せる(pressed)。マウスが乗ると少し大きくなり、弾が少し速くなる。
 
 signal pressed
 
@@ -37,7 +37,6 @@ var _hover_target := 0.0
 var _press := 0.0
 var _baked := false
 var _rotors: Array = []   # [TextureRect, 回る速さ]
-var _breathers: Array = []   # 拍動で大きさが変わる TextureRect
 var _dyn: Control
 
 
@@ -117,8 +116,6 @@ func _bake() -> void:
 		shown.append(tr)
 		if sp[1] != 0.0:
 			_rotors.append([tr, sp[1]])
-		elif layer == Layer.BACK or layer == Layer.TOP:
-			_breathers.append(tr)
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	if not is_inside_tree():
@@ -133,14 +130,7 @@ func _bake() -> void:
 func _move_baked() -> void:
 	for r in _rotors:
 		r[0].rotation = _spin * r[1]
-	var breath := _breath()
-	for tr in _breathers:
-		tr.scale = Vector2(breath, breath)
 	_dyn.queue_redraw()
-
-
-func _breath() -> float:
-	return 1.0 + 0.008 * sin(_t * 1.6)   # ごくゆっくりした拍動
 
 
 func _draw() -> void:
@@ -150,7 +140,7 @@ func _draw() -> void:
 	match _layer:
 		Layer.BACK:
 			_paint_thin_ring(c, u)
-			_paint_base(c, u, 1.0, pink)
+			_paint_base(c, u, pink)
 		Layer.RING:
 			_paint_ring(c, u, 0.0, pink)
 		Layer.OUTER:
@@ -158,27 +148,26 @@ func _draw() -> void:
 		Layer.INNER:
 			_paint_inner(c, u, 0.0)
 		Layer.TOP:
-			_paint_top(c, u, 1.0, pink)
+			_paint_top(c, u, pink)
 		Layer.DYN:
 			var root = get_parent()
 			_t = root._t
 			_spin = root._spin
-			var rr := DISC_R * u * _breath()
+			var rr := DISC_R * u
 			_draw_fan(c, rr, c.y + 4.0 * u, u)
 			_draw_ship(c, rr, u)
 		_:
 			if _baked:
 				return
-			var breath := _breath()   # 焼き上がるまで(と、焼かない設定のとき): 全部を描く
-			var rr := DISC_R * u * breath
+			var rr := DISC_R * u   # 焼き上がるまで(と、焼かない設定のとき): 全部を描く
 			_paint_thin_ring(c, u)
 			_paint_ring(c, u, _spin, pink)
 			_paint_outer(c, u, _spin)
 			_paint_inner(c, u, _spin)
-			_paint_base(c, u, breath, pink)
+			_paint_base(c, u, pink)
 			_draw_fan(c, rr, c.y + 4.0 * u, u)
 			_draw_ship(c, rr, u)
-			_paint_top(c, u, breath, pink)
+			_paint_top(c, u, pink)
 
 
 ## いちばん外の、細い輪
@@ -217,8 +206,8 @@ func _paint_inner(c: Vector2, u: float, spin: float) -> void:
 
 
 ## 台座: 影 → 白い縁 → グラデーションの円盤
-func _paint_base(c: Vector2, u: float, breath: float, pink: Color) -> void:
-	var rr := DISC_R * u * breath
+func _paint_base(c: Vector2, u: float, pink: Color) -> void:
+	var rr := DISC_R * u
 	for k in range(6):   # やわらかい影(少し下へ)
 		draw_circle(c + Vector2(0, 7.0 * u), rr + (14.0 - 2.0 * k) * u, Color(0.05, 0.0, 0.06, 0.06))
 	draw_circle(c, rr + 7.0 * u, Color(1, 1, 1, 0.95))
@@ -226,8 +215,8 @@ func _paint_base(c: Vector2, u: float, breath: float, pink: Color) -> void:
 
 
 ## 内側の縁(細い白い輪)・上半分の艶・文字「Danmaku」(影 → 白)
-func _paint_top(c: Vector2, u: float, breath: float, pink: Color) -> void:
-	var rr := DISC_R * u * breath
+func _paint_top(c: Vector2, u: float, pink: Color) -> void:
+	var rr := DISC_R * u
 	var word_y := c.y + 4.0 * u   # 文字の帯の中心
 	draw_arc(c, rr - 10.0 * u, 0.0, TAU, 96, Color(1, 1, 1, 0.5), 2.0 * u, true)
 	_gloss(c, rr - 4.0 * u)

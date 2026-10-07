@@ -102,6 +102,24 @@ func _init() -> void:
 	_check(absf(su.low_threshold * 1.5 - 0.30) < 1e-6, "被ダメージ半減の境目は、初期の体力の 30%%(いまの体力の %.1f%%)" % (su.low_threshold * 100.0))
 	fu.free()
 
+	# --- 最初の弾幕が飛ぶまで、自然回復しない(サバイバル) ---
+	var fw := BulletField.new()
+	var sw := GameSim.new()
+	var shot := {"n": 1, "speed": 0.0, "a0": 0.0, "spread": TAU, "fan": false, "aim": false, "size": 6.0, "color": 0, "turn": 0.0}
+	sw.setup(fw, {"events": [{"t": 2.0, "pos": Vector2(60, 60), "warn": false, "shots": [shot], "sfx": ""}, {"t": 20.0, "pos": Vector2(60, 60), "warn": false, "shots": [shot], "sfx": ""}], "gizmos": [], "warn_lead": 0.6, "breaks": []}, 30.0, false, {})
+	sw.regen_wait_first = true
+	sw.gauge = 0.5
+	var nw := 0.0
+	for i in range(90):
+		sw.step(nw, 1.0 / 60.0, Vector2.ZERO, false)
+		nw += 1.0 / 60.0
+	var g_before: float = sw.gauge
+	for i in range(90):
+		sw.step(nw, 1.0 / 60.0, Vector2.ZERO, false)
+		nw += 1.0 / 60.0
+	_check(is_equal_approx(g_before, 0.5) and absf(sw.gauge - 0.515) < 0.002, "最初の弾幕が飛ぶまで自然回復しない(1.5 秒 %.3f → 3 秒 %.3f)" % [g_before, sw.gauge])
+	fw.free()
+
 	# --- 身代わり ---
 	var f := BulletField.new()
 	var s := GameSim.new()

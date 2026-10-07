@@ -427,6 +427,7 @@ func _ready() -> void:
 		sim.drain_time *= dm
 		sim.gauge_unit = 1.0 / dm   # 回復・半減の境目は、初期の体力に対する量(体力を増やしても、絶対量は増えない)
 		sim.regen_rate = float(survival.get("regen", GameSim.GAUGE_REGEN))
+		sim.regen_wait_first = true   # 最初の弾幕が飛ぶまで、自然回復しない
 		sim.low_threshold = maxf(sim.low_threshold, float(survival.get("low_line", sim.low_threshold))) * sim.gauge_unit
 		sim.guard = int(survival.get("guard", 0))
 		sim.guard_gauge = float(survival.get("guard_gauge", sim.guard_gauge))
@@ -1310,7 +1311,7 @@ func _draw_hp_tip(xe: float, y: float, h: float, sl: float, gc: Color) -> void:
 func _update_hp_fx(delta: float) -> void:
 	var g: float = clampf(sim.gauge, 0.0, 1.0)
 	var resting: bool = sim.in_break(_now)
-	var regen: bool = (not _hit_any) and (not resting) and g < 0.999
+	var regen: bool = (not _hit_any) and (not resting) and g < 0.999 and not sim.regen_paused(_now)
 	_fx_regen += ((1.0 if regen else 0.0) - _fx_regen) * (1.0 - exp(-delta * 6.0))
 	_fx_break += ((1.0 if resting else 0.0) - _fx_break) * (1.0 - exp(-delta * 5.0))
 	# 光の流れる速さ: 通常はゆっくり、回復中は速く、休憩中は止まる

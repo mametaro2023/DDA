@@ -4086,7 +4086,7 @@ func _smoke_survival() -> void:
 	shot.call("setup")
 	s._start()
 	await get_tree().create_timer(1.6).timeout
-	chk.call(_kind == "survival_break" and _current._next_card.visible, "1 曲目の前は NEXT の札だけ: %s" % (_current._next_title.text if _kind == "survival_break" else "?"))
+	chk.call(_kind == "survival_break" and _current._next_box.visible, "1 曲目の前は NEXT だけ: %s" % (_current._next_title.text if _kind == "survival_break" else "?"))
 	shot.call("next1")
 	await wait_for.call(func(): return _kind == "game", 20.0)
 	var g = _current
@@ -4098,14 +4098,21 @@ func _smoke_survival() -> void:
 	g._audio.seek((last - 0.5) * g._rate)
 	await wait_for.call(func(): return _kind != "game", 25.0)
 	chk.call(_kind == "survival_break", "クリアで曲の間へ(合計 %d)" % (int(_sv_run.total) if _sv_run != null else -1))
-	await get_tree().create_timer(2.2).timeout
+	await get_tree().create_timer(1.3).timeout
+	shot.call("break0")   # 結果の演出の途中
+	await get_tree().create_timer(2.0).timeout
 	var b = _current
 	chk.call(_kind == "survival_break" and b._choice_cards.size() >= 1 and b._choosing, "強化の 3 択が出る(%s)" % (", ".join(b._choice_ids) if _kind == "survival_break" else "?"))
+	if _kind == "survival_break":
+		b._choice_cards[0]._hover_to = 1.0   # カーソルを乗せた見た目
+	await get_tree().create_timer(0.4).timeout
 	shot.call("break1")
 	if _kind == "survival_break":
 		b._choose(0)
+	await get_tree().create_timer(0.75).timeout
+	shot.call("chosen")   # 選んだ強化が、下の列へ飛び込んだところ
 	await wait_for.call(func(): return _kind == "survival_break" and b._next_t >= 0.0, 5.0)
-	await get_tree().create_timer(1.0).timeout
+	await get_tree().create_timer(1.4).timeout
 	shot.call("next2")
 	chk.call(_sv_run != null and _sv_run.picked_upgrades.size() == 1, "強化を選ぶと NEXT へ(%s)" % (str(_sv_run.picked_upgrades) if _sv_run != null else "?"))
 	await wait_for.call(func(): return _kind == "game", 20.0)

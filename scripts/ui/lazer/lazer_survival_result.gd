@@ -141,14 +141,14 @@ func _build_right() -> void:
 	rows.add_theme_constant_override("separation", 4)
 	rows.custom_minimum_size = Vector2(700, 0)
 	sc.add_child(rows)
-	rows.add_child(_row(["#", "曲", "Lv", "点", "f", "加わった点"], true, LazerStyle.TEXT_MUTE))
+	rows.add_child(_row(["#", "曲", "Lv", "点", "倍率", "加わった点"], true, LazerStyle.TEXT_MUTE))
 	var songs: Array = rec.get("songs", [])
 	for i in range(songs.size()):
 		var e: Dictionary = songs[i]
 		var title_text := str(e.title)   # 「アーティスト - 曲名 [難易度]」
 		if bool(e.failed):
 			title_text += "(あきらめた)" if bool(e.get("gave_up", false)) else "(倒れた)"
-		rows.add_child(_row([str(i + 1), title_text, "%.2f" % float(e.level), UiStyle.fmt(int(round(float(e.score)))), "%.2f" % float(e.f), "+ " + UiStyle.fmt(int(round(float(e.points))))],
+		rows.add_child(_row([str(i + 1), title_text, "%.2f" % float(e.level), UiStyle.fmt(int(round(float(e.score)))), "×%.2f" % float(e.f), "+ " + UiStyle.fmt(int(round(float(e.points))))],
 			false, Color(1.0, 0.5, 0.52) if bool(e.failed) else LazerStyle.TEXT))
 	v.add_child(LazerStyle.label("選んだ強化", 15, LazerStyle.TEXT_DIM, true))
 	var ups: Array = rec.get("upgrades", [])

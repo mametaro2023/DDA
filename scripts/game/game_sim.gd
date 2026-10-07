@@ -152,6 +152,7 @@ var regen_rate := GAUGE_REGEN         # その回復の速さ(初期の体力に
 ## 初期の体力 ÷ いまの体力(サバイバルの「最大ゲージ」の強化で 1 より小さくなる)。回復(自然回復・癒し)と、被ダメージ半減の境目は、初期の体力に対する量で決めるので、
 ## ゲージ(いまの体力に対する割合)へは、これを掛けて換算する(体力を増やしても、回復の絶対量は増えない)。ふつうのプレイは 1
 var gauge_unit := 1.0
+var regen_wait_first := false         # true なら、最初の弾幕が飛ぶまで自然回復しない(サバイバル: 曲の間の回復のあと、イントロで回復しないように)
 var guard := 0                        # サバイバルの「身代わり」の残り: ゲージが 0 になるとき、guard_gauge で踏みとどまり、盤面の弾を消す
 var guard_gauge := 0.4
 var guard_t := -1.0                   # 最後に身代わりを使った時刻(-1 = 使っていない。画面が演出に使う)
@@ -307,6 +308,11 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 		boss = Boss.new()
 		boss.setup(events, gizmos, breaks, move_rect, first_fire_time, last_fire)
 	_update_score()
+
+
+## 最初の弾幕を待っていて、自然回復が止まっているか(regen_wait_first のとき、最初の発射まで)。
+func regen_paused(now: float) -> bool:
+	return regen_wait_first and (first_fire_time < 0.0 or now < first_fire_time)
 
 
 ## 撃破: 時刻 now が何周目か(0 = 1 周目。ボーナスタイムは、その周に入る)。
@@ -592,7 +598,7 @@ func _update(now: float, dt: float) -> void:
 				contact_extra += extra
 	else:
 		_no_hit_time += dt
-		if regen and not resting and authority and _ext_hit_t <= 0.0:
+		if regen and not resting and authority and _ext_hit_t <= 0.0 and not regen_paused(now):
 			gauge = minf(gauge + regen_rate * gauge_unit * dt, 1.0)
 
 	_update_poison(dt, resting)

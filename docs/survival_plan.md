@@ -21,6 +21,7 @@
 体力は「初期の体力」を基準にした絶対量で数え、回復(自然回復・曲の間の回復・癒し)と被ダメージ半減の境目も、初期の体力に対する量にした(最大ゲージの強化で、回復の絶対量が一緒に増えていたため)。
 サバイバルだけの決まり: 自然回復 毎秒 1% / 被ダメージ半減 30% 以下。強化は 自然回復 +0.25%/秒・曲の間の回復 +5%。身代わりだけは、いまの上限に対する割合(40%)。
 癒しのエリアは、すべてのモードで「自然回復 + 毎秒 1%」に弱めた(以前は毎秒 5%)。
+次の曲では、最初の弾幕が飛ぶまで自然回復しない(`GameSim.regen_wait_first`)。曲の間の画面は、結果(数え上げと合計点への飛び込み)・3 択(めくれて現れる札、選ぶと下の「強化」の列へ飛ぶ)・NEXT(曲名・Lv と倍率・Lv の道のり・進み具合)の 3 場面に作り直した。画面の表示は f ではなく「倍率」。
 
 作ったもの: `scripts/survival/`(`survival_run.gd` / `survival_picker.gd` / `upgrades.gd` / `survival_records.gd`)、`scripts/ui/lazer/lazer_survival_setup.gd` / `lazer_survival_break.gd` / `lazer_survival_result.gd`。
 `GameSim` に `regen_rate` / `guard`(身代わり)/ `fail_score` を、`GameScreen` に `survival`(持ち越すゲージ・強化・右のパネルの欄・あきらめる)を足した(ふつうのプレイの結果は変わらない)。

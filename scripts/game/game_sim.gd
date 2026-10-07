@@ -322,7 +322,7 @@ func regen_paused(now: float) -> bool:
 
 ## サバイバルのボスの曲にする(setup のあとに呼ぶ)。撃破 MOD のボスを 1 周だけ出す: 曲は繰り返さず、アイテムを落とさず、危険エリアは出さない。
 ## HP = 追いかけ続ける自機(強化なし)が、弾の飛んでいる時間の hp_share だけ当て続けると倒せる量 × hp_mul。
-## weapon: 自機の弾の強化 {power, rate, wide}(サバイバルの強化の段)。進み具合・被ダメージ係数は、ふつうの曲と同じ数え方。
+## weapon: 自機の弾の強化 {dmg_mul(サバイバルの弾の強化の倍率)}。ボスへの弾は撃破 MOD の弾(2 列)のままで、ダメージに dmg_mul をかける。進み具合・被ダメージ係数は、ふつうの曲と同じ数え方。
 ## 倒したら弾を消し、BOSS_CLEAR_DELAY 秒の演出のあとクリア(撃破タイムボーナスが点に入る)。倒せなければ、ふつうの曲と同じくクリアして、ボスは逃げる。
 func setup_boss_once(hp_share: float, hp_mul: float, weapon: Dictionary = {}) -> void:
 	zones = []
@@ -331,10 +331,7 @@ func setup_boss_once(hp_share: float, hp_mul: float, weapon: Dictionary = {}) ->
 	boss.setup(events, gizmos, breaks, move_rect, first_fire_time, last_fire_time)
 	boss.max_hp = maxf(Boss.HP_MIN * 0.25, Boss.SHOT_DMG * boss.ref_rate * active_time * hp_share * hp_mul)
 	boss.hp = boss.max_hp
-	boss.power = clampi(int(weapon.get("power", 0)), 0, int(Boss.ITEMS.power.max))
-	boss.power_mul = 1.0 + Boss.POWER_STEP * boss.power
-	boss.rate_lv = clampi(int(weapon.get("rate", 0)), 0, int(Boss.ITEMS.rate.max))
-	boss.wide_lv = clampi(int(weapon.get("wide", 0)), 0, int(Boss.ITEMS.wide.max))
+	boss.power_mul = maxf(float(weapon.get("dmg_mul", 1.0)), 0.01)
 	boss_once = true
 	hit_heal_mul = 0.25   # 当てたときの回復は、毎秒 0.75% まで(撃破 MOD は 3%)
 	_update_score()

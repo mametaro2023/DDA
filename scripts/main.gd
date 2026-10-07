@@ -4095,7 +4095,7 @@ func _smoke_survival() -> void:
 	var g = _current
 	chk.call(_kind == "game" and not g.survival.is_empty(), "1 曲目が始まる(Lv %.2f / f %.2f / 始めのゲージ %.2f)" % [float(g.gen.level), g._sv_f, g.sim.gauge])
 	g.sim.debug_invincible = true
-	chk.call(_kind == "game" and g.sim.enemies != null and g.sim.enemies.homing_lv == 2 and g.sim.enemies.chain_lv == 2 and is_equal_approx(g.sim.graze_heal, 0.002) and g.sim.player_r < float(load("res://scripts/game/game_sim.gd").PLAYER_HIT_R) * float(load("res://scripts/game/pattern_gen.gd").PLAYER_SIZE_MUL) * 0.92, "追加の強化が効く(追尾 2・誘爆 2・かすり回復 0.2%%・当たり判定 %.2f)" % (g.sim.player_r if _kind == "game" else -1.0))
+	chk.call(_kind == "game" and g.sim.enemies != null and g.sim.enemies.homing_lv == 2 and g.sim.enemies.chain_lv == 2 and is_equal_approx(g.sim.graze_heal, 0.0006) and g.sim.player_r < float(load("res://scripts/game/game_sim.gd").PLAYER_HIT_R) * float(load("res://scripts/game/pattern_gen.gd").PLAYER_SIZE_MUL) * 0.95, "追加の強化が効く(追尾 2・誘爆 2・かすり回復 0.06%%・当たり判定 %.2f)" % (g.sim.player_r if _kind == "game" else -1.0))
 	await wait_for.call(func(): return g.sim.enemies != null and g.sim.enemies.enemies.size() >= 2, 20.0)   # 雑魚が出てくるまで(S2)
 	await get_tree().create_timer(0.7).timeout
 	shot.call("play0")   # 雑魚が出ているところ
@@ -4109,7 +4109,7 @@ func _smoke_survival() -> void:
 	await get_tree().create_timer(2.5).timeout
 	shot.call("play1")
 	chk.call(g.sim.enemies != null and g.sim.enemies.spawned >= 1, "雑魚が出る(出た %d・倒した %d・経験値 %.0f)" % [g.sim.enemies.spawned, g.sim.enemies.kills, g.sim.enemies.xp_got])
-	_sv_run.xp = 19.0   # 3 択を出すため、レベルが上がるぶんの経験値を足しておく
+	_sv_run.xp = 5.0   # 3 択を出すため、レベルが上がるぶんの経験値を足しておく
 	g.sim.enemies.xp_got += 1.0
 	var last: float = g.sim.events[g.sim.events.size() - 1].t
 	g._audio.seek((last - 0.5) * g._rate)
@@ -4133,10 +4133,16 @@ func _smoke_survival() -> void:
 		b._choose(0)
 	await get_tree().create_timer(0.75).timeout
 	shot.call("chosen")   # 選んだ強化が、下の列へ飛び込んだところ
+	var picked_n := 1
+	while _kind == "survival_break" and b._next_t < 0.0 and picked_n < 40:   # レベルがいくつも上がったときは、残りの 3 択も選ぶ
+		await wait_for.call(func(): return b._choosing or b._next_t >= 0.0, 5.0)
+		if b._choosing:
+			b._choose(0)
+			picked_n += 1
 	await wait_for.call(func(): return _kind == "survival_break" and b._next_t >= 0.0, 5.0)
 	await get_tree().create_timer(1.4).timeout
 	shot.call("next2")
-	chk.call(_sv_run != null and _sv_run.picked_upgrades.size() == 1, "強化を選ぶと NEXT へ(%s)" % (str(_sv_run.picked_upgrades) if _sv_run != null else "?"))
+	chk.call(_sv_run != null and _sv_run.picked_upgrades.size() == picked_n and _sv_run.picks == 0, "上がったレベルの数だけ強化を選ぶと NEXT へ(%d 回: %s)" % [picked_n, str(_sv_run.picked_upgrades) if _sv_run != null else "?"])
 	await wait_for.call(func(): return _kind == "game", 20.0)
 	var g2 = _current
 	chk.call(_kind == "game" and int(g2.survival.get("no", 0)) == 2 and g2.sim.boss != null and g2.sim.boss_once and g2.sim.enemies == null, "2 曲目はボスの曲(1 周だけ・雑魚なし。HP %.0f)" % (g2.sim.boss.max_hp if _kind == "game" and g2.sim.boss != null else -1.0))

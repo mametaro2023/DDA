@@ -20,24 +20,27 @@ extends RefCounted
 ## HP = 追いかけ続けて、弾の飛んでいる時間の BOSS_HP_SHARE を当て続けると倒せる量(強化なし)× 何体目か(+BOSS_HP_STEP ずつ)× √(弾の強化の倍率)。
 ## 倒すと、経験値 BOSS_XP と、ごほうびの 3 択(4 つから選ぶ・レアが出やすい)が 1 回ぶん。倒せなければ、ボスは逃げる(ごほうびなし。ゲームオーバーではない)。
 ##
-## 回復は「主に曲の間」: 曲の中の自然回復は毎秒 0.25%(ふつうは 1.5%。強化を 3 段とると 1%)にして、曲の中で削られたぶんが次の曲まで残るようにし、
-## そのかわり曲の間に 35% 回復する。被ダメージ半減は 30% 以下(ふつうは 20%。リトライできないぶんの安全網)。身代わりだけは、いまの体力に対する割合(40%)。
+## 回復: 曲の中の自然回復は毎秒 0.25%(ふつうは 1.5%)、曲の間に 10%。曲の中で削られたぶんは、ほぼ次の曲まで残る。
+## 被ダメージ半減は 30% 以下(ふつうは 20%。リトライできないぶんの安全網)。身代わりだけは、いまの体力の上限に対する割合(20%)。
+## 強化は 1 段が小さく、レベルは頻繁に上がる(段の数は upgrades.gd の max)。
 
 const Upgrades = preload("res://scripts/survival/upgrades.gd")
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const Mods = preload("res://scripts/mods.gd")
+const Enemies = preload("res://scripts/game/enemies.gd")
 
 const START_LEVELS := [2.0, 4.0, 6.0]   # 準備画面で選べる、開始の Lv
 const LV_STEP := 0.3                    # 1 曲ごとに上がる目標の Lv
 const BET_LV := 0.5                     # 背水: 次の曲の目標の Lv の上乗せ
 const F_REF := 4.0                      # f(Lv) = (Lv / F_REF)^2
-const BETWEEN_HEAL := 0.35              # 曲の間の回復(初期の体力に対する割合。回復の主な機会)
-const BETWEEN_HEAL_STEP := 0.05         # 強化「曲の間の回復」の 1 段(同)
-const MAX_GAUGE_STEP := 0.15            # 強化「最大ゲージ」の 1 段(初期の体力に対する割合。上限が増えるだけで、いまの体力は増えない)
+const BETWEEN_HEAL := 0.10              # 曲の間の回復(初期の体力に対する割合。35% では回復しすぎた)
+const BETWEEN_HEAL_STEP := 0.02         # 強化「曲の間の回復」の 1 段(同)
+const MAX_GAUGE_STEP := 0.03            # 強化「最大ゲージ」の 1 段(初期の体力に対する割合。上限が増えるだけで、いまの体力は増えない)
 const REGEN := 0.0025                   # 曲の中の自然回復(初期の体力に対する割合 / 秒。60 秒で 15%)
-const REGEN_STEP := 0.0025              # 強化「自然回復」の 1 段(同)
-const XP_BASE := 16.0                   # レベル 0 → 1 に要る経験値(20 では少し多かった)
-const XP_STEP := 10.0                   # レベルが 1 上がるごとに、次に要る経験値が増える量(12 では少し多かった)
+const REGEN_STEP := 0.00025             # 強化「自然回復」の 1 段(もとの 10%)
+## レベルは頻繁に上がり、1 回の強化は小さい(6 → 7.5 → 9 …)。
+const XP_BASE := 6.0                    # レベル 0 → 1 に要る経験値
+const XP_STEP := 1.5                    # レベルが 1 上がるごとに、次に要る経験値が増える量
 const BET_XP_MUL := 2.0                 # 背水: 次の曲の経験値の倍率
 const ENEMY_HP_STEP := 0.12             # 雑魚の HP: 1 曲ごとに +12%
 const BOSS_EVERY := 5                   # この曲数ごとにボスの曲
@@ -46,9 +49,9 @@ const BOSS_HP_STEP := 0.3               # 何体目かで、ボスの HP が増�
 const BOSS_XP := 25.0                   # ボスを倒したときの経験値
 const BOSS_RARE_BOOST := 3.0            # ごほうびの 3 択で、レアな強化の重みにかける倍率
 const LOW_LINE := 0.30                  # 被ダメージ半減の境目(初期の体力に対する割合。MOD「天国」の 35% のほうが高ければ、そちら)
-const GUARD_GAUGE := 0.4                # 身代わりで踏みとどまったときのゲージ
-const SMALL_STEP := 0.03                # 強化「小型化」の 1 段(もとの大きさに対する割合)
-const GRAZE_HEAL := 0.001               # 強化「かすり回復」の 1 段(グレイズ 1 回ごと。初期の体力に対する割合)
+const GUARD_GAUGE := 0.2                # 身代わりで踏みとどまったときのゲージ(いまの上限に対する割合)
+const SMALL_STEP := 0.02                # 強化「小型化」の 1 段(もとの大きさに対する割合)
+const GRAZE_HEAL := 0.0003              # 強化「かすり回復」の 1 段(グレイズ 1 回ごと。初期の体力に対する割合)
 const GLASS_GAUGE := 0.2                # 強化「ガラスの体」: 体力の上限が減る量(初期の体力に対する割合)
 const GLASS_SCORE := 1.15               # 同: 点の倍率にかける数
 const REROLL_START := 1                 # 3 択の引き直し: 始めに持っている回数
@@ -151,6 +154,7 @@ func game_params() -> Dictionary:
 		"small": 1.0 - SMALL_STEP * level_of("small"),
 		"graze_heal": GRAZE_HEAL * level_of("graze_heal"),
 		"score_mul": score_mul(),
+		"dmg_mul": weapon_mul(),
 		"xp_mul": BET_XP_MUL if bet_next else 1.0,
 		"hp_mul": 1.0 + ENEMY_HP_STEP * float(songs.size()),
 		"boss": next_is_boss(),
@@ -173,12 +177,15 @@ func next_is_boss() -> bool:
 	return is_boss_song(next_no())
 
 
+## 弾の強化の倍率(強化なしに対する、1 秒あたりのダメージ。攻撃力 × 連射 × 列の数)。ボスの曲では、ボスへの弾のダメージにかける。
+func weapon_mul() -> float:
+	return (1.0 + Enemies.POWER_STEP * level_of("power")) * (1.0 + Enemies.RATE_STEP * level_of("rate")) * float(1 + level_of("wide"))
+
+
 ## 次のボスの HP の倍率: 何体目か(+BOSS_HP_STEP ずつ)× √(弾の強化の倍率。強化が効きすぎないように)。
 func boss_hp_mul() -> float:
 	var k := floorf(float(next_no()) / float(boss_every))
-	var cols := [2.0, 4.0, 6.0][clampi(level_of("wide"), 0, 2)] as float
-	var dps := (1.0 + 0.25 * level_of("power")) * (1.0 + 0.25 * level_of("rate")) * (cols / 2.0)
-	return (1.0 + BOSS_HP_STEP * maxf(k - 1.0, 0.0)) * sqrt(dps)
+	return (1.0 + BOSS_HP_STEP * maxf(k - 1.0, 0.0)) * sqrt(weapon_mul())
 
 
 ## レベル lv から lv + 1 に要る経験値。

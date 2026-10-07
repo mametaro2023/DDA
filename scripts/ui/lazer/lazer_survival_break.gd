@@ -1153,9 +1153,10 @@ class ChoiceCard extends Control:
 		draw_arc(c, 27.0, 0.0, TAU, 48, Color(col.r, col.g, col.b, 0.75), 2.0, true)
 		LI.draw_icon(self, str(u.icon), c, 14.0, col, 2.2)
 		var mx := int(u.max)
-		if mx > 1:   # 段の印: 済んだ段 / 選ぶと増える段(ゆっくり明滅しない、明るい枠)/ まだの段
+		if mx > 1:   # 段の印: 済んだ段 / 選ぶと増える段(ゆっくり明滅しない、明るい枠)/ まだの段。段が多いときは、細くして札の幅に収める
+			var step := minf(34.0, (size.x - 40.0 - 96.0) / float(mx))
 			for k in range(mx):
-				var pr := Rect2(20 + k * 34, oy + size.y - 28, 28, 8)
+				var pr := Rect2(20 + k * step, oy + size.y - 28, maxf(step - 4.0, 3.0), 8)
 				if k < lvl:
 					draw_style_box(LS.box(col, Color(0, 0, 0, 0), 0, 4), pr)
 				elif k == lvl:

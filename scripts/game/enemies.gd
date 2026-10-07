@@ -3,7 +3,7 @@ extends RefCounted
 ## docs/survival_plan.md の §4。
 ##
 ## ## 自機の弾
-## 最初の発射から(休憩を除く)、自機から上へ自動で連射する(撃破 MOD のボスと同じ速さ・同じ列の並び。Boss は触らず、ここで別に持つ)。
+## 最初の発射から(休憩を除く)、自機から上へ自動で連射する(弾の速さは撃破 MOD のボスと同じ。強化なしは 1 列・毎秒 7.5 発。Boss は触らず、ここで別に持つ)。
 ## 攻撃力・連射・ワイド(列の数)は、サバイバルの強化で上がる(setup の params)。追尾弾(近くの雑魚へ曲がる)・貫通(雑魚を通り抜ける)・
 ## 誘爆(倒した雑魚が爆発して、まわりにダメージ)も、強化で付く。
 ##
@@ -26,13 +26,14 @@ const PatternGen = preload("res://scripts/game/pattern_gen.gd")
 const GameSim = preload("res://scripts/game/game_sim.gd")
 
 const ARENA := PatternGen.ARENA
-# 自機の弾(撃破のボスと同じ)
-const FIRE_INTERVAL := 1.0 / 15.0
+# 自機の弾(弾の速さは撃破のボスと同じ。強化なしは 1 列・毎秒 7.5 発で、撃破のボスの 2 列・毎秒 15 発より弱い。強化で少しずつ強くなる)
+const FIRE_INTERVAL := 1.0 / 7.5
 const SHOT_SPEED := 1500.0
 const SHOT_DMG := 1.0
-const WIDE_OFFSETS := [[-7.0, 7.0], [-20.0, -7.0, 7.0, 20.0], [-33.0, -20.0, -7.0, 7.0, 20.0, 33.0]]
-const POWER_STEP := 0.25
-const RATE_STEP := 0.25
+const COL_GAP := 13.0           # 弾の列の間隔(px)
+const POWER_STEP := 0.06        # 攻撃力: 1 段ごとに +6%
+const RATE_STEP := 0.08         # 連射: 1 段ごとに速さ +8%
+const MAGNET_STEP := 0.15       # 吸い寄せ: 1 段ごとに範囲 +15%
 # 雑魚
 const SPAWN_GAP := 1.5          # ふつうの雑魚の間隔(秒。1 分に 40 体。20 体では少なかった)
 const SPAWN_JITTER := 0.5
@@ -47,7 +48,7 @@ const DRIFT_DOWN := 10.0        # 少しずつ下がる速さ(px/s)
 const SWAY := 36.0              # 左右のゆらぎ(px)
 const R := 15.0                 # 当たり判定の半径(自機の弾)
 const R_HARD := 20.0
-const HP := 16.0                # ふつうの雑魚の HP(弾 1 発 = 1。攻撃力の強化なしで、2 列が当たり続けて約 0.5 秒)
+const HP := 8.0                 # ふつうの雑魚の HP(弾 1 発 = 1。強化なしの 1 列が当たり続けて約 1 秒。弾を弱くしたので 16 から下げた)
 const HP_HARD_MUL := 3.5
 const HARD_EVERY := 8
 const HARD_XP := 4
@@ -60,14 +61,20 @@ const MAGNET_R := 70.0
 const MAGNET_SPEED := 620.0
 const PICK_R := 18.0
 # 強化(段ごと。0 段目 = なし)
-const HOMING_TURN := [0.0, 4.0, 9.0]   # 追尾弾: 弾の向きが変わる速さ(rad/s)
-const HOMING_RANGE := 420.0            # 追尾弾: この距離より近い、前にいる雑魚へ曲がる
-const CHAIN_R := [0.0, 60.0, 85.0]     # 誘爆: 爆発の半径(px)
-const CHAIN_DMG := [0.0, 0.5, 1.0]     # 誘爆: 爆発のダメージ(その曲のふつうの雑魚の HP に対する割合)
+const HOMING_TURN := 1.2              # 追尾弾: 1 段ごとの、弾の向きが変わる速さ(rad/s。弾が速いので、少し寄る程度)
+const HOMING_RANGE := 300.0            # 追尾弾: この距離より近い、前にいる雑魚へ曲がる
+const PIERCE_EVERY := 3                # 貫通: 通り抜けられる数は 1 + (段 − 1) ÷ PIERCE_EVERY(1〜3 段で 1 体、4〜6 段で 2 体…)
+const PIERCE_KEEP := 0.35              # 貫通: 通り抜けたあとに残るダメージの割合(1 段目)
+const PIERCE_KEEP_STEP := 0.07         # 同: 1 段ごとに増える量(上限 1)
+const CHAIN_R0 := 36.0                 # 誘爆: 爆発の半径 = CHAIN_R0 + CHAIN_R_STEP × 段(px)
+const CHAIN_R_STEP := 6.0
+const CHAIN_DMG0 := 0.15               # 誘爆: 爆発のダメージ = (CHAIN_DMG0 + CHAIN_DMG_STEP × 段)× その曲のふつうの雑魚の HP
+const CHAIN_DMG_STEP := 0.1
 
 var shots := PackedVector2Array()
 var shot_v := PackedVector2Array()     # 弾の向き(単位ベクトル。追尾弾でなければ真上)
 var shot_pierce := PackedInt32Array()  # 弾が、あと何体通り抜けられるか(貫通)
+var shot_dmg := PackedFloat32Array()   # 弾の、次に当たったときのダメージ(貫通すると減る)
 var shot_last := PackedInt32Array()    # 弾が最後に当たった雑魚の id(通り抜けている間に、同じ雑魚に何度も当たらない。-1 = なし)
 var enemies: Array = []          # {id, kind("normal"/"hard"/"slider"), hp, max_hp, t0, t1(いなくなる時刻), p, home, g(スライダー), flash, leaving_t}
 var orbs: Array = []             # {p, v, t, pulled}
@@ -103,13 +110,13 @@ func setup(events: Array, gizmos: Array, breaks: Array, rect: Rect2, fire_from: 
 	_fire_from = fire_from
 	power_mul = 1.0 + POWER_STEP * int(params.get("power", 0))
 	rate_lv = int(params.get("rate", 0))
-	wide_lv = clampi(int(params.get("wide", 0)), 0, WIDE_OFFSETS.size() - 1)
-	magnet_mul = 1.0 + 0.4 * int(params.get("magnet", 0))
+	wide_lv = maxi(int(params.get("wide", 0)), 0)
+	magnet_mul = 1.0 + MAGNET_STEP * int(params.get("magnet", 0))
 	xp_mul = float(params.get("xp_mul", 1.0))
 	hp_mul = float(params.get("hp_mul", 1.0))
-	homing_lv = clampi(int(params.get("homing", 0)), 0, HOMING_TURN.size() - 1)
+	homing_lv = maxi(int(params.get("homing", 0)), 0)
 	pierce_lv = maxi(int(params.get("pierce", 0)), 0)
-	chain_lv = clampi(int(params.get("chain", 0)), 0, CHAIN_R.size() - 1)
+	chain_lv = maxi(int(params.get("chain", 0)), 0)
 	_plan = make_plan(events, gizmos, breaks, fire_from, fire_to)
 	_plan_i = 0
 
@@ -174,6 +181,40 @@ static func radius_of(e: Dictionary) -> float:
 	return R_HARD if e.kind == "hard" else R
 
 
+## 弾の列の数(強化なし 1 列。ワイド 1 段ごとに +1)。
+func columns() -> int:
+	return 1 + wide_lv
+
+
+## 列の横の位置(自機の中心から。列の間隔 COL_GAP で、左右に均等)。
+func column_offsets() -> Array:
+	var n := columns()
+	var out: Array = []
+	for k in range(n):
+		out.append((float(k) - float(n - 1) * 0.5) * COL_GAP)
+	return out
+
+
+## 貫通: 通り抜けられる数。
+func pierce_count() -> int:
+	return 0 if pierce_lv <= 0 else 1 + floori(float(pierce_lv - 1) / PIERCE_EVERY)
+
+
+## 貫通: 通り抜けたあとに残るダメージの割合。
+func pierce_keep() -> float:
+	return minf(PIERCE_KEEP + PIERCE_KEEP_STEP * float(pierce_lv - 1), 1.0)
+
+
+## 誘爆: 爆発の半径(0 = 爆発しない)。
+func chain_radius() -> float:
+	return 0.0 if chain_lv <= 0 else CHAIN_R0 + CHAIN_R_STEP * chain_lv
+
+
+## 誘爆: 爆発のダメージ。
+func chain_damage() -> float:
+	return HP * hp_mul * (CHAIN_DMG0 + CHAIN_DMG_STEP * chain_lv)
+
+
 func fire_interval() -> float:
 	return FIRE_INTERVAL / (1.0 + RATE_STEP * rate_lv)
 
@@ -185,12 +226,15 @@ func update(now: float, dt: float, ppos: Vector2, resting: bool) -> void:
 	if _fire_from >= 0.0 and now >= _fire_from and not resting:
 		_fire_acc += dt
 		var iv := fire_interval()
+		var pc := pierce_count()
+		var dmg := SHOT_DMG * power_mul
 		while _fire_acc >= iv:
 			_fire_acc -= iv
-			for ox in WIDE_OFFSETS[wide_lv]:
+			for ox in column_offsets():
 				shots.append(ppos + Vector2(ox, -10.0))
 				shot_v.append(Vector2.UP)
-				shot_pierce.append(pierce_lv)
+				shot_pierce.append(pc)
+				shot_dmg.append(dmg)
 				shot_last.append(-1)
 	else:
 		_fire_acc = FIRE_INTERVAL
@@ -198,7 +242,8 @@ func update(now: float, dt: float, ppos: Vector2, resting: bool) -> void:
 	# 自機の弾を進めて、雑魚との当たりを調べる(このステップで進んだ線分と、雑魚の円)。
 	# 雑魚の位置・半径・id は、いちど数の並びにしてから調べる(弾の数 × 雑魚の数だけ、辞書を引かないように)
 	var step := SHOT_SPEED * dt
-	var turn: float = HOMING_TURN[homing_lv] * dt
+	var turn := HOMING_TURN * homing_lv * dt
+	var keep := pierce_keep()
 	var ep := PackedVector2Array()
 	var er := PackedFloat32Array()
 	var eid := PackedInt32Array()
@@ -220,23 +265,27 @@ func update(now: float, dt: float, ppos: Vector2, resting: bool) -> void:
 		var np := p + d
 		var gone := np.y < -20.0 or np.y > ARENA.y + 20.0 or np.x < -20.0 or np.x > ARENA.x + 20.0
 		if hit >= 0:
-			if shot_pierce[i] > 0:   # 貫通: 通り抜けて、次の雑魚へ
+			var hd := shot_dmg[i]
+			if shot_pierce[i] > 0:   # 貫通: 通り抜けて、次の雑魚へ(ダメージは減る)
 				shot_pierce[i] -= 1
 				shot_last[i] = hit
+				shot_dmg[i] = hd * keep
 			else:
 				gone = true
 			var k := _index_of(hit)
-			if k >= 0 and _damage(k, SHOT_DMG * power_mul, now):   # 倒れた(誘爆も含めて、雑魚が減った)ので、並びを作り直す
+			if k >= 0 and _damage(k, hd, now):   # 倒れた(誘爆も含めて、雑魚が減った)ので、並びを作り直す
 				_pack_alive(ep, er, eid)
 		if gone:
 			var j := shots.size() - 1
 			shots[i] = shots[j]
 			shot_v[i] = shot_v[j]
 			shot_pierce[i] = shot_pierce[j]
+			shot_dmg[i] = shot_dmg[j]
 			shot_last[i] = shot_last[j]
 			shots.resize(j)
 			shot_v.resize(j)
 			shot_pierce.resize(j)
+			shot_dmg.resize(j)
 			shot_last.resize(j)
 		else:
 			shots[i] = np
@@ -341,7 +390,7 @@ func _damage(k: int, dmg: float, now: float) -> bool:
 		return false
 	var hard: bool = e.kind == "hard"
 	var c: Vector2 = e.p
-	var boom: float = CHAIN_R[chain_lv]
+	var boom := chain_radius()
 	kills += 1
 	kill_events.append({"p": c, "t": now, "hard": hard, "boom": boom})
 	var n := HARD_XP if hard else 1
@@ -354,7 +403,7 @@ func _damage(k: int, dmg: float, now: float) -> bool:
 		for o in enemies:
 			if (o.p as Vector2).distance_to(c) < boom + radius_of(o):
 				ids.append(int(o.id))
-		var bd := HP * hp_mul * float(CHAIN_DMG[chain_lv])
+		var bd := chain_damage()
 		for id in ids:
 			var j := _index_of(id)
 			if j >= 0:
@@ -394,4 +443,5 @@ func sweep() -> void:
 	shots.clear()
 	shot_v.clear()
 	shot_pierce.clear()
+	shot_dmg.clear()
 	shot_last.clear()

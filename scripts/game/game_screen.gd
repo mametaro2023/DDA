@@ -1944,7 +1944,7 @@ func _build_survival_hud() -> void:
 	_sv_xp_bar.draw.connect(_draw_xp_bar)
 	v.add_child(_sv_xp_bar)
 	var en = sim.enemies
-	v.add_child(_survival_caption("攻撃 ×%.2f ・ %d 列" % [en.power_mul, (Enemies.WIDE_OFFSETS[en.wide_lv] as Array).size()]))
+	v.add_child(_survival_caption("攻撃 ×%.2f ・ %d 列" % [en.power_mul, en.columns()]))
 	v.add_child(_survival_caption("連射 +%d%%" % int(round(Enemies.RATE_STEP * en.rate_lv * 100.0))))
 	var extra: Array = []   # 弾の性質の強化(取ったものだけ)
 	for w in [["追尾", en.homing_lv], ["貫通", en.pierce_lv], ["誘爆", en.chain_lv]]:

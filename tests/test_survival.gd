@@ -53,18 +53,18 @@ func _init() -> void:
 	run.start(4.0, ["practice", "boss", "hell"], 123)
 	_check(run.mod_ids == ["hell"], "練習・撃破は付けられない")
 	_check(is_equal_approx(run.target_level(), 4.0), "1 曲目の目標は開始の Lv")
-	var e1 := run.song_done({"failed": false, "score": 900000.0, "level": 4.0, "hp_end": 0.5, "title": "A", "xp_got": 25.0})
+	var e1 := run.song_done({"failed": false, "score": 900000.0, "level": 4.0, "hp_end": 0.5, "title": "A", "xp_got": 7.0})
 	_check(is_equal_approx(e1.points, 900000.0) and is_equal_approx(run.total, 900000.0), "Lv 4 の曲は f = 1(点はそのまま)")
-	_check(is_equal_approx(run.gauge, 0.85) and run.picks == 1, "ゲージは持ち越して、曲の間に 35%% 回復(%.2f)。経験値 25 でレベル 1 → 3 択が 1 回" % run.gauge)
-	run.levels["max_gauge"] = 2   # 体力の上限 1.3: 上限が増えても、いまの体力(絶対量)は増えない
+	_check(is_equal_approx(run.gauge, 0.60) and run.picks == 1, "ゲージは持ち越して、曲の間に 10%% 回復(%.2f)。経験値 7 でレベル 1 → 3 択が 1 回" % run.gauge)
+	run.levels["max_gauge"] = 2   # 体力の上限 1.06: 上限が増えても、いまの体力(絶対量)は増えない
 	var gp := run.game_params()
-	_check(is_equal_approx(float(gp.drain_mul), 1.3) and is_equal_approx(float(gp.gauge), 0.85 / 1.3) and is_equal_approx(float(gp.regen), 0.0025), "最大ゲージ: 上限だけ増え、いまの体力・自然回復(毎秒 0.25%)は絶対量のまま")
+	_check(is_equal_approx(float(gp.drain_mul), 1.06) and is_equal_approx(float(gp.gauge), 0.60 / 1.06) and is_equal_approx(float(gp.regen), 0.0025), "最大ゲージ: 上限だけ増え、いまの体力・自然回復(毎秒 0.25%)は絶対量のまま")
 	run.levels.erase("max_gauge")
 	_check(is_equal_approx(run.target_level(), 4.3), "2 曲目の目標は +0.3")
 	run.choose("bet")
 	_check(is_equal_approx(run.target_level(), 4.8), "背水で、次の曲の目標が +0.5")
 	_check(float(run.game_params().xp_mul) == 2.0, "背水: 次の曲の経験値は 2 倍")
-	run.song_done({"failed": false, "score": 800000.0, "level": 6.0, "hp_end": 0.9, "xp_got": 10.0})
+	run.song_done({"failed": false, "score": 800000.0, "level": 6.0, "hp_end": 0.9, "xp_got": 3.0})
 	_check(run.picks == 0 and run.xp_level == 1, "経験値が足りなければ、レベルは上がらず 3 択もない(通算 %.0f・レベル %d)" % [run.xp, run.xp_level])
 	_check(is_equal_approx(run.total, 900000.0 + 800000.0 * 2.25), "Lv 6 は f = (6/4)^2 = 2.25")
 	_check(is_equal_approx(run.gauge, 1.0) and is_equal_approx(run.target_level(), 4.6), "回復は満タンまで / 背水は 1 曲だけ")
@@ -74,10 +74,10 @@ func _init() -> void:
 	_check(run.cleared() == 2 and is_equal_approx(run.best_level(), 6.0), "クリアした曲数・届いた Lv")
 
 	# --- 経験値とレベル ---
-	_check(SurvivalRun.level_for_xp(15.9) == 0 and SurvivalRun.level_for_xp(16.0) == 1 and SurvivalRun.level_for_xp(42.0) == 2 and SurvivalRun.level_for_xp(41.0) == 1, "レベル: 16 で 1、16 + 26 = 42 で 2")
+	_check(SurvivalRun.level_for_xp(5.9) == 0 and SurvivalRun.level_for_xp(6.0) == 1 and SurvivalRun.level_for_xp(13.5) == 2 and SurvivalRun.level_for_xp(13.4) == 1, "レベル: 6 で 1、6 + 7.5 = 13.5 で 2")
 	var r3 := SurvivalRun.new()
 	r3.start(4.0, [], 9)
-	r3.song_done({"failed": false, "score": 1.0, "level": 4.0, "hp_end": 1.0, "xp_got": 60.0})
+	r3.song_done({"failed": false, "score": 1.0, "level": 4.0, "hp_end": 1.0, "xp_got": 14.0})
 	_check(r3.picks == 2 and r3.xp_level == 2, "1 曲で 2 つレベルが上がれば、3 択が 2 回")
 
 	# --- 雑魚・自機の弾・経験値の玉(enemies.gd)---
@@ -128,19 +128,26 @@ func _init() -> void:
 				acc = 0.0
 				e.shots.append(shot_from)
 				e.shot_v.append(Vector2.UP)
-				e.shot_pierce.append(e.pierce_lv)
+				e.shot_pierce.append(e.pierce_count())
+				e.shot_dmg.append(Enemies.SHOT_DMG * e.power_mul)
 				e.shot_last.append(-1)
 			e.update(t, 0.001, shot_from, false)
 			t += 0.001
 		return e.kills
-	var off := [[Vector2(300, 150), Enemies.HP]]   # 自機の列から 180px 横
-	_check(kills_with.call({}, off, Vector2(480, 600), 2.0) == 0 and kills_with.call({"homing": 2}, off, Vector2(480, 600), 2.0) == 1, "追尾弾: 列の外の雑魚にも、曲がって当たる")
-	var stack := [[Vector2(480, 150), 2.0], [Vector2(480, 260), 99.0]]   # 縦に 2 体(手前は硬い)
+	var off := [[Vector2(540, 150), Enemies.HP]]   # 自機の列から 60px 横
+	_check(kills_with.call({}, off, Vector2(480, 600), 2.0) == 0 and kills_with.call({"homing": 3}, off, Vector2(480, 600), 2.0) == 1, "追尾弾: 列の少し外の雑魚にも、曲がって当たる")
+	var stack := [[Vector2(480, 150), 0.3], [Vector2(480, 260), 99.0]]   # 縦に 2 体(手前は硬い。後ろは、減ったダメージ 1 発で倒れる)
 	_check(kills_with.call({}, stack, Vector2(480, 600), 0.45) == 0 and kills_with.call({"pierce": 1}, stack, Vector2(480, 600), 0.45) == 1, "貫通: 手前の雑魚を通り抜けて、後ろの雑魚にも当たる")
+	var ep := Enemies.new()
+	var pv: Array = []
+	for lv in [1, 4, 9]:
+		ep.pierce_lv = lv
+		pv.append([ep.pierce_count(), snappedf(ep.pierce_keep(), 0.01)])
+	_check(str(pv) == str([[1, 0.35], [2, 0.56], [3, 0.91]]), "貫通: 3 段ごとに通り抜ける数 +1、残るダメージは 35%% から 1 段ごとに +7%%(%s)" % str(pv))
 	var ec := Enemies.new()
-	ec.setup([], [], [], Rect2(Vector2.ZERO, PatternGen.ARENA), -1.0, -1.0, {"chain": 2})
-	for k in range(3):
-		ec.enemies.append({"id": k, "kind": "normal", "hp": Enemies.HP, "max_hp": Enemies.HP, "t0": 0.0, "t1": 99.0, "p": Vector2(200 + 60 * k, 150), "home": Vector2(200 + 60 * k, 150), "g": null, "flash": 0.0, "leaving_t": -1.0, "seed": 0.0})
+	ec.setup([], [], [], Rect2(Vector2.ZERO, PatternGen.ARENA), -1.0, -1.0, {"chain": 8})
+	for k in range(3):   # 爆発(8 段: ふつうの雑魚の HP の 95%)で倒れるくらいに削れた雑魚
+		ec.enemies.append({"id": k, "kind": "normal", "hp": Enemies.HP * 0.9, "max_hp": Enemies.HP, "t0": 0.0, "t1": 99.0, "p": Vector2(200 + 60 * k, 150), "home": Vector2(200 + 60 * k, 150), "g": null, "flash": 0.0, "leaving_t": -1.0, "seed": 0.0})
 	ec.enemies.append({"id": 9, "kind": "normal", "hp": Enemies.HP, "max_hp": Enemies.HP, "t0": 0.0, "t1": 99.0, "p": Vector2(700, 150), "home": Vector2(700, 150), "g": null, "flash": 0.0, "leaving_t": -1.0, "seed": 0.0})
 	ec._damage(0, 99.0, 0.0)
 	_check(ec.kills == 3 and ec.enemies.size() == 1 and float(ec.kill_events[0].boom) > 0.0, "誘爆: 倒した雑魚の爆発で、近くの雑魚が倒れ、それもまた爆発する(遠い雑魚は残る)")
@@ -149,7 +156,7 @@ func _init() -> void:
 	ru.picks = 3
 	ru.choose("small")
 	ru.choose("small")
-	_check(is_equal_approx(float(ru.game_params().small), 0.94), "小型化: 1 段ごとに 3% 小さく")
+	_check(is_equal_approx(float(ru.game_params().small), 0.96), "小型化: 1 段ごとに 2% 小さく")
 	_check(ru.rerolls == SurvivalRun.REROLL_START and ru.reroll().size() == 3 and ru.rerolls == SurvivalRun.REROLL_START - 1 and ru.reroll().is_empty(), "引き直し: 始めに 1 回。使い切ったら引き直せない")
 	ru.choose("glass")
 	_check(is_equal_approx(ru.max_gauge(), 0.8) and is_equal_approx(ru.gauge, 0.8), "ガラスの体: 体力の上限が 20% 減り、いまの体力も上限まで削れる")
@@ -162,10 +169,11 @@ func _init() -> void:
 	var rb := SurvivalRun.new()
 	rb.start(4.0, [], 11)
 	rb.song_done({"failed": false, "score": 1.0, "level": 4.0, "hp_end": 1.0, "xp_got": 0.0, "boss": {"defeated": true}})
-	_check(rb.picks == 2 and rb.bonus_picks == 1 and is_equal_approx(rb.xp, SurvivalRun.BOSS_XP), "ボスを倒すと、経験値 %d(レベルが上がる)と、ごほうびの 3 択が 1 回" % int(SurvivalRun.BOSS_XP))
+	var blv := SurvivalRun.level_for_xp(SurvivalRun.BOSS_XP)
+	_check(rb.picks == blv + 1 and rb.bonus_picks == 1 and is_equal_approx(rb.xp, SurvivalRun.BOSS_XP), "ボスを倒すと、経験値 %d(レベルが %d 上がる)と、ごほうびの 3 択が 1 回" % [int(SurvivalRun.BOSS_XP), blv])
 	_check(rb.roll_choices().size() == 4, "ごほうびの回は 4 つから選ぶ")
 	rb.choose(str(rb.roll_choices()[0]))
-	_check(rb.bonus_picks == 0 and rb.picks == 1 and rb.roll_choices().size() == 3, "ごほうびを選んだら、残りはふつうの 3 択")
+	_check(rb.bonus_picks == 0 and rb.picks == blv and rb.roll_choices().size() == 3, "ごほうびを選んだら、残りはふつうの 3 択")
 	var rf := SurvivalRun.new()
 	rf.start(4.0, [], 12)
 	var ef := rf.song_done({"failed": false, "score": 1.0, "level": 4.0, "hp_end": 1.0, "xp_got": 0.0, "boss": {"defeated": false}})
@@ -176,9 +184,9 @@ func _init() -> void:
 	var fb := BulletField.new()
 	var sb := GameSim.new()
 	sb.setup(fb, {"events": bevs, "gizmos": [], "warn_lead": 0.6, "breaks": []}, 40.0, false, {})
-	sb.setup_boss_once(0.6, 1.0, {"power": 2})
+	sb.setup_boss_once(0.6, 1.0, {"dmg_mul": 1.5})
 	sb.debug_invincible = true
-	_check(sb.boss != null and sb.boss_once and sb.loop_len == 0.0 and sb.boss.power == 2 and sb.boss.max_hp > 0.0, "ボスの曲: 1 周だけ・強化が弾に効く(HP %.0f)" % (sb.boss.max_hp if sb.boss != null else -1.0))
+	_check(sb.boss != null and sb.boss_once and sb.loop_len == 0.0 and is_equal_approx(sb.boss.power_mul, 1.5) and sb.boss.max_hp > 0.0, "ボスの曲: 1 周だけ・強化が弾に効く(HP %.0f)" % (sb.boss.max_hp if sb.boss != null else -1.0))
 	var tb := 0.0
 	while not sb.finished and tb < 60.0:
 		sb.step(tb, 1.0 / 120.0, Vector2.ZERO, false)   # 動かない(ボスにはほとんど当たらない)
@@ -200,7 +208,7 @@ func _init() -> void:
 	fb2.free()
 
 	# --- 3 択 ---
-	var levels := {"max_gauge": 3, "regen": 3}
+	var levels := {"max_gauge": 10, "regen": 10}
 	var dup_ok := true
 	var cap_ok := true
 	for i in range(50):
@@ -255,13 +263,13 @@ func _init() -> void:
 	var s := GameSim.new()
 	s.setup(f, {"events": [], "gizmos": [], "warn_lead": 0.6, "breaks": []}, 30.0, false, {})
 	s.guard = 1
-	s.guard_gauge = 0.4
+	s.guard_gauge = SurvivalRun.GUARD_GAUGE
 	f.add(s.player_pos, Vector2.ZERO, 6.0, 0, 0.0)
 	var now := 0.0
 	for i in range(60):
 		s.step(now, 1.0 / 60.0, Vector2.ZERO, false)
 		now += 1.0 / 60.0
-	_check(not s.failed and s.guard == 0 and s.guard_t >= 0.0 and s.gauge > 0.3, "身代わり: ゲージが 0 になるとき 1 回だけ踏みとどまり、弾を消す(ゲージ %.2f)" % s.gauge)
+	_check(not s.failed and s.guard == 0 and s.guard_t >= 0.0 and s.gauge > 0.15, "身代わり: ゲージが 0 になるとき 1 回だけ踏みとどまり、弾を消す(ゲージ %.2f)" % s.gauge)
 	f.add(s.player_pos, Vector2.ZERO, 6.0, 0, 0.0)
 	for i in range(120):
 		if s.finished:

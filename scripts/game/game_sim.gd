@@ -165,6 +165,7 @@ var boss = null                       # 撃破 MOD のボス(Boss。なければ
 var boss_once := false                # サバイバルのボスの曲(setup_boss_once): 曲は繰り返さない。倒せなければ、曲の終わりでボスが逃げる(ゲームオーバーではない)
 var boss_fled_t := -1.0               # ボスが逃げた時刻(-1 = 逃げていない。描画が使う)
 var hit_heal_mul := 1.0               # ボスに当てたときの回復の倍率(サバイバルは、回復は主に曲の間なので弱める)
+var graze_heal := 0.0                 # サバイバルの「かすり回復」: グレイズ 1 回ごとに回復する量(初期の体力に対する割合。0 = なし)
 var enemies = null                    # サバイバル(S2)の連射・雑魚・経験値(scripts/game/enemies.gd。setup のあとにプレイ画面が付ける。なければ null)
 var loop_len := 0.0                   # > 0 なら、譜面をこの秒ごとに繰り返す(撃破 MOD)
 var loop_from := 0.0                  # 撃破: 2 周目以降の、周の始まり(1 周目の時刻で。最初のノーツの LOOP_LEAD 秒前)
@@ -578,6 +579,8 @@ func _update(now: float, dt: float) -> void:
 		own_graze += field.graze_count
 		if authority:
 			graze += field.graze_count
+			if graze_heal > 0.0 and field.graze_count > 0 and not failed:
+				gauge = minf(gauge + graze_heal * gauge_unit * float(field.graze_count), 1.0)
 		else:
 			contact_graze += field.graze_count   # 協力の参加者: ホストへ報告する
 		var gmul := zone_graze_mul()

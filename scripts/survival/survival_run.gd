@@ -47,6 +47,12 @@ const BOSS_XP := 25.0                   # ボスを倒したときの経験値
 const BOSS_RARE_BOOST := 3.0            # ごほうびの 3 択で、レアな強化の重みにかける倍率
 const LOW_LINE := 0.30                  # 被ダメージ半減の境目(初期の体力に対する割合。MOD「天国」の 35% のほうが高ければ、そちら)
 const GUARD_GAUGE := 0.4                # 身代わりで踏みとどまったときのゲージ
+const SMALL_STEP := 0.03                # 強化「小型化」の 1 段(もとの大きさに対する割合)
+const GRAZE_HEAL := 0.001               # 強化「かすり回復」の 1 段(グレイズ 1 回ごと。初期の体力に対する割合)
+const GLASS_GAUGE := 0.2                # 強化「ガラスの体」: 体力の上限が減る量(初期の体力に対する割合)
+const GLASS_SCORE := 1.15               # 同: 点の倍率にかける数
+const REROLL_START := 1                 # 3 択の引き直し: 始めに持っている回数
+const REROLL_EVERY := 5                 # 同: このレベルごとに 1 回増える
 ## 付けられない MOD(練習 = 倒れない / 撃破 = 曲が繰り返す)
 const BANNED_MODS := ["practice", "boss"]
 
@@ -64,6 +70,7 @@ var picks := 0                   # まだ選んでいない 3 択の回数
 var xp := 0.0                    # 経験値の通算
 var xp_level := 0                # レベル(経験値から決まる)
 var bonus_picks := 0             # picks のうち、ボスを倒したごほうび(4 つから選ぶ・レアが出やすい)の回数
+var rerolls := REROLL_START      # 3 択の引き直しの残り
 var over := false                # 終わった(倒れた・あきらめた)
 var used_keys := {}              # 出した曲のキー → 何回出したか
 var picked_upgrades: Array = []  # 選んだ強化の id(選んだ順)
@@ -86,6 +93,7 @@ func start(p_start_level: float, p_mods: Array, seed_n := 0) -> void:
 	xp = 0.0
 	xp_level = 0
 	bonus_picks = 0
+	rerolls = REROLL_START
 	over = false
 	used_keys = {}
 	picked_upgrades = []
@@ -120,6 +128,7 @@ func excluded_upgrades() -> Array:
 	var out: Array = []
 	if not bool(Mods.params(mod_ids).regen):
 		out.append("regen")
+		out.append("graze_heal")
 	if guard > 0:
 		out.append("guard")
 	return out
@@ -138,6 +147,10 @@ func game_params() -> Dictionary:
 		"total": total,
 		"xp": xp,
 		"power": level_of("power"), "rate": level_of("rate"), "wide": level_of("wide"), "magnet": level_of("magnet"),
+		"homing": level_of("homing"), "pierce": level_of("pierce"), "chain": level_of("chain"),
+		"small": 1.0 - SMALL_STEP * level_of("small"),
+		"graze_heal": GRAZE_HEAL * level_of("graze_heal"),
+		"score_mul": score_mul(),
 		"xp_mul": BET_XP_MUL if bet_next else 1.0,
 		"hp_mul": 1.0 + ENEMY_HP_STEP * float(songs.size()),
 		"boss": next_is_boss(),
@@ -195,7 +208,12 @@ static func xp_progress(total_xp: float) -> Dictionary:
 
 ## 体力の上限(初期の体力 = 1)。
 func max_gauge() -> float:
-	return 1.0 + MAX_GAUGE_STEP * level_of("max_gauge")
+	return 1.0 + MAX_GAUGE_STEP * level_of("max_gauge") - GLASS_GAUGE * level_of("glass")
+
+
+## 点の倍率 f(Lv) にかける数(ガラスの体)。
+func score_mul() -> float:
+	return pow(GLASS_SCORE, level_of("glass"))
 
 
 ## いまの体力の、上限に対する割合(ゲージの表示・プレイ画面へ渡す値)。
@@ -214,7 +232,7 @@ func song_done(st: Dictionary, info: Dictionary = {}) -> Dictionary:
 	var failed := bool(st.get("failed", false))
 	var song_score: float = float(st.get("fail_score", 0.0)) if failed else float(st.get("score", 0.0))
 	var lv := float(st.get("level", 0.0))
-	var f := f_of(lv)
+	var f := f_of(lv) * score_mul()
 	var e := {
 		"title": str(st.get("title", "")), "version": str(st.get("version", "")), "md5": str(st.get("md5", "")), "key": str(info.get("key", "")),
 		"level": lv, "score": song_score, "f": f, "points": song_score * f, "failed": failed, "gave_up": bool(st.get("gave_up", false)),
@@ -244,6 +262,7 @@ func song_done(st: Dictionary, info: Dictionary = {}) -> Dictionary:
 		return e
 	gauge = clampf(float(st.get("hp_end", gauge_frac())) * max_gauge() + between_heal(), 0.0, max_gauge())   # hp_end は、いまの体力に対する割合
 	picks += int(e.level_to) - int(e.level_from)   # 上がったレベルの数だけ 3 択
+	rerolls += floori(float(e.level_to) / REROLL_EVERY) - floori(float(e.level_from) / REROLL_EVERY)   # REROLL_EVERY レベルごとに、引き直しが 1 回増える
 	if beat:   # ボスを倒したごほうび(4 つから選ぶ・レアが出やすい)
 		picks += 1
 		bonus_picks += 1
@@ -257,6 +276,14 @@ func roll_choices(n := -1) -> Array:
 	if n < 0:
 		n = 4 if big else 3
 	return Upgrades.roll(rng, levels, n, excluded_upgrades(), BOSS_RARE_BOOST if big else 1.0)
+
+
+## 3 択を引き直す(引き直しが残っていて、選ぶ回があるとき)。戻り値: 新しい id の配列(引き直せなければ空)。
+func reroll() -> Array:
+	if rerolls <= 0 or picks <= 0:
+		return []
+	rerolls -= 1
+	return roll_choices()
 
 
 ## 強化を 1 つ選ぶ。
@@ -275,6 +302,7 @@ func choose(id: String) -> void:
 			bet_next = true
 		_:
 			levels[id] = level_of(id) + 1
+	gauge = minf(gauge, max_gauge())   # ガラスの体: 上限が減ったぶん、いまの体力も削れる
 
 
 ## 届いた Lv(遊んだ曲の Lv の最大)。

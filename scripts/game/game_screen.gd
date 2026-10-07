@@ -440,9 +440,12 @@ func _ready() -> void:
 		sim.guard = int(survival.get("guard", 0))
 		sim.guard_gauge = float(survival.get("guard_gauge", sim.guard_gauge))
 		sim.gauge = clampf(float(survival.get("gauge", 1.0)), 0.01, 1.0)
+		sim.graze_heal = float(survival.get("graze_heal", 0.0))
+		sim.player_scale *= float(survival.get("small", 1.0))   # 小型化: 自機と当たり判定が小さくなる
+		sim.player_r = GameSim.PLAYER_HIT_R * sim.player_scale
 		_gauge_ghost = sim.gauge
 		_hp_w = HP_W * clampf(sim.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.7)   # 最大ゲージの強化で、バーも伸びる
-		_sv_f = SurvivalRun.f_of(float(gen.level))
+		_sv_f = SurvivalRun.f_of(float(gen.level)) * float(survival.get("score_mul", 1.0))
 		if bool(survival.get("boss", false)):   # ボスの曲(S3): 撃破 MOD のボスを 1 周だけ。雑魚は出ない
 			sim.setup_boss_once(float(survival.get("boss_hp_share", 0.6)), float(survival.get("boss_hp_mul", 1.0)), survival)
 			_hp_y = HP_Y_BOSS
@@ -1943,6 +1946,12 @@ func _build_survival_hud() -> void:
 	var en = sim.enemies
 	v.add_child(_survival_caption("攻撃 ×%.2f ・ %d 列" % [en.power_mul, (Enemies.WIDE_OFFSETS[en.wide_lv] as Array).size()]))
 	v.add_child(_survival_caption("連射 +%d%%" % int(round(Enemies.RATE_STEP * en.rate_lv * 100.0))))
+	var extra: Array = []   # 弾の性質の強化(取ったものだけ)
+	for w in [["追尾", en.homing_lv], ["貫通", en.pierce_lv], ["誘爆", en.chain_lv]]:
+		if int(w[1]) > 0:
+			extra.append("%s %d" % w)
+	if not extra.is_empty():
+		v.add_child(_survival_caption(" ・ ".join(extra)))
 
 
 ## 経験値のバー(次のレベルまで)。経験値が入ると、なめらかに伸びる。

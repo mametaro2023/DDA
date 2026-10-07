@@ -87,6 +87,7 @@ var _choices_left := 0
 var _strip: HBoxContainer       # 下の「強化」の列
 var _strip_slots := {}          # 強化の id → 印
 var _strip_none: Label          # 強化がまだないときの「なし」
+var _reroll_btn: Control        # 3 択の引き直し(フッター。引き直しが残っていて、選んでいる間だけ出す)
 
 # NEXT
 var _next_box: Control
@@ -129,6 +130,8 @@ func _ready() -> void:
 	_build_footer()
 	var gu := _footer_button("あきらめる", Color(0.3, 0.28, 0.38), "x", 0, 220, _ask_give_up, LazerStyle.TEXT)
 	gu.set_meta("juice_sound", "back")
+	_reroll_btn = _footer_button("", LazerStyle.PURPLE, "shuffle", 214, 250, _reroll, Color(0.1, 0.04, 0.2))
+	_reroll_btn.visible = false
 	if _music != null:   # クリアした曲は流れたまま来るので、ゆっくり消す
 		add_child(_music)
 		var t := _music.create_tween()
@@ -517,10 +520,15 @@ func _roll() -> void:
 	for c in _choice_cards:
 		c.queue_free()
 	_choice_cards.clear()
-	_choice_ids = run.roll_choices(3)
+	_choice_ids = run.roll_choices()
 	if _choice_ids.is_empty():
 		_after_choices()
 		return
+	_deal()
+
+
+## いまの _choice_ids の札を並べる(引いたとき・引き直したとき)。
+func _deal() -> void:
 	if int(run.bonus_picks) > 0:
 		_choice_cap.text = "BOSS 撃破のごほうび!   4 つから 1 つ選ぶ(レアが出やすい)" + ("   (あと %d 回)" % _choices_left if _choices_left > 1 else "")
 	else:
@@ -548,7 +556,48 @@ func _roll() -> void:
 			t.tween_property(c, "modulate:a", 1.0, 0.18).set_delay(d)
 			t.tween_property(c, "position:y", 30.0, 0.42).from(52.0).set_delay(d).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_choosing = true
+	_show_reroll()
 	UiSfx.play("open")
+
+
+## 引き直しのボタン: 残りがあって、3 択が続く間は出したまま(出るときは下から滑り込む)。札を選べる間だけ押せる。
+func _show_reroll() -> void:
+	var on := int(run.rerolls) > 0 and (_choosing or _choices_left > 0)
+	_reroll_btn.caption = "引き直し  残り %d  (R)" % int(run.rerolls)
+	(_reroll_btn as Button).disabled = not _choosing
+	_reroll_btn.queue_redraw()
+	if on and not _reroll_btn.visible:
+		_reroll_btn.visible = true
+		UiStyle.pop_in(_reroll_btn, 0.15, Vector2(0, 16), 0.3)
+	elif not on:
+		_reroll_btn.visible = false
+
+
+## 3 択を引き直す: いまの札が裏返って消え、新しい札がめくれて現れる。
+func _reroll() -> void:
+	if not _choosing or _confirm != null or int(run.rerolls) <= 0:
+		return
+	var ids: Array = run.reroll()
+	if ids.is_empty():
+		return
+	_choosing = false
+	_show_reroll()
+	UiSfx.play("whoosh", 0.9)
+	var old := _choice_cards.duplicate()
+	_choice_cards.clear()
+	for c in old:   # 横に縮んで(裏返るように)消える
+		(c as ChoiceCard).enabled = false
+		if UiStyle.animate:
+			UiStyle.tween(c, "scale", c.scale, Vector2(0.05, 0.9), 0.18, 0.0, Tween.TRANS_CUBIC, Tween.EASE_IN)
+			UiStyle.tween(c, "modulate:a", 1.0, 0.0, 0.18)
+	if UiStyle.animate:
+		await get_tree().create_timer(0.18).timeout
+		if not is_inside_tree():
+			return
+	for c in old:
+		c.queue_free()
+	_choice_ids = ids
+	_deal()
 
 
 func _choose(i: int) -> void:
@@ -558,6 +607,7 @@ func _choose(i: int) -> void:
 	var id := str(_choice_ids[i])
 	run.choose(id)
 	_choices_left = int(run.picks)
+	_show_reroll()
 	var u := Upgrades.find(id)
 	var col: Color = u.color
 	var card: ChoiceCard = _choice_cards[i]
@@ -845,7 +895,7 @@ func show_next(info: Dictionary) -> void:
 func _show_level(lv: float, est: bool) -> void:
 	_next_lv_l.text = "%.2f%s" % [lv, " くらい" if est else ""]
 	_next_lv_l.add_theme_color_override("font_color", LazerStyle.level_color(lv))
-	_next_mul_l.text = "× %.2f%s" % [SurvivalRun.f_of(lv), " くらい" if est else ""]
+	_next_mul_l.text = "× %.2f%s" % [SurvivalRun.f_of(lv) * run.score_mul(), " くらい" if est else ""]   # ガラスの体の倍率も込み
 
 
 ## 次の曲の用意ができた。level: MOD 込みの Lv(測り直したもの)/ tex: 次の曲の背景
@@ -990,6 +1040,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			_choose(2)
 		KEY_4, KEY_KP_4:
 			_choose(3)
+		KEY_R:
+			_reroll()
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
 			if not _intro:
 				return

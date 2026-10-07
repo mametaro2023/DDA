@@ -4,7 +4,8 @@ extends RefCounted
 ##
 ## ## 自機の弾
 ## 最初の発射から(休憩を除く)、自機から上へ自動で連射する(撃破 MOD のボスと同じ速さ・同じ列の並び。Boss は触らず、ここで別に持つ)。
-## 攻撃力・連射・ワイド(列の数)は、サバイバルの強化で上がる(setup の params)。
+## 攻撃力・連射・ワイド(列の数)は、サバイバルの強化で上がる(setup の params)。追尾弾(近くの雑魚へ曲がる)・貫通(雑魚を通り抜ける)・
+## 誘爆(倒した雑魚が爆発して、まわりにダメージ)も、強化で付く。
 ##
 ## ## 雑魚
 ## 弾を撃たない・体当たりもない「的」。倒しても譜面の弾幕は変わらない(Lv の意味と、曲と弾の合い方を守る)。
@@ -58,11 +59,19 @@ const ORB_FALL := 110.0
 const MAGNET_R := 70.0
 const MAGNET_SPEED := 620.0
 const PICK_R := 18.0
+# 強化(段ごと。0 段目 = なし)
+const HOMING_TURN := [0.0, 4.0, 9.0]   # 追尾弾: 弾の向きが変わる速さ(rad/s)
+const HOMING_RANGE := 420.0            # 追尾弾: この距離より近い、前にいる雑魚へ曲がる
+const CHAIN_R := [0.0, 60.0, 85.0]     # 誘爆: 爆発の半径(px)
+const CHAIN_DMG := [0.0, 0.5, 1.0]     # 誘爆: 爆発のダメージ(その曲のふつうの雑魚の HP に対する割合)
 
 var shots := PackedVector2Array()
+var shot_v := PackedVector2Array()     # 弾の向き(単位ベクトル。追尾弾でなければ真上)
+var shot_pierce := PackedInt32Array()  # 弾が、あと何体通り抜けられるか(貫通)
+var shot_last := PackedInt32Array()    # 弾が最後に当たった雑魚の id(通り抜けている間に、同じ雑魚に何度も当たらない。-1 = なし)
 var enemies: Array = []          # {id, kind("normal"/"hard"/"slider"), hp, max_hp, t0, t1(いなくなる時刻), p, home, g(スライダー), flash, leaving_t}
 var orbs: Array = []             # {p, v, t, pulled}
-var kill_events: Array = []      # 倒した {p, t, hard}(古い順。読む側が、どこまで読んだかを覚える)
+var kill_events: Array = []      # 倒した {p, t, hard, boom(誘爆の半径。0 = 爆発しない)}(古い順。読む側が、どこまで読んだかを覚える)
 var pick_events: Array = []      # 取った玉 {p, t}
 var xp_got := 0.0                # この曲で取った経験値(xp_mul を掛けたもの)
 var kills := 0
@@ -73,6 +82,9 @@ var wide_lv := 0
 var magnet_mul := 1.0
 var xp_mul := 1.0
 var hp_mul := 1.0
+var homing_lv := 0
+var pierce_lv := 0
+var chain_lv := 0
 
 var _plan: Array = []            # 出る予定 {t, kind, x, y, g}(t の順)
 var _plan_i := 0
@@ -84,7 +96,7 @@ var _next_id := 0
 
 
 ## events / gizmos / breaks: 弾幕(GameSim と同じもの)。rect: 自機が動ける範囲。fire_from / fire_to: 最初と最後の発射の時刻。
-## params: {power, rate, wide, magnet(段), xp_mul, hp_mul}
+## params: {power, rate, wide, magnet, homing, pierce, chain(段), xp_mul, hp_mul}
 func setup(events: Array, gizmos: Array, breaks: Array, rect: Rect2, fire_from: float, fire_to: float, params: Dictionary = {}) -> void:
 	_breaks = breaks
 	_rect = rect
@@ -95,6 +107,9 @@ func setup(events: Array, gizmos: Array, breaks: Array, rect: Rect2, fire_from: 
 	magnet_mul = 1.0 + 0.4 * int(params.get("magnet", 0))
 	xp_mul = float(params.get("xp_mul", 1.0))
 	hp_mul = float(params.get("hp_mul", 1.0))
+	homing_lv = clampi(int(params.get("homing", 0)), 0, HOMING_TURN.size() - 1)
+	pierce_lv = maxi(int(params.get("pierce", 0)), 0)
+	chain_lv = clampi(int(params.get("chain", 0)), 0, CHAIN_R.size() - 1)
 	_plan = make_plan(events, gizmos, breaks, fire_from, fire_to)
 	_plan_i = 0
 
@@ -174,37 +189,101 @@ func update(now: float, dt: float, ppos: Vector2, resting: bool) -> void:
 			_fire_acc -= iv
 			for ox in WIDE_OFFSETS[wide_lv]:
 				shots.append(ppos + Vector2(ox, -10.0))
+				shot_v.append(Vector2.UP)
+				shot_pierce.append(pierce_lv)
+				shot_last.append(-1)
 	else:
 		_fire_acc = FIRE_INTERVAL
 	_move_enemies(now, dt, resting)
-	# 自機の弾を進めて、雑魚との当たりを調べる(このステップで進んだ線分と、雑魚の円)
+	# 自機の弾を進めて、雑魚との当たりを調べる(このステップで進んだ線分と、雑魚の円)。
+	# 雑魚の位置・半径・id は、いちど数の並びにしてから調べる(弾の数 × 雑魚の数だけ、辞書を引かないように)
 	var step := SHOT_SPEED * dt
+	var turn: float = HOMING_TURN[homing_lv] * dt
+	var ep := PackedVector2Array()
+	var er := PackedFloat32Array()
+	var eid := PackedInt32Array()
+	_pack_alive(ep, er, eid)
 	var i := shots.size() - 1
 	while i >= 0:
 		var p := shots[i]
+		var v := shot_v[i]
+		if turn > 0.0:
+			v = _steer(p, v, turn, ep)
+			shot_v[i] = v
+		var d := v * step
 		var hit := -1
-		for k in range(enemies.size()):
-			var e: Dictionary = enemies[k]
-			if e.leaving_t < 0.0 and _shot_hits(p, e.p, step, radius_of(e)):
-				hit = k
+		var last := shot_last[i]
+		for k in range(ep.size()):
+			if eid[k] != last and _seg_hits(p, d, ep[k], er[k]):
+				hit = eid[k]
 				break
-		if hit >= 0 or p.y - step < -20.0:
-			shots[i] = shots[shots.size() - 1]
-			shots.resize(shots.size() - 1)
-			if hit >= 0:
-				_on_hit(hit, now)
+		var np := p + d
+		var gone := np.y < -20.0 or np.y > ARENA.y + 20.0 or np.x < -20.0 or np.x > ARENA.x + 20.0
+		if hit >= 0:
+			if shot_pierce[i] > 0:   # 貫通: 通り抜けて、次の雑魚へ
+				shot_pierce[i] -= 1
+				shot_last[i] = hit
+			else:
+				gone = true
+			var k := _index_of(hit)
+			if k >= 0 and _damage(k, SHOT_DMG * power_mul, now):   # 倒れた(誘爆も含めて、雑魚が減った)ので、並びを作り直す
+				_pack_alive(ep, er, eid)
+		if gone:
+			var j := shots.size() - 1
+			shots[i] = shots[j]
+			shot_v[i] = shot_v[j]
+			shot_pierce[i] = shot_pierce[j]
+			shot_last[i] = shot_last[j]
+			shots.resize(j)
+			shot_v.resize(j)
+			shot_pierce.resize(j)
+			shot_last.resize(j)
 		else:
-			shots[i] = Vector2(p.x, p.y - step)
+			shots[i] = np
 		i -= 1
 	_update_orbs(now, dt, ppos)
 
 
-static func _shot_hits(p: Vector2, c: Vector2, step: float, r: float) -> bool:
-	var dx := absf(p.x - c.x)
-	if dx >= r:
-		return false
-	var h := sqrt(r * r - dx * dx)
-	return c.y + h >= p.y - step and c.y - h <= p.y
+## 当たる雑魚(上へ抜けていないもの)の位置・半径・id を、数の並びにする。
+func _pack_alive(ep: PackedVector2Array, er: PackedFloat32Array, eid: PackedInt32Array) -> void:
+	ep.resize(0)
+	er.resize(0)
+	eid.resize(0)
+	for e in enemies:
+		if e.leaving_t < 0.0:
+			ep.append(e.p)
+			er.append(radius_of(e))
+			eid.append(int(e.id))
+
+
+## 線分 p → p + d が、中心 c・半径 r の円に触れるか。
+static func _seg_hits(p: Vector2, d: Vector2, c: Vector2, r: float) -> bool:
+	var dd := d.length_squared()
+	var u := 0.0 if dd <= 0.0 else clampf((c - p).dot(d) / dd, 0.0, 1.0)
+	return (p + d * u).distance_squared_to(c) < r * r
+
+
+## 追尾弾: 向き v を、前にいて HOMING_RANGE より近い、いちばん近い雑魚へ、turn(rad)まで回す。
+static func _steer(p: Vector2, v: Vector2, turn: float, ep: PackedVector2Array) -> Vector2:
+	var best := HOMING_RANGE * HOMING_RANGE
+	var to := Vector2.ZERO
+	for c in ep:
+		var w := c - p
+		var d2 := w.length_squared()
+		if d2 < best and w.dot(v) > 0.0:
+			best = d2
+			to = w
+	if to == Vector2.ZERO:
+		return v
+	var a := v.angle_to(to)
+	return v.rotated(clampf(a, -turn, turn))
+
+
+func _index_of(id: int) -> int:
+	for k in range(enemies.size()):
+		if int(enemies[k].id) == id:
+			return k
+	return -1
 
 
 func _spawn(now: float, resting: bool) -> void:
@@ -254,20 +333,34 @@ func _move_enemies(now: float, dt: float, resting: bool) -> void:
 		i -= 1
 
 
-func _on_hit(k: int, now: float) -> void:
+## enemies[k] に dmg を与える。戻り値: 倒れたか。
+func _damage(k: int, dmg: float, now: float) -> bool:
 	var e: Dictionary = enemies[k]
 	e.flash = FLASH_TIME
-	e.hp = float(e.hp) - SHOT_DMG * power_mul
+	e.hp = float(e.hp) - dmg
 	if float(e.hp) > 0.0:
-		return
+		return false
 	var hard: bool = e.kind == "hard"
+	var c: Vector2 = e.p
+	var boom: float = CHAIN_R[chain_lv]
 	kills += 1
-	kill_events.append({"p": e.p, "t": now, "hard": hard})
+	kill_events.append({"p": c, "t": now, "hard": hard, "boom": boom})
 	var n := HARD_XP if hard else 1
 	for q in range(n):
 		var ang := -PI * 0.5 + (float(q) - (n - 1) * 0.5) * 0.5
-		orbs.append({"p": e.p, "v": Vector2.from_angle(ang) * ORB_POP, "t": now, "pulled": false})
+		orbs.append({"p": c, "v": Vector2.from_angle(ang) * ORB_POP, "t": now, "pulled": false})
 	enemies.remove_at(k)
+	if boom > 0.0:   # 誘爆: まわりの雑魚にダメージ(倒れた雑魚も、また爆発する)
+		var ids: Array = []
+		for o in enemies:
+			if o.leaving_t < 0.0 and (o.p as Vector2).distance_to(c) < boom + radius_of(o):
+				ids.append(int(o.id))
+		var bd := HP * hp_mul * float(CHAIN_DMG[chain_lv])
+		for id in ids:
+			var j := _index_of(id)
+			if j >= 0:
+				_damage(j, bd, now)
+	return true
 
 
 func _update_orbs(now: float, dt: float, ppos: Vector2) -> void:
@@ -300,3 +393,6 @@ func sweep() -> void:
 	xp_got += float(orbs.size()) * xp_mul
 	orbs.clear()
 	shots.clear()
+	shot_v.clear()
+	shot_pierce.clear()
+	shot_last.clear()

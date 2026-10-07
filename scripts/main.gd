@@ -4086,6 +4086,8 @@ func _smoke_survival() -> void:
 	await get_tree().create_timer(1.0).timeout
 	shot.call("setup")
 	s._start()
+	if _sv_run != null:   # 追加の強化を、はじめから持たせて確かめる
+		_sv_run.levels = {"homing": 2, "pierce": 1, "chain": 2, "small": 3, "graze_heal": 2}
 	await get_tree().create_timer(1.6).timeout
 	chk.call(_kind == "survival_break" and _current._next_box.visible, "1 曲目の前は NEXT だけ: %s" % (_current._next_title.text if _kind == "survival_break" else "?"))
 	shot.call("next1")
@@ -4093,6 +4095,7 @@ func _smoke_survival() -> void:
 	var g = _current
 	chk.call(_kind == "game" and not g.survival.is_empty(), "1 曲目が始まる(Lv %.2f / f %.2f / 始めのゲージ %.2f)" % [float(g.gen.level), g._sv_f, g.sim.gauge])
 	g.sim.debug_invincible = true
+	chk.call(_kind == "game" and g.sim.enemies != null and g.sim.enemies.homing_lv == 2 and g.sim.enemies.chain_lv == 2 and is_equal_approx(g.sim.graze_heal, 0.002) and g.sim.player_r < float(load("res://scripts/game/game_sim.gd").PLAYER_HIT_R) * float(load("res://scripts/game/pattern_gen.gd").PLAYER_SIZE_MUL) * 0.92, "追加の強化が効く(追尾 2・誘爆 2・かすり回復 0.2%%・当たり判定 %.2f)" % (g.sim.player_r if _kind == "game" else -1.0))
 	await wait_for.call(func(): return g.sim.enemies != null and g.sim.enemies.enemies.size() >= 2, 20.0)   # 雑魚が出てくるまで(S2)
 	await get_tree().create_timer(0.7).timeout
 	shot.call("play0")   # 雑魚が出ているところ
@@ -4121,7 +4124,12 @@ func _smoke_survival() -> void:
 		b._choice_cards[0]._hover_to = 1.0   # カーソルを乗せた見た目
 	await get_tree().create_timer(0.4).timeout
 	shot.call("break1")
-	if _kind == "survival_break":
+	if _kind == "survival_break":   # 引き直し(始めに 1 回)
+		var before := str(b._choice_ids)
+		b._reroll()
+		await get_tree().create_timer(0.9).timeout
+		chk.call(_sv_run.rerolls == 0 and b._choosing and b._choice_cards.size() >= 1 and not b._reroll_btn.visible, "引き直すと札が引き直され、残りが 0 ならボタンは消える(%s → %s)" % [before, str(b._choice_ids)])
+		shot.call("reroll")
 		b._choose(0)
 	await get_tree().create_timer(0.75).timeout
 	shot.call("chosen")   # 選んだ強化が、下の列へ飛び込んだところ

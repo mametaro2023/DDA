@@ -513,8 +513,10 @@ func _draw_boss_over() -> void:
 ## 命中した瞬間は白く光り、削れた HP は外側の輪で示す。上へ抜けるときは薄れる。
 func _draw_enemies_under() -> void:
 	var en = sim.enemies
-	for p in en.shots:
-		draw_line(p, p + Vector2(0, 16), Color(0.65, 1.0, 0.8, 0.55), 2.0, true)
+	var shots: PackedVector2Array = en.shots
+	var sv: PackedVector2Array = en.shot_v
+	for i in range(shots.size()):   # 進む向きの後ろへ伸びる線(追尾弾は曲がって見える)
+		draw_line(shots[i], shots[i] - sv[i] * 16.0, Color(0.65, 1.0, 0.8, 0.55), 2.0, true)
 	for e in en.enemies:
 		var c: Vector2 = e.p
 		var kind: String = e.kind
@@ -579,6 +581,11 @@ func _draw_enemies_over() -> void:
 		var c: Vector2 = ke.p
 		var k := t / 0.45
 		var col := Color(1.0, 0.85, 0.45) if bool(ke.hard) else Color(0.55, 1.0, 0.9)
+		var boom := float(ke.get("boom", 0.0))
+		if boom > 0.0:   # 誘爆: 橙の火の玉が、爆発の半径まで速く広がって薄れる
+			var bk := 1.0 - pow(1.0 - minf(t / 0.18, 1.0), 3.0)
+			draw_circle(c, boom * bk, Color(1.0, 0.55, 0.2, 0.32 * (1.0 - k)))
+			draw_arc(c, boom * bk, 0.0, TAU, 40, Color(1.0, 0.75, 0.4, 0.9 * (1.0 - k)), 3.0, true)
 		if t < 0.1:
 			draw_circle(c, 14.0 + 30.0 * t, Color(1, 1, 1, 0.7 * (1.0 - t / 0.1)))
 		draw_arc(c, 10.0 + (60.0 if bool(ke.hard) else 40.0) * (1.0 - pow(1.0 - k, 3.0)), 0.0, TAU, 32, Color(col.r, col.g, col.b, 0.85 * (1.0 - k)), 2.5 * (1.0 - k) + 0.5, true)

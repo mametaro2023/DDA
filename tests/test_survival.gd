@@ -105,9 +105,57 @@ func _init() -> void:
 	var en2 := Enemies.new()
 	en2.setup(evs, [], [], Rect2(Vector2.ZERO, PatternGen.ARENA), 1.0, 60.0, {"xp_mul": 2.0, "power": 4})
 	en2.enemies.append({"id": 0, "kind": "normal", "hp": 1.0, "max_hp": 1.0, "t0": 0.0, "t1": 99.0, "p": Vector2(100, 100), "home": Vector2(100, 100), "g": null, "flash": 0.0, "leaving_t": -1.0, "seed": 0.0})
-	en2._on_hit(0, 0.0)
+	en2._damage(0, 99.0, 0.0)
 	en2.sweep()
 	_check(en2.kills == 1 and is_equal_approx(en2.xp_got, 2.0), "曲を終えたら、落ちている玉はすべて取ったことになる(経験値 2 倍で %.0f)" % en2.xp_got)
+
+	# --- 追加の強化: 追尾弾・貫通・誘爆・小型化・ガラスの体・引き直し ---
+	var kills_with := func(params: Dictionary, zako: Array, shot_from: Vector2, secs: float) -> int:
+		var e := Enemies.new()
+		e.setup([], [], [], Rect2(Vector2.ZERO, PatternGen.ARENA), -1.0, -1.0, params)   # 予定の雑魚は出さない・自動では撃たない
+		var id := 0
+		for z in zako:   # [位置, HP]。ゆらぎが 0 を通る時刻から始め、下がるぶんだけ上に置く(はじめの 0.5 秒くらいは、ほぼ止まって見える)
+			var zp: Vector2 = z[0]
+			var age := PI / 0.9
+			var home: Vector2 = zp - Vector2(0, Enemies.DRIFT_DOWN * age)
+			e.enemies.append({"id": id, "kind": "normal", "hp": float(z[1]), "max_hp": float(z[1]), "t0": -age, "t1": 99.0, "p": zp, "home": home, "g": null, "flash": 0.0, "leaving_t": -1.0, "seed": 0.0})
+			id += 1
+		var t := 0.0
+		var acc := 0.0
+		while t < secs:
+			acc += 0.001
+			if acc >= Enemies.FIRE_INTERVAL:   # 1 列だけ撃つ(自機は動かない)
+				acc = 0.0
+				e.shots.append(shot_from)
+				e.shot_v.append(Vector2.UP)
+				e.shot_pierce.append(e.pierce_lv)
+				e.shot_last.append(-1)
+			e.update(t, 0.001, shot_from, false)
+			t += 0.001
+		return e.kills
+	var off := [[Vector2(300, 150), Enemies.HP]]   # 自機の列から 180px 横
+	_check(kills_with.call({}, off, Vector2(480, 600), 2.0) == 0 and kills_with.call({"homing": 2}, off, Vector2(480, 600), 2.0) == 1, "追尾弾: 列の外の雑魚にも、曲がって当たる")
+	var stack := [[Vector2(480, 150), 2.0], [Vector2(480, 260), 99.0]]   # 縦に 2 体(手前は硬い)
+	_check(kills_with.call({}, stack, Vector2(480, 600), 0.45) == 0 and kills_with.call({"pierce": 1}, stack, Vector2(480, 600), 0.45) == 1, "貫通: 手前の雑魚を通り抜けて、後ろの雑魚にも当たる")
+	var ec := Enemies.new()
+	ec.setup([], [], [], Rect2(Vector2.ZERO, PatternGen.ARENA), -1.0, -1.0, {"chain": 2})
+	for k in range(3):
+		ec.enemies.append({"id": k, "kind": "normal", "hp": Enemies.HP, "max_hp": Enemies.HP, "t0": 0.0, "t1": 99.0, "p": Vector2(200 + 60 * k, 150), "home": Vector2(200 + 60 * k, 150), "g": null, "flash": 0.0, "leaving_t": -1.0, "seed": 0.0})
+	ec.enemies.append({"id": 9, "kind": "normal", "hp": Enemies.HP, "max_hp": Enemies.HP, "t0": 0.0, "t1": 99.0, "p": Vector2(700, 150), "home": Vector2(700, 150), "g": null, "flash": 0.0, "leaving_t": -1.0, "seed": 0.0})
+	ec._damage(0, 99.0, 0.0)
+	_check(ec.kills == 3 and ec.enemies.size() == 1 and float(ec.kill_events[0].boom) > 0.0, "誘爆: 倒した雑魚の爆発で、近くの雑魚が倒れ、それもまた爆発する(遠い雑魚は残る)")
+	var ru := SurvivalRun.new()
+	ru.start(4.0, [], 21)
+	ru.picks = 3
+	ru.choose("small")
+	ru.choose("small")
+	_check(is_equal_approx(float(ru.game_params().small), 0.94), "小型化: 1 段ごとに 3% 小さく")
+	_check(ru.rerolls == SurvivalRun.REROLL_START and ru.reroll().size() == 3 and ru.rerolls == SurvivalRun.REROLL_START - 1 and ru.reroll().is_empty(), "引き直し: 始めに 1 回。使い切ったら引き直せない")
+	ru.choose("glass")
+	_check(is_equal_approx(ru.max_gauge(), 0.8) and is_equal_approx(ru.gauge, 0.8), "ガラスの体: 体力の上限が 20% 減り、いまの体力も上限まで削れる")
+	ru.song_done({"failed": false, "score": 1000000.0, "level": 4.0, "hp_end": 1.0, "xp_got": SurvivalRun.xp_need(0) + SurvivalRun.xp_need(1) + SurvivalRun.xp_need(2) + SurvivalRun.xp_need(3) + SurvivalRun.xp_need(4)})
+	_check(is_equal_approx(ru.total, 1150000.0), "ガラスの体: 点の倍率が 1.15 倍(%.0f)" % ru.total)
+	_check(ru.xp_level == 5 and ru.rerolls == 1, "引き直し: レベル 5 で 1 回増える")
 
 	# --- ボスの曲(S3) ---
 	_check(SurvivalRun.is_boss_song(5) and SurvivalRun.is_boss_song(10) and not SurvivalRun.is_boss_song(4) and not SurvivalRun.is_boss_song(0), "5 曲ごとにボスの曲")

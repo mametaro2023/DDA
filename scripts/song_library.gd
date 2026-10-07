@@ -95,9 +95,7 @@ static func snapshot() -> Dictionary:
 
 
 static func file_size(p: String) -> int:
-	if OszLoader.is_folder(p):   # フォルダ(osu! の Songs の中の曲)は大きさを持たない
-		return -1
-	var fh := FileAccess.open(p, FileAccess.READ)
+	var fh := FileAccess.open(p, FileAccess.READ)   # フォルダ(osu! の Songs の中の曲)は開けないので -1。曲ごとに何度も呼ばれるので、フォルダかの確認は挟まない
 	if fh == null:
 		return -1
 	var n := fh.get_length()
@@ -164,7 +162,6 @@ static func index_key(path: String) -> String:
 ## その .osz(または osu! の Songs の中の曲のフォルダ)の要約: {ok, error, title, artist, md5(先頭の難易度の識別子), ids(識別子 → .osu のファイル名)}。
 ## ok は、osu!standard の譜面が入っているか。中身を解析せず文字を見るだけなので軽く、結果は保存される。
 static func info(path: String) -> Dictionary:
-	var is_dir := OszLoader.is_folder(path)
 	var ck := index_key(path)
 	_index_mutex.lock()
 	_load_index()
@@ -172,6 +169,7 @@ static func info(path: String) -> Dictionary:
 	_index_mutex.unlock()
 	if hit != null:
 		return hit
+	var is_dir := OszLoader.is_folder(path)   # 索引に無いときだけ調べる(ある曲は、ここへ来ない)
 	var out := {"ok": false, "error": "", "title": "", "artist": "", "md5": "", "ids": {}}
 	var z := ZIPReader.new()
 	var err := OK if is_dir else z.open(path)

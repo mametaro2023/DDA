@@ -88,7 +88,8 @@ func _build_left() -> void:
 	v.add_child(grid)
 	var secs := int(round(float(rec.get("time_s", 0.0))))
 	for t in [["クリアした曲", "%d 曲" % int(rec.get("cleared", 0))], ["届いた Lv", "%.2f" % float(rec.get("best_level", 0.0))],
-			["時間", "%d:%02d" % [secs / 60, secs % 60]], ["開始の Lv", "%d" % int(rec.get("start_level", 0))]]:
+			["時間", "%d:%02d" % [secs / 60, secs % 60]], ["開始の Lv", "%d" % int(rec.get("start_level", 0))],
+			["倒した雑魚", "%d 体" % int(rec.get("kills", 0))], ["レベル", "%d" % int(rec.get("xp_level", 0))]]:
 		grid.add_child(_tile(t[0], t[1]))
 	var mods: Array = rec.get("mods", [])
 	var line: Array = []

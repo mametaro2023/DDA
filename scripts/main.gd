@@ -4091,9 +4091,22 @@ func _smoke_survival() -> void:
 	await wait_for.call(func(): return _kind == "game", 20.0)
 	var g = _current
 	chk.call(_kind == "game" and not g.survival.is_empty(), "1 曲目が始まる(Lv %.2f / f %.2f / 始めのゲージ %.2f)" % [float(g.gen.level), g._sv_f, g.sim.gauge])
-	await get_tree().create_timer(3.0).timeout
-	shot.call("play1")
 	g.sim.debug_invincible = true
+	await wait_for.call(func(): return g.sim.enemies != null and g.sim.enemies.enemies.size() >= 2, 20.0)   # 雑魚が出てくるまで(S2)
+	await get_tree().create_timer(0.7).timeout
+	shot.call("play0")   # 雑魚が出ているところ
+	g._mouse_mode = false   # ボットはキーボードの入力として動かす
+	g.debug_move = func() -> Vector2:   # ボット: いちばん古い雑魚の真下へ
+		var en = g.sim.enemies
+		if en == null or en.enemies.is_empty():
+			return Vector2.ZERO
+		var dx: float = float(en.enemies[0].p.x) - g.sim.player_pos.x
+		return Vector2(signf(dx) if absf(dx) > 4.0 else 0.0, 0.0)
+	await get_tree().create_timer(2.5).timeout
+	shot.call("play1")
+	chk.call(g.sim.enemies != null and g.sim.enemies.spawned >= 1, "雑魚が出る(出た %d・倒した %d・経験値 %.0f)" % [g.sim.enemies.spawned, g.sim.enemies.kills, g.sim.enemies.xp_got])
+	_sv_run.xp = 19.0   # 3 択を出すため、レベルが上がるぶんの経験値を足しておく
+	g.sim.enemies.xp_got += 1.0
 	var last: float = g.sim.events[g.sim.events.size() - 1].t
 	g._audio.seek((last - 0.5) * g._rate)
 	await wait_for.call(func(): return _kind != "game", 25.0)

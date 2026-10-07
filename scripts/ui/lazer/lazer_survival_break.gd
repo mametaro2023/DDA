@@ -27,9 +27,9 @@ const Settings = preload("res://scripts/settings.gd")
 const NEXT_SHOW := 2.4        # NEXT を見せる最短の秒(用意ができてから、少なくとも NEXT_READY 秒)
 const NEXT_READY := 1.1
 const CARD_W := 292.0
-const CARD_H := 224.0
+const CARD_H := 206.0
 const CARD_GAP := 26.0
-const CHOICE_Y := 336.0
+const CHOICE_Y := 360.0
 const STRIP_Y := 606.0
 ## 結果の演出の時刻(秒。画面を開いてから)
 const T_SCORE := [0.35, 0.95]     # 曲の点が数え上がる
@@ -63,6 +63,12 @@ var _gauge_bar: Control
 var _gauge_to := 1.0
 var _gauge_shown := 1.0
 var _heal_pill: Control
+var _xp_bar: Control            # 経験値のバー(レベルをまたいで伸びる)
+var _xp_lv_l: Label
+var _xp_from := 0.0
+var _xp_to := 0.0
+var _xp_shown := 0.0
+var _xp_level := 0
 var _t := 0.0
 var _intro := false             # 結果の演出中
 var _fired := {}                # 一度だけの演出(名前 → true)
@@ -218,7 +224,7 @@ func _draw_banner() -> void:
 
 func _build_result() -> void:
 	_result = Control.new()
-	_place(_result, 190, 126, 900, 196)
+	_place(_result, 190, 126, 900, 226)
 	_result.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_result.draw.connect(func():
 		var sb := LazerStyle.box(Color(LazerStyle.PANEL_DARK.r, LazerStyle.PANEL_DARK.g, LazerStyle.PANEL_DARK.b, 0.9), Color(1, 1, 1, 0.08), 1, 18)
@@ -274,6 +280,30 @@ func _build_result() -> void:
 	_heal_pill.position = Vector2(660, 146)
 	_heal_pill.modulate.a = 0.0
 	_result.add_child(_heal_pill)
+	# 4 行目: 経験値(倒した数・取った経験値。バーはレベルをまたいで伸び、上がるたびにレベルの数字が弾む)
+	var xc := LazerStyle.label("経験値", 13, LazerStyle.TEXT_MUTE)
+	xc.position = Vector2(26, 186)
+	_result.add_child(xc)
+	_xp_to = float(run.xp)
+	_xp_from = _xp_to - float(last.get("xp_got", 0.0))
+	_xp_shown = _xp_from
+	_xp_level = SurvivalRun.level_for_xp(_xp_from)
+	_xp_bar = Control.new()
+	_xp_bar.position = Vector2(84, 190)
+	_xp_bar.size = Vector2(460, 12)
+	_xp_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_xp_bar.draw.connect(_draw_xp)
+	_result.add_child(_xp_bar)
+	_xp_lv_l = LazerStyle.label("LEVEL %d" % _xp_level, 15, LazerStyle.GREEN, true)
+	_xp_lv_l.position = Vector2(556, 182)
+	_xp_lv_l.size = Vector2(90, 22)
+	_xp_lv_l.pivot_offset = Vector2(40, 11)
+	_result.add_child(_xp_lv_l)
+	var ki := LazerStyle.label("撃破 %d / %d 体 ・ 経験値 + %d" % [int(last.get("kills", 0)), int(last.get("spawned", 0)), int(round(float(last.get("xp_got", 0.0))))], 13, LazerStyle.TEXT_DIM)
+	ki.position = Vector2(650, 184)
+	ki.size = Vector2(224, 20)
+	ki.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_result.add_child(ki)
 	UiStyle.pop_in(_result, 0.1, Vector2(0, 22), 0.45)
 
 
@@ -319,6 +349,17 @@ func _draw_gauge() -> void:
 	_gauge_bar.draw_colored_polygon(PackedVector2Array([Vector2(lx - 4.0, -7.0), Vector2(lx + 4.0, -7.0), Vector2(lx, -1.0)]), Color(1, 1, 1, 0.5))
 
 
+func _draw_xp() -> void:
+	var pr := SurvivalRun.xp_progress(_xp_shown)
+	var w := _xp_bar.size.x
+	var h := _xp_bar.size.y
+	var k := clampf(float(pr.into) / maxf(float(pr.need), 0.001), 0.0, 1.0)
+	var g := LazerStyle.GREEN
+	_xp_bar.draw_style_box(LazerStyle.box(Color(0.03, 0.025, 0.06, 0.85), Color(1, 1, 1, 0.14), 1, 6), Rect2(0, 0, w, h))
+	if k > 0.0:
+		_xp_bar.draw_style_box(LazerStyle.box(g, Color(0, 0, 0, 0), 0, 5), Rect2(2, 2, maxf((w - 4.0) * k, h - 4.0), h - 4.0))
+
+
 func _ease(t0: float, t1: float) -> float:
 	var x := clampf((_t - t0) / maxf(t1 - t0, 0.001), 0.0, 1.0)
 	return 1.0 - pow(1.0 - x, 3.0)
@@ -360,6 +401,16 @@ func _tick_intro(delta: float) -> void:
 		if _once("heal"):
 			UiStyle.tween(_heal_pill, "modulate:a", 0.0, 1.0, 0.25)
 			UiStyle.pop_in(_heal_pill, 0.0, Vector2(-14, 0), 0.3)
+	if _t >= T_GAUGE[0]:   # 経験値: ゲージと同じ間に伸びる
+		_xp_shown = lerpf(_xp_from, _xp_to, _ease(T_GAUGE[0], T_GAUGE[1] + 0.3))
+		_xp_bar.queue_redraw()
+		var lv := SurvivalRun.level_for_xp(_xp_shown)
+		if lv > _xp_level:
+			_xp_level = lv
+			_xp_lv_l.text = "LEVEL %d" % lv
+			UiStyle.spring(_xp_lv_l, "scale", Vector2(1.4, 1.4), Vector2.ONE, 0.45)
+			_fx_ring(_xp_lv_l, LazerStyle.GREEN)
+			_sound("on", 1.2 + 0.1 * lv)
 	if _t >= T_GAUGE[1] and _once("heal_end") and _gauge_to > gauge_from + 0.005 and not _quiet:
 		var tip := _gauge_bar.global_position + Vector2(2.0 + (_gauge_bar.size.x - 4.0) * _gauge_to, _gauge_bar.size.y * 0.5)
 		UiFx.burst(self, tip, Color(0.6, 1.0, 0.75), 10, 150.0, 0.5, 2.5)
@@ -437,8 +488,13 @@ func _start_choices() -> void:
 	_choices_left = int(run.picks)
 	if _choices_left > 0:
 		_roll()
-	else:
-		_after_choices()
+		return
+	# レベルが上がらなかった: 強化はない(一言出して、NEXT へ)
+	_choice_cap.text = "レベルは上がらなかった(強化なし)"
+	UiStyle.tween(_choice_cap, "modulate:a", 0.0, 1.0, 0.25)
+	if UiStyle.animate:
+		await get_tree().create_timer(1.1).timeout
+	_after_choices()
 
 
 ## 3 択を引いて、札を並べる(めくれるように、順に現れる)。
@@ -450,7 +506,7 @@ func _roll() -> void:
 	if _choice_ids.is_empty():
 		_after_choices()
 		return
-	_choice_cap.text = "強化を 1 つ選ぶ" + ("   (あと %d 回)" % _choices_left if _choices_left > 1 else "")
+	_choice_cap.text = "LEVEL UP!   強化を 1 つ選ぶ" + ("   (あと %d 回)" % _choices_left if _choices_left > 1 else "")
 	UiStyle.tween(_choice_cap, "modulate:a", _choice_cap.modulate.a, 1.0, 0.25)
 	var n := _choice_ids.size()
 	var x0 := (1280.0 - (CARD_W * n + CARD_GAP * (n - 1))) * 0.5

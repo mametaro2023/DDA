@@ -33,6 +33,7 @@ const ReplayBar = preload("res://scripts/game/replay_bar.gd")
 const ReplayDense = preload("res://scripts/replay_dense.gd")
 const SideShade = preload("res://scripts/game/side_shade.gd")
 const SurvivalRun = preload("res://scripts/survival/survival_run.gd")
+const Enemies = preload("res://scripts/game/enemies.gd")
 
 const ARENA_POS := Vector2(160, 0)
 ## 体力バーの位置と大きさ(先端の火花の発生位置にも使う)
@@ -280,6 +281,13 @@ var survival: Dictionary = {}
 var _sv_total_l: Label        # 右のパネルの合計点(これまでの合計 + この曲の点 × f)
 var _sv_f := 1.0              # この曲の点の倍率 f(Lv)
 var _guard_seen := -1.0       # 身代わりの演出をした時刻
+var _sv_xp_bar: Control       # 右のパネルの経験値のバー(S2)
+var _sv_lv_l: Label           # その横のレベル
+var _sv_level := 0            # 出しているレベル(上がったら LEVEL UP の演出)
+var _sv_xp_shown := 0.0       # バーに出している経験値(なめらかに追従)
+var _kill_seen := 0           # enemies.kill_events をどこまで鳴らしたか
+var _orb_seen := 0            # enemies.pick_events をどこまで鳴らしたか
+var _orb_snd_t := 0.0         # 玉を取った音の間引き
 
 
 ## ポーズ中か(main が、F11 の全画面を受け付けるかの判断に使う)
@@ -435,6 +443,11 @@ func _ready() -> void:
 		_gauge_ghost = sim.gauge
 		_hp_w = HP_W * clampf(sim.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.7)   # 最大ゲージの強化で、バーも伸びる
 		_sv_f = SurvivalRun.f_of(float(gen.level))
+		var en := Enemies.new()   # 自機の自動の連射・雑魚・経験値(S2)
+		en.setup(sim.events, sim.gizmos, sim.breaks, sim.move_rect, sim.first_fire_time, sim.last_fire_time, survival)
+		sim.enemies = en
+		_sv_xp_shown = float(survival.get("xp", 0.0))
+		_sv_level = SurvivalRun.level_for_xp(_sv_xp_shown)
 	_audio.pitch_scale = _rate
 	if sim.boss != null:
 		_hp_y = HP_Y_BOSS
@@ -899,6 +912,7 @@ func _process(delta: float) -> void:
 	_hit_started = false
 	_hit_glow = 1.0 if _hit_any else _hit_glow * exp(-delta * 5.0)
 	_gauge_ghost = maxf(sim.gauge, _gauge_ghost - delta * 0.5)
+	_update_enemy_fx(delta)
 	if sim.guard_t >= 0.0 and sim.guard_t != _guard_seen:   # サバイバル: 身代わりで踏みとどまった
 		_guard_seen = sim.guard_t
 		_show_guard_fx()
@@ -933,6 +947,8 @@ func _process(delta: float) -> void:
 			remove_child(_audio)
 		else:
 			music = null
+		if sim.enemies != null:   # サバイバル: 落ちている経験値の玉は、すべて取ったことにする
+			sim.enemies.sweep()
 		var st_clear := _stats()
 		_record_study(st_clear)
 		_save_replay(st_clear)
@@ -1131,6 +1147,10 @@ func _stats() -> Dictionary:
 		d["fail_score"] = sim.fail_score if sim.failed else sim.score
 		d["guard_left"] = sim.guard
 		d["play_s"] = maxf(sim.log_end_t, 0.0)
+		if sim.enemies != null:
+			d["xp_got"] = sim.enemies.xp_got
+			d["kills"] = sim.enemies.kills
+			d["spawned"] = sim.enemies.spawned
 	if sim.boss != null:   # 撃破 MOD: 結果画面に、倒せたか・倒すまでの時間(最初の発射から。実時間)・残りの HP・周回数を出す
 		d["boss"] = {"defeated": sim.boss.defeated, "defeat_t": maxf(float(sim.boss.defeat_t) - maxf(sim.first_fire_time, 0.0), 0.0),
 			"hp_left": float(sim.boss.hp) / maxf(float(sim.boss.max_hp), 1.0), "loops": sim.loop_index(_now) + 1}
@@ -1175,6 +1195,8 @@ func _refresh() -> void:
 	_hit_l.text = "%d%%" % int(round(sim.damage_total * 100.0))   # ダメージ量(回復は引かない。協力ではチーム全体)
 	if _sv_total_l != null:
 		_sv_total_l.text = UiStyle.fmt(int(round(float(survival.get("total", 0.0)) + _score_disp * _sv_f)))
+	if _sv_xp_bar != null:
+		_sv_xp_bar.queue_redraw()
 	_hud.queue_redraw()
 	_hp_node.queue_redraw()
 	_sc_node.queue_redraw()
@@ -1900,6 +1922,84 @@ func _build_survival_hud() -> void:
 	_sv_total_l = _survival_value("0", 22)
 	v.add_child(_sv_total_l)
 	v.add_child(_survival_caption("Lv %.2f   × %.2f" % [float(gen.level), _sv_f]))
+	if sim.enemies == null:
+		return
+	# 経験値(レベルと、次のレベルまでのバー)と、自機の弾の強さ
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 6)
+	v.add_child(gap)
+	_sv_lv_l = _survival_value("LEVEL %d" % _sv_level, 15)
+	v.add_child(_sv_lv_l)
+	_sv_xp_bar = Control.new()
+	_sv_xp_bar.custom_minimum_size = Vector2(118, 8)
+	_sv_xp_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_sv_xp_bar.draw.connect(_draw_xp_bar)
+	v.add_child(_sv_xp_bar)
+	var en = sim.enemies
+	v.add_child(_survival_caption("攻撃 ×%.2f ・ %d 列" % [en.power_mul, (Enemies.WIDE_OFFSETS[en.wide_lv] as Array).size()]))
+	v.add_child(_survival_caption("連射 +%d%%" % int(round(Enemies.RATE_STEP * en.rate_lv * 100.0))))
+
+
+## 経験値のバー(次のレベルまで)。経験値が入ると、なめらかに伸びる。
+func _draw_xp_bar() -> void:
+	var pr := SurvivalRun.xp_progress(_sv_xp_shown)
+	var w := _sv_xp_bar.size.x
+	var h := _sv_xp_bar.size.y
+	var k := clampf(float(pr.into) / maxf(float(pr.need), 0.001), 0.0, 1.0)
+	var col := Color(0.55, 1.0, 0.6)
+	_sv_xp_bar.draw_style_box(UiStyle.box(Color(1, 1, 1, 0.1), Color(0, 0, 0, 0), 0, 4), Rect2(0, 0, w, h))
+	if k > 0.0:
+		_sv_xp_bar.draw_style_box(UiStyle.box(col, Color(0, 0, 0, 0), 0, 4), Rect2(0, 0, maxf(w * k, h), h))
+
+
+## サバイバル(S2): 雑魚を倒した音・玉を取った音・経験値のバー・LEVEL UP の演出。毎フレーム。
+func _update_enemy_fx(delta: float) -> void:
+	var en = sim.enemies
+	if en == null:
+		return
+	while _kill_seen < en.kill_events.size():
+		var ke: Dictionary = en.kill_events[_kill_seen]
+		_kill_seen += 1
+		var kp: Vector2 = ke.p
+		_sfx.play("boom" if bool(ke.hard) else "pop", 0.8, kp.x / PatternGen.ARENA.x * 2.0 - 1.0)
+	_orb_snd_t = maxf(_orb_snd_t - delta, 0.0)
+	if _orb_seen < en.pick_events.size():
+		_orb_seen = en.pick_events.size()
+		if _orb_snd_t <= 0.0:
+			_orb_snd_t = 0.05
+			_sfx.play("tick", 0.5)
+	var target := float(survival.get("xp", 0.0)) + float(en.xp_got)
+	_sv_xp_shown += (target - _sv_xp_shown) * (1.0 - exp(-delta * 10.0))
+	if absf(target - _sv_xp_shown) < 0.01:
+		_sv_xp_shown = target
+	var lv := SurvivalRun.level_for_xp(target)
+	if lv > _sv_level:
+		_sv_level = lv
+		if _sv_lv_l != null:
+			_sv_lv_l.text = "LEVEL %d" % lv
+			_sv_lv_l.pivot_offset = _sv_lv_l.size * 0.5
+			UiStyle.spring(_sv_lv_l, "scale", Vector2(1.4, 1.4), Vector2.ONE, 0.5)
+		_show_level_up()
+
+
+## LEVEL UP: 自機の上に文字が浮かんで消え、自機のまわりに緑の輪(ゲームは止めない。強化は曲の間に選ぶ)。
+func _show_level_up() -> void:
+	var at: Vector2 = ARENA_POS + sim.player_pos
+	var col := Color(0.55, 1.0, 0.6)
+	UiFx.ring(self, at, col, 14.0, 120.0, 0.6, 3.0)
+	UiSfx.play("on", 1.3, 0.8)
+	var l := UiStyle.label("LEVEL UP", 18, col, true)
+	l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
+	l.add_theme_constant_override("outline_size", 6)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.position = at + Vector2(-50, -54)
+	l.size = Vector2(100, 24)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	add_child(l)
+	var t := l.create_tween().set_parallel(true)
+	t.tween_property(l, "position:y", l.position.y - 34.0, 1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	t.tween_property(l, "modulate:a", 0.0, 0.4).set_delay(0.6)
+	t.chain().tween_callback(l.queue_free)
 
 
 ## サバイバルの欄の入れ物(右のパネルの下に足す。lazer 風の画面は、カードの見た目にする)。

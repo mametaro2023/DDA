@@ -4,6 +4,7 @@ extends Node2D
 const GameSim = preload("res://scripts/game/game_sim.gd")
 const BulletField = preload("res://scripts/game/bullet_field.gd")
 const Boss = preload("res://scripts/game/boss.gd")
+const Enemies = preload("res://scripts/game/enemies.gd")
 const UiStyle = preload("res://scripts/ui/ui_style.gd")
 const ZoneArea = preload("res://scripts/game/zone_area.gd")
 
@@ -96,6 +97,8 @@ func _draw_under() -> void:
 		draw_circle(e.pos, 5.0, Color(1, 1, 1, a * ek))
 	if sim.boss != null and not dead:
 		_draw_boss_under()
+	if sim.enemies != null and not dead:
+		_draw_enemies_under()
 	# 自機の機体は予兆・軌道の上、弾の下に描く(弾が機体の上に見える)
 	if not dead:
 		_draw_replay_trail()
@@ -413,6 +416,8 @@ func _draw_over() -> void:
 	_draw_remote_marks()
 	if sim.boss != null:
 		_draw_boss_over()
+	if sim.enemies != null:
+		_draw_enemies_over()
 	_draw_player_marks()
 
 
@@ -499,6 +504,85 @@ func _draw_boss_over() -> void:
 		draw_string(font, p + Vector2(-9, 5), str(spec.mark), HORIZONTAL_ALIGNMENT_CENTER, 18.0, 13, Color.WHITE)
 	if b.defeated:
 		_draw_boss_burst(b.defeat_pos, now - float(b.defeat_t))
+
+
+## サバイバル(S2。弾の下の層): 自機の弾と、雑魚。雑魚は回るひし形の「的」(弾を撃たない)。ふつう = 青緑 / 硬い = 金の六角形 / スライダーに乗る = 紫。
+## 命中した瞬間は白く光り、削れた HP は外側の輪で示す。上へ抜けるときは薄れる。
+func _draw_enemies_under() -> void:
+	var en = sim.enemies
+	for p in en.shots:
+		draw_line(p, p + Vector2(0, 16), Color(0.65, 1.0, 0.8, 0.55), 2.0, true)
+	for e in en.enemies:
+		var c: Vector2 = e.p
+		var kind: String = e.kind
+		var base := Color(0.4, 0.95, 0.85)
+		if kind == "hard":
+			base = Color(1.0, 0.78, 0.35)
+		elif kind == "slider":
+			base = Color(0.78, 0.6, 1.0)
+		var r: float = Enemies.radius_of(e)
+		var a := 1.0
+		if float(e.leaving_t) >= 0.0:
+			a = clampf(1.0 - (now - float(e.leaving_t)) / Enemies.LEAVE_T, 0.0, 1.0)
+		var fl := clampf(float(e.flash) / Enemies.FLASH_TIME, 0.0, 1.0)
+		var col := base.lerp(Color.WHITE, fl * 0.8)
+		var spin := now * (1.4 if kind != "hard" else 0.8) + float(e.seed)
+		var vr := r * 1.2   # 見た目は当たり判定より少し大きく(角ばった形で、丸い弾と見分けやすく)
+		draw_circle(c, vr * 1.45, Color(col.r, col.g, col.b, 0.09 * a))
+		var sides := 6 if kind == "hard" else 4
+		var poly := PackedVector2Array()
+		for k in range(sides + 1):
+			poly.append(c + Vector2.from_angle(spin + TAU * float(k) / sides) * vr)
+		draw_colored_polygon(poly.slice(0, sides), Color(0.03, 0.03, 0.06, 0.88 * a))   # 暗い地(弾や背景と重なっても、形が分かる)
+		draw_colored_polygon(poly.slice(0, sides), Color(col.r, col.g, col.b, 0.22 * a))
+		draw_polyline(poly, Color(col.r, col.g, col.b, a), 3.0, true)
+		var tri := PackedVector2Array()   # 中の、逆に回る三角
+		for k in range(4):
+			tri.append(c + Vector2.from_angle(-spin * 1.6 + TAU * float(k) / 3.0) * vr * 0.5)
+		draw_polyline(tri, Color(1.0, 1.0, 1.0, 0.75 * a), 1.5, true)
+		draw_circle(c, vr * 0.18, Color(1.0, 1.0, 1.0, 0.95 * a))
+		for k in range(4):   # 照準のような、外側の短い弧(ゆっくり回る)
+			var a0 := spin * 0.5 + TAU * float(k) / 4.0
+			draw_arc(c, vr + 7.0, a0, a0 + 0.5, 6, Color(col.r, col.g, col.b, 0.55 * a), 1.5, true)
+		var frac := clampf(float(e.hp) / maxf(float(e.max_hp), 0.001), 0.0, 1.0)
+		if frac < 0.999:   # 削れた HP(上から時計回りに減る)
+			draw_arc(c, vr + 12.0, -PI * 0.5, -PI * 0.5 + TAU * frac, 32, Color(1, 1, 1, 0.85 * a), 2.0, true)
+
+
+## サバイバル(S2。弾の上の層): 経験値の玉と、雑魚を倒した演出(白い閃光と、広がる輪・火花。0.45 秒)。
+func _draw_enemies_over() -> void:
+	var en = sim.enemies
+	var oc := Color(0.6, 1.0, 0.55)
+	for o in en.orbs:   # 経験値の玉: 回るひし形の宝石(丸い弾と見分けやすく)
+		var p: Vector2 = o.p
+		var age := now - float(o.t)
+		var pulse := 0.5 + 0.5 * sin(age * 7.0)
+		draw_circle(p, 10.0 + 2.0 * pulse, Color(oc.r, oc.g, oc.b, 0.15))
+		var gem := PackedVector2Array()
+		for k in range(4):
+			gem.append(p + Vector2.from_angle(age * 3.0 + PI * 0.5 * k) * (6.5 if k % 2 == 0 else 4.5))
+		draw_colored_polygon(gem, Color(oc.r, oc.g, oc.b, 0.95))
+		gem.append(gem[0])
+		draw_polyline(gem, Color(1, 1, 1, 0.9), 1.2, true)
+	var n: int = en.kill_events.size()
+	for i in range(n - 1, maxi(n - 12, 0) - 1, -1):
+		var ke: Dictionary = en.kill_events[i]
+		var t := now - float(ke.t)
+		if t > 0.45:
+			break
+		if t < 0.0:
+			continue
+		var c: Vector2 = ke.p
+		var k := t / 0.45
+		var col := Color(1.0, 0.85, 0.45) if bool(ke.hard) else Color(0.55, 1.0, 0.9)
+		if t < 0.1:
+			draw_circle(c, 14.0 + 30.0 * t, Color(1, 1, 1, 0.7 * (1.0 - t / 0.1)))
+		draw_arc(c, 10.0 + (60.0 if bool(ke.hard) else 40.0) * (1.0 - pow(1.0 - k, 3.0)), 0.0, TAU, 32, Color(col.r, col.g, col.b, 0.85 * (1.0 - k)), 2.5 * (1.0 - k) + 0.5, true)
+		for q in range(8):
+			var d := Vector2.from_angle(TAU * float(q) / 8.0 + float(i) * 0.7)
+			var p0 := c + d * 70.0 * (1.0 - exp(-6.0 * maxf(t - 0.03, 0.0))) / 6.0 * 6.0 * 0.5
+			var p1 := c + d * 70.0 * (1.0 - exp(-6.0 * t)) / 6.0 * 6.0 * 0.5
+			draw_line(p0, p1, Color(col.r, col.g, col.b, 1.0 - k), 2.0, true)
 
 
 ## ボスの撃破の演出(1.6 秒): 白い閃光 → 3 重の輪が広がる → 破片と火花が散る。

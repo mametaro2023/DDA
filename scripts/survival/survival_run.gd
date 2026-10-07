@@ -11,6 +11,10 @@ extends RefCounted
 ## ## 体力(サバイバルだけの決まり)
 ## 体力の量は「初期の体力」(強化なし。MOD 込みの、ゲージ満タンぶんの被弾時間)を 1 とした絶対量で数える。「最大ゲージ」の強化は、この上限だけを増やす。
 ## 回復(自然回復・曲の間の回復・癒しのエリア)と、被ダメージ半減の境目は、初期の体力に対する量で決める(体力を増やしても、回復の絶対量は増えない)。
+## ## 経験値とレベル(S2)
+## 雑魚を倒して落ちた玉を取ると経験値が入る(scripts/game/enemies.gd)。経験値は曲をまたいで貯まり、XP_BASE + XP_STEP × いまのレベル で次のレベルへ上がる。
+## 曲の途中でレベルが上がっても止めない。曲の間に、上がったレベルの数だけ 3 択を選ぶ。雑魚の HP は、何曲目かで少しずつ増える(ENEMY_HP_STEP)。
+##
 ## 回復は「主に曲の間」: 曲の中の自然回復は毎秒 0.25%(ふつうは 1.5%。強化を 3 段とると 1%)にして、曲の中で削られたぶんが次の曲まで残るようにし、
 ## そのかわり曲の間に 35% 回復する。被ダメージ半減は 30% 以下(ふつうは 20%。リトライできないぶんの安全網)。身代わりだけは、いまの体力に対する割合(40%)。
 
@@ -27,6 +31,10 @@ const BETWEEN_HEAL_STEP := 0.05         # 強化「曲の間の回復」の 1 �
 const MAX_GAUGE_STEP := 0.15            # 強化「最大ゲージ」の 1 段(初期の体力に対する割合。上限が増えるだけで、いまの体力は増えない)
 const REGEN := 0.0025                   # 曲の中の自然回復(初期の体力に対する割合 / 秒。60 秒で 15%)
 const REGEN_STEP := 0.0025              # 強化「自然回復」の 1 段(同)
+const XP_BASE := 20.0                   # レベル 0 → 1 に要る経験値
+const XP_STEP := 12.0                   # レベルが 1 上がるごとに、次に要る経験値が増える量
+const BET_XP_MUL := 2.0                 # 背水: 次の曲の経験値の倍率
+const ENEMY_HP_STEP := 0.12             # 雑魚の HP: 1 曲ごとに +12%
 const LOW_LINE := 0.30                  # 被ダメージ半減の境目(初期の体力に対する割合。MOD「天国」の 35% のほうが高ければ、そちら)
 const GUARD_GAUGE := 0.4                # 身代わりで踏みとどまったときのゲージ
 ## 付けられない MOD(練習 = 倒れない / 撃破 = 曲が繰り返す)
@@ -43,6 +51,8 @@ var bet_next := false            # 背水: 次の曲の目標の Lv を上げる
 var songs: Array = []            # 遊んだ曲 [{title, version, md5, key, level, score, f, points, failed, gave_up, played_s, extra_mods}]
 var total := 0.0                 # 合計点
 var picks := 0                   # まだ選んでいない 3 択の回数
+var xp := 0.0                    # 経験値の通算
+var xp_level := 0                # レベル(経験値から決まる)
 var over := false                # 終わった(倒れた・あきらめた)
 var used_keys := {}              # 出した曲のキー → 何回出したか
 var picked_upgrades: Array = []  # 選んだ強化の id(選んだ順)
@@ -62,6 +72,8 @@ func start(p_start_level: float, p_mods: Array, seed_n := 0) -> void:
 	songs = []
 	total = 0.0
 	picks = 0
+	xp = 0.0
+	xp_level = 0
 	over = false
 	used_keys = {}
 	picked_upgrades = []
@@ -112,7 +124,36 @@ func game_params() -> Dictionary:
 		"guard_gauge": GUARD_GAUGE,
 		"no": next_no(),
 		"total": total,
+		"xp": xp,
+		"power": level_of("power"), "rate": level_of("rate"), "wide": level_of("wide"), "magnet": level_of("magnet"),
+		"xp_mul": BET_XP_MUL if bet_next else 1.0,
+		"hp_mul": 1.0 + ENEMY_HP_STEP * float(songs.size()),
 	}
+
+
+## レベル lv から lv + 1 に要る経験値。
+static func xp_need(lv: int) -> float:
+	return XP_BASE + XP_STEP * float(lv)
+
+
+## 経験値の通算 total のときのレベル。
+static func level_for_xp(total_xp: float) -> int:
+	var lv := 0
+	var acc := 0.0
+	while acc + xp_need(lv) <= total_xp + 0.0001 and lv < 999:
+		acc += xp_need(lv)
+		lv += 1
+	return lv
+
+
+## 経験値の通算 total のときの {level, into(いまのレベルに入ってからの量), need(次までに要る量)}。
+static func xp_progress(total_xp: float) -> Dictionary:
+	var lv := 0
+	var acc := 0.0
+	while acc + xp_need(lv) <= total_xp + 0.0001 and lv < 999:
+		acc += xp_need(lv)
+		lv += 1
+	return {"level": lv, "into": total_xp - acc, "need": xp_need(lv)}
 
 
 ## 体力の上限(初期の体力 = 1)。
@@ -141,7 +182,12 @@ func song_done(st: Dictionary, info: Dictionary = {}) -> Dictionary:
 		"title": str(st.get("title", "")), "version": str(st.get("version", "")), "md5": str(st.get("md5", "")), "key": str(info.get("key", "")),
 		"level": lv, "score": song_score, "f": f, "points": song_score * f, "failed": failed, "gave_up": bool(st.get("gave_up", false)),
 		"played_s": float(st.get("play_s", 0.0)), "extra_mods": info.get("extra_mods", []), "hp_end": float(st.get("hp_end", 0.0)),
+		"xp_got": float(st.get("xp_got", 0.0)), "kills": int(st.get("kills", 0)), "spawned": int(st.get("spawned", 0)),
+		"level_from": xp_level, "level_to": xp_level,
 	}
+	xp += e.xp_got   # 倒れた曲で取った経験値も数える(記録に残すだけ。次の曲はない)
+	xp_level = level_for_xp(xp)
+	e.level_to = xp_level
 	songs.append(e)
 	total += e.points
 	bet_next = false
@@ -152,7 +198,7 @@ func song_done(st: Dictionary, info: Dictionary = {}) -> Dictionary:
 		over = true
 		return e
 	gauge = clampf(float(st.get("hp_end", gauge_frac())) * max_gauge() + between_heal(), 0.0, max_gauge())   # hp_end は、いまの体力に対する割合
-	picks += 1   # S1: 1 曲ごとに 1 回(S2 からは、上がったレベルの数)
+	picks += int(e.level_to) - int(e.level_from)   # 上がったレベルの数だけ 3 択
 	return e
 
 
@@ -194,6 +240,14 @@ func cleared() -> int:
 	return n
 
 
+## 倒した雑魚の数の通算。
+func total_kills() -> int:
+	var n := 0
+	for e in songs:
+		n += int(e.get("kills", 0))
+	return n
+
+
 func played_seconds() -> float:
 	var s := 0.0
 	for e in songs:
@@ -207,6 +261,6 @@ func to_record() -> Dictionary:
 		"total": total, "cleared": cleared(), "songs_n": songs.size(), "best_level": best_level(), "time_s": played_seconds(),
 		"start_level": start_level, "mods": mod_ids.duplicate(), "keyboard": keyboard, "seed": run_seed,
 		"app": str(ProjectSettings.get_setting("application/config/version", "")), "time": int(Time.get_unix_time_from_system()),
-		"upgrades": picked_upgrades.duplicate(),
-		"songs": songs.map(func(e): return {"title": e.title, "version": e.version, "md5": e.md5, "level": e.level, "score": e.score, "f": e.f, "points": e.points, "failed": e.failed, "gave_up": e.gave_up, "hp_end": e.hp_end}),   # hp_end: 曲を終えたときのゲージ(回復の量を見直すため)
+		"upgrades": picked_upgrades.duplicate(), "xp_level": xp_level, "kills": total_kills(),
+		"songs": songs.map(func(e): return {"title": e.title, "version": e.version, "md5": e.md5, "level": e.level, "score": e.score, "f": e.f, "points": e.points, "failed": e.failed, "gave_up": e.gave_up, "hp_end": e.hp_end, "kills": e.kills, "spawned": e.spawned, "xp_got": e.xp_got}),   # hp_end: 曲を終えたときのゲージ(回復の量を見直すため)
 	}

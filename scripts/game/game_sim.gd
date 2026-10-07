@@ -162,6 +162,7 @@ var player_scale := 1.0                # 自機サイズの倍率(MOD)
 var player_r := PLAYER_HIT_R          # 自機の当たり判定半径(= PLAYER_HIT_R × player_scale)
 var move_rect := Rect2(Vector2.ZERO, ARENA)   # 自機が動ける範囲(小型化 MOD で中央の長方形になる)
 var boss = null                       # 撃破 MOD のボス(Boss。なければ null)
+var enemies = null                    # サバイバル(S2)の連射・雑魚・経験値(scripts/game/enemies.gd。setup のあとにプレイ画面が付ける。なければ null)
 var loop_len := 0.0                   # > 0 なら、譜面をこの秒ごとに繰り返す(撃破 MOD)
 var loop_from := 0.0                  # 撃破: 2 周目以降の、周の始まり(1 周目の時刻で。最初のノーツの LOOP_LEAD 秒前)
 var loop_end := 0.0                   # 撃破: 周の最後のノーツ(1 周目の時刻で)。ここからボーナスタイム
@@ -608,6 +609,8 @@ func _update(now: float, dt: float) -> void:
 		boss.update(now, dt, player_pos, resting)
 		_apply_boss_picks()
 		_heal_by_hits(dt)
+	if enemies != null:
+		enemies.update(now, dt, player_pos, resting)
 
 	# 進行率: 曲の進行(時間)とは別に、スコア用の進行率は「発射した弾数」で進める
 	progress = clampf(now / maxf(end_time, 0.001), 0.0, 1.0)

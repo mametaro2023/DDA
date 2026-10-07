@@ -162,6 +162,9 @@ var player_scale := 1.0                # 自機サイズの倍率(MOD)
 var player_r := PLAYER_HIT_R          # 自機の当たり判定半径(= PLAYER_HIT_R × player_scale)
 var move_rect := Rect2(Vector2.ZERO, ARENA)   # 自機が動ける範囲(小型化 MOD で中央の長方形になる)
 var boss = null                       # 撃破 MOD のボス(Boss。なければ null)
+var boss_once := false                # サバイバルのボスの曲(setup_boss_once): 曲は繰り返さない。倒せなければ、曲の終わりでボスが逃げる(ゲームオーバーではない)
+var boss_fled_t := -1.0               # ボスが逃げた時刻(-1 = 逃げていない。描画が使う)
+var hit_heal_mul := 1.0               # ボスに当てたときの回復の倍率(サバイバルは、回復は主に曲の間なので弱める)
 var enemies = null                    # サバイバル(S2)の連射・雑魚・経験値(scripts/game/enemies.gd。setup のあとにプレイ画面が付ける。なければ null)
 var loop_len := 0.0                   # > 0 なら、譜面をこの秒ごとに繰り返す(撃破 MOD)
 var loop_from := 0.0                  # 撃破: 2 周目以降の、周の始まり(1 周目の時刻で。最初のノーツの LOOP_LEAD 秒前)
@@ -314,6 +317,26 @@ func setup(bullet_field: Node2D, gen: Dictionary, end_t: float, practice_mode: b
 ## 最初の弾幕を待っていて、自然回復が止まっているか(regen_wait_first のとき、最初の発射まで)。
 func regen_paused(now: float) -> bool:
 	return regen_wait_first and (first_fire_time < 0.0 or now < first_fire_time)
+
+
+## サバイバルのボスの曲にする(setup のあとに呼ぶ)。撃破 MOD のボスを 1 周だけ出す: 曲は繰り返さず、アイテムを落とさず、危険エリアは出さない。
+## HP = 追いかけ続ける自機(強化なし)が、弾の飛んでいる時間の hp_share だけ当て続けると倒せる量 × hp_mul。
+## weapon: 自機の弾の強化 {power, rate, wide}(サバイバルの強化の段)。進み具合・被ダメージ係数は、ふつうの曲と同じ数え方。
+## 倒したら弾を消し、BOSS_CLEAR_DELAY 秒の演出のあとクリア(撃破タイムボーナスが点に入る)。倒せなければ、ふつうの曲と同じくクリアして、ボスは逃げる。
+func setup_boss_once(hp_share: float, hp_mul: float, weapon: Dictionary = {}) -> void:
+	zones = []
+	boss = Boss.new()
+	boss.drops = false
+	boss.setup(events, gizmos, breaks, move_rect, first_fire_time, last_fire_time)
+	boss.max_hp = maxf(Boss.HP_MIN * 0.25, Boss.SHOT_DMG * boss.ref_rate * active_time * hp_share * hp_mul)
+	boss.hp = boss.max_hp
+	boss.power = clampi(int(weapon.get("power", 0)), 0, int(Boss.ITEMS.power.max))
+	boss.power_mul = 1.0 + Boss.POWER_STEP * boss.power
+	boss.rate_lv = clampi(int(weapon.get("rate", 0)), 0, int(Boss.ITEMS.rate.max))
+	boss.wide_lv = clampi(int(weapon.get("wide", 0)), 0, int(Boss.ITEMS.wide.max))
+	boss_once = true
+	hit_heal_mul = 0.25   # 当てたときの回復は、毎秒 0.75% まで(撃破 MOD は 3%)
+	_update_score()
 
 
 ## 撃破: 時刻 now が何周目か(0 = 1 周目。ボーナスタイムは、その周に入る)。
@@ -615,7 +638,7 @@ func _update(now: float, dt: float) -> void:
 	# 進行率: 曲の進行(時間)とは別に、スコア用の進行率は「発射した弾数」で進める
 	progress = clampf(now / maxf(end_time, 0.001), 0.0, 1.0)
 	score_progress = clampf(float(bullets_fired) / float(maxi(bullets_total, 1)), 0.0, 1.0) if bullets_total > 0 else 0.0
-	if boss != null:   # 撃破: 進行率はボスに与えたダメージの割合
+	if boss != null and not boss_once:   # 撃破: 進行率はボスに与えたダメージの割合
 		score_progress = clampf(1.0 - float(boss.hp) / maxf(float(boss.max_hp), 1.0), 0.0, 1.0)
 	_update_score()
 
@@ -654,9 +677,13 @@ func _update(now: float, dt: float) -> void:
 				score_progress = 1.0
 				break_clear_t = -1.0
 				_update_score()
-		return
+			return
+		if not boss_once:
+			return
 	if _check_clear(now):
 		field.clear()
+		if boss != null:   # サバイバルのボスの曲: 倒せなかった。ボスは逃げる
+			boss_fled_t = now
 		finished = true
 		progress = 1.0
 		score_progress = 1.0  # クリア: 表示点数が最終点になる
@@ -826,7 +853,7 @@ func _heal_by_hits(dt: float) -> void:
 	var take := minf(_heal_pool, HIT_HEAL_MAX * dt)
 	_heal_pool -= take
 	if authority and take > 0.0:
-		gauge = minf(gauge + take, 1.0)
+		gauge = minf(gauge + take * gauge_unit * hit_heal_mul, 1.0)   # サバイバルは、初期の体力に対する量
 
 
 ## 撃破: 取ったアイテムのうち、回復(ゲージ)とボム(弾を消す)を反映する。

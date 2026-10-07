@@ -52,6 +52,8 @@ var _banner: Control
 var _banner_main: Label
 var _banner_sub: Label
 var _sweep := -1.0              # 帯を走る光の位置(0..1。-1 = 走っていない)
+var _banner_col := LazerStyle.GREEN   # 帯の色(ボスの曲の前は赤)
+const BOSS_RED := Color(1.0, 0.36, 0.38)
 
 # 結果
 var _result: Control
@@ -139,7 +141,11 @@ func _ready() -> void:
 		_set_banner("STAGE 1", "SURVIVAL  START")
 		_after_choices.call_deferred()
 		return
-	_set_banner("STAGE %d  CLEAR" % (run.next_no() - 1), "SURVIVAL")
+	match str(last.get("boss", "")):
+		"defeated":
+			_set_banner("STAGE %d  BOSS DEFEATED" % (run.next_no() - 1), "SURVIVAL", LazerStyle.YELLOW)
+		_:
+			_set_banner("STAGE %d  CLEAR" % (run.next_no() - 1), "SURVIVAL")
 	_build_result()
 	_build_choice_area()
 	_intro = true
@@ -191,9 +197,13 @@ func _build_banner() -> void:
 
 
 ## 帯の文字を変え、光を走らせる(文字は弾んで入る)。
-func _set_banner(main_text: String, sub_text: String) -> void:
+func _set_banner(main_text: String, sub_text: String, col := LazerStyle.GREEN) -> void:
 	_banner_main.text = main_text
 	_banner_sub.text = sub_text
+	_banner_col = col
+	_banner_sub.add_theme_color_override("font_color", col)
+	_banner_main.add_theme_color_override("font_outline_color", Color(col.r, col.g, col.b, 0.22))
+	_banner.queue_redraw()
 	_sweep = 0.0
 	if UiStyle.animate:
 		UiStyle.spring(_banner_main, "scale", Vector2(1.18, 1.18), Vector2.ONE, 0.5)
@@ -209,7 +219,7 @@ func _draw_banner() -> void:
 		var x0 := w * float(i) / steps
 		var c := 1.0 - absf((float(i) + 0.5) / steps - 0.5) * 2.0
 		_banner.draw_rect(Rect2(x0, 0, w / steps + 1.0, h), Color(0.02, 0.015, 0.05, 0.62 * pow(c, 0.7)))
-	var g := LazerStyle.GREEN
+	var g := _banner_col
 	_banner.draw_rect(Rect2(w * 0.2, 0, w * 0.6, 1), Color(g.r, g.g, g.b, 0.35))
 	_banner.draw_rect(Rect2(w * 0.2, h - 1, w * 0.6, 1), Color(g.r, g.g, g.b, 0.35))
 	if _sweep >= 0.0:   # 走る光(左から右へ。なめらかに出て消える)
@@ -238,7 +248,12 @@ func _build_result() -> void:
 	_result.add_child(row)
 	var lv := float(last.level)
 	row.add_child(LazerStyle.pill("Lv %.2f" % lv, LazerStyle.level_color(lv), 14))
-	row.add_child(LazerStyle.label(LazerStyle.fit(LazerStyle.font_bold(), str(last.title), 17, 720.0), 17, LazerStyle.TEXT, true))   # title は「アーティスト - 曲名 [難易度]」
+	row.add_child(LazerStyle.label(LazerStyle.fit(LazerStyle.font_bold(), str(last.title), 17, 560.0), 17, LazerStyle.TEXT, true))   # title は「アーティスト - 曲名 [難易度]」
+	match str(last.get("boss", "")):   # ボスの曲の結果
+		"defeated":
+			row.add_child(LazerStyle.pill("BOSS 撃破  経験値 +%d ・ ごほうびの 4 択" % int(SurvivalRun.BOSS_XP), LazerStyle.YELLOW, 13))
+		"fled":
+			row.add_child(LazerStyle.pill("ボスは逃げた", Color(0.6, 0.58, 0.7), 13))
 	# 2 行目: 曲の点 × 倍率 = 加わった点(左)と、合計点(右)
 	var sc := _block(26, 54, 210, "曲の点", LazerStyle.TEXT)
 	_score_l = sc[1]
@@ -506,16 +521,21 @@ func _roll() -> void:
 	if _choice_ids.is_empty():
 		_after_choices()
 		return
-	_choice_cap.text = "LEVEL UP!   強化を 1 つ選ぶ" + ("   (あと %d 回)" % _choices_left if _choices_left > 1 else "")
+	if int(run.bonus_picks) > 0:
+		_choice_cap.text = "BOSS 撃破のごほうび!   4 つから 1 つ選ぶ(レアが出やすい)" + ("   (あと %d 回)" % _choices_left if _choices_left > 1 else "")
+	else:
+		_choice_cap.text = "LEVEL UP!   強化を 1 つ選ぶ" + ("   (あと %d 回)" % _choices_left if _choices_left > 1 else "")
 	UiStyle.tween(_choice_cap, "modulate:a", _choice_cap.modulate.a, 1.0, 0.25)
 	var n := _choice_ids.size()
-	var x0 := (1280.0 - (CARD_W * n + CARD_GAP * (n - 1))) * 0.5
+	var cw := CARD_W if n <= 3 else 272.0   # 4 択(ごほうび)は、少し細く
+	var gap := CARD_GAP if n <= 3 else 16.0
+	var x0 := (1280.0 - (cw * n + gap * (n - 1))) * 0.5
 	for i in range(n):
 		var id := str(_choice_ids[i])
 		var c := ChoiceCard.new(Upgrades.find(id), run.level_of(id), i)
-		c.position = Vector2(x0 + i * (CARD_W + CARD_GAP), 30)
-		c.size = Vector2(CARD_W, CARD_H)
-		c.pivot_offset = Vector2(CARD_W * 0.5, CARD_H * 0.5)
+		c.position = Vector2(x0 + i * (cw + gap), 30)
+		c.size = Vector2(cw, CARD_H)
+		c.pivot_offset = Vector2(cw * 0.5, CARD_H * 0.5)
 		c.picked.connect(func(): _choose(i))
 		_choice_box.add_child(c)
 		_choice_cards.append(c)
@@ -802,7 +822,13 @@ func show_next(info: Dictionary) -> void:
 	_ladder.queue_redraw()
 	if first_show:
 		_next_t = 0.0
-		if not last.is_empty():
+		var boss: bool = run.next_is_boss()
+		if boss:   # 次はボスの曲: 帯と見出しが赤く、WARNING
+			_set_banner("STAGE %d  BOSS" % run.next_no(), "WARNING", BOSS_RED)
+			_next_cap.text = "WARNING  ・  BOSS が来る"
+			_next_cap.add_theme_color_override("font_color", BOSS_RED)
+			UiSfx.play("deny", 0.7)
+		elif not last.is_empty():
 			_set_banner("STAGE %d" % run.next_no(), "SURVIVAL")
 		if UiStyle.animate:
 			_next_box.modulate.a = 0.0
@@ -907,14 +933,16 @@ func _draw_ladder() -> void:
 	for i in range(n):
 		var p: Vector2 = pts[i]
 		var lv := float(lvs[i])
-		var col := LazerStyle.level_color(lv)
 		var is_next := i == n - 1
+		var col := BOSS_RED if is_next and run.next_is_boss() else LazerStyle.level_color(lv)
 		if is_next:   # 次の曲: 脈打つ輪
 			var k := 0.5 + 0.5 * sin(_anim_t * 4.0)
 			_ladder.draw_circle(p, 16.0 + 4.0 * k, Color(col.r, col.g, col.b, 0.12 + 0.08 * k))
 			_ladder.draw_arc(p, 12.0, 0.0, TAU, 40, col, 2.5, true)
 			_ladder.draw_circle(p, 5.0, col)
 		else:
+			if str(shown[i].get("boss", "")) == "defeated":   # 倒したボスの曲: 金の輪
+				_ladder.draw_arc(p, 12.0, 0.0, TAU, 32, LazerStyle.YELLOW, 2.0, true)
 			_ladder.draw_circle(p, 8.0, col)
 			_ladder.draw_polyline(PackedVector2Array([p + Vector2(-3.5, 0), p + Vector2(-1, 2.5), p + Vector2(3.5, -2.5)]), Color(0.05, 0.04, 0.08), 1.8, true)
 		var no_text := "NEXT" if is_next else str(no0 + i)
@@ -960,6 +988,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			_choose(1)
 		KEY_3, KEY_KP_3:
 			_choose(2)
+		KEY_4, KEY_KP_4:
+			_choose(3)
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
 			if not _intro:
 				return

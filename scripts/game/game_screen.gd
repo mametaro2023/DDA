@@ -443,9 +443,14 @@ func _ready() -> void:
 		_gauge_ghost = sim.gauge
 		_hp_w = HP_W * clampf(sim.drain_time / GameSim.GAUGE_DRAIN_TIME, 0.3, 1.7)   # 最大ゲージの強化で、バーも伸びる
 		_sv_f = SurvivalRun.f_of(float(gen.level))
-		var en := Enemies.new()   # 自機の自動の連射・雑魚・経験値(S2)
-		en.setup(sim.events, sim.gizmos, sim.breaks, sim.move_rect, sim.first_fire_time, sim.last_fire_time, survival)
-		sim.enemies = en
+		if bool(survival.get("boss", false)):   # ボスの曲(S3): 撃破 MOD のボスを 1 周だけ。雑魚は出ない
+			sim.setup_boss_once(float(survival.get("boss_hp_share", 0.6)), float(survival.get("boss_hp_mul", 1.0)), survival)
+			_hp_y = HP_Y_BOSS
+			_score_dy = SCORE_DY_BOSS
+		else:
+			var en := Enemies.new()   # 自機の自動の連射・雑魚・経験値(S2)
+			en.setup(sim.events, sim.gizmos, sim.breaks, sim.move_rect, sim.first_fire_time, sim.last_fire_time, survival)
+			sim.enemies = en
 		_sv_xp_shown = float(survival.get("xp", 0.0))
 		_sv_level = SurvivalRun.level_for_xp(_sv_xp_shown)
 	_audio.pitch_scale = _rate
@@ -1152,7 +1157,7 @@ func _stats() -> Dictionary:
 			d["kills"] = sim.enemies.kills
 			d["spawned"] = sim.enemies.spawned
 	if sim.boss != null:   # 撃破 MOD: 結果画面に、倒せたか・倒すまでの時間(最初の発射から。実時間)・残りの HP・周回数を出す
-		d["boss"] = {"defeated": sim.boss.defeated, "defeat_t": maxf(float(sim.boss.defeat_t) - maxf(sim.first_fire_time, 0.0), 0.0),
+		d["boss"] = {"defeated": sim.boss.defeated, "fled": sim.boss_fled_t >= 0.0, "defeat_t": maxf(float(sim.boss.defeat_t) - maxf(sim.first_fire_time, 0.0), 0.0),
 			"hp_left": float(sim.boss.hp) / maxf(float(sim.boss.max_hp), 1.0), "loops": sim.loop_index(_now) + 1}
 	if _mp != null:   # マルチプレイ: 結果画面が、参加者の成績を並べるのに使う
 		d["mp"] = {"mode": _mp.mode, "my_id": _mp.my_id, "players": _mp.roster.duplicate(true)}

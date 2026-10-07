@@ -109,6 +109,48 @@ func _init() -> void:
 	en2.sweep()
 	_check(en2.kills == 1 and is_equal_approx(en2.xp_got, 2.0), "曲を終えたら、落ちている玉はすべて取ったことになる(経験値 2 倍で %.0f)" % en2.xp_got)
 
+	# --- ボスの曲(S3) ---
+	_check(SurvivalRun.is_boss_song(5) and SurvivalRun.is_boss_song(10) and not SurvivalRun.is_boss_song(4) and not SurvivalRun.is_boss_song(0), "5 曲ごとにボスの曲")
+	var rb := SurvivalRun.new()
+	rb.start(4.0, [], 11)
+	rb.song_done({"failed": false, "score": 1.0, "level": 4.0, "hp_end": 1.0, "xp_got": 0.0, "boss": {"defeated": true}})
+	_check(rb.picks == 2 and rb.bonus_picks == 1 and is_equal_approx(rb.xp, SurvivalRun.BOSS_XP), "ボスを倒すと、経験値 %d(レベルが上がる)と、ごほうびの 3 択が 1 回" % int(SurvivalRun.BOSS_XP))
+	_check(rb.roll_choices().size() == 4, "ごほうびの回は 4 つから選ぶ")
+	rb.choose(str(rb.roll_choices()[0]))
+	_check(rb.bonus_picks == 0 and rb.picks == 1 and rb.roll_choices().size() == 3, "ごほうびを選んだら、残りはふつうの 3 択")
+	var rf := SurvivalRun.new()
+	rf.start(4.0, [], 12)
+	var ef := rf.song_done({"failed": false, "score": 1.0, "level": 4.0, "hp_end": 1.0, "xp_got": 0.0, "boss": {"defeated": false}})
+	_check(rf.picks == 0 and rf.bonus_picks == 0 and str(ef.boss) == "fled" and not rf.over, "倒せなければ、ボスは逃げる(ごほうびなし・ゲームオーバーではない)")
+	var bevs: Array = []
+	for k in range(30):
+		bevs.append({"t": 2.0 + k * 1.0, "pos": Vector2(300.0 + 12.0 * k, 200.0), "warn": false, "shots": [shot0], "sfx": ""})
+	var fb := BulletField.new()
+	var sb := GameSim.new()
+	sb.setup(fb, {"events": bevs, "gizmos": [], "warn_lead": 0.6, "breaks": []}, 40.0, false, {})
+	sb.setup_boss_once(0.6, 1.0, {"power": 2})
+	sb.debug_invincible = true
+	_check(sb.boss != null and sb.boss_once and sb.loop_len == 0.0 and sb.boss.power == 2 and sb.boss.max_hp > 0.0, "ボスの曲: 1 周だけ・強化が弾に効く(HP %.0f)" % (sb.boss.max_hp if sb.boss != null else -1.0))
+	var tb := 0.0
+	while not sb.finished and tb < 60.0:
+		sb.step(tb, 1.0 / 120.0, Vector2.ZERO, false)   # 動かない(ボスにはほとんど当たらない)
+		tb += 1.0 / 120.0
+	_check(sb.finished and not sb.failed and not sb.boss.defeated and sb.boss_fled_t > 0.0, "倒せないまま曲が終わると、クリアしてボスは逃げる(%.1f 秒)" % sb.boss_fled_t)
+	fb.free()
+	var fb2 := BulletField.new()
+	var sb2 := GameSim.new()
+	sb2.setup(fb2, {"events": bevs, "gizmos": [], "warn_lead": 0.6, "breaks": []}, 40.0, false, {})
+	sb2.setup_boss_once(0.6, 1.0)
+	sb2.debug_invincible = true
+	sb2.boss.hp = 3.0
+	var tb2 := 0.0
+	while not sb2.finished and tb2 < 60.0:
+		var dx: float = sb2.boss.pos.x - sb2.player_pos.x
+		sb2.step(tb2, 1.0 / 120.0, Vector2(signf(dx) if absf(dx) > 3.0 else 0.0, 0.0), false)   # ボスの真下を追う
+		tb2 += 1.0 / 120.0
+	_check(sb2.finished and sb2.boss.defeated and sb2.score_boss_time > 0.0 and tb2 < 20.0, "倒すと弾が消えて、少しあとにクリア(撃破タイムボーナス %.0f)" % sb2.score_boss_time)
+	fb2.free()
+
 	# --- 3 択 ---
 	var levels := {"max_gauge": 3, "regen": 3}
 	var dup_ok := true

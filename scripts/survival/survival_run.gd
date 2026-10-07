@@ -15,6 +15,11 @@ extends RefCounted
 ## 雑魚を倒して落ちた玉を取ると経験値が入る(scripts/game/enemies.gd)。経験値は曲をまたいで貯まり、XP_BASE + XP_STEP × いまのレベル で次のレベルへ上がる。
 ## 曲の途中でレベルが上がっても止めない。曲の間に、上がったレベルの数だけ 3 択を選ぶ。雑魚の HP は、何曲目かで少しずつ増える(ENEMY_HP_STEP)。
 ##
+## ## ボスの曲(S3)
+## BOSS_EVERY 曲ごと(5・10・15 曲目…)は、ボスの曲(撃破 MOD のボスを 1 周だけ。GameSim.setup_boss_once)。雑魚は出ない。
+## HP = 追いかけ続けて、弾の飛んでいる時間の BOSS_HP_SHARE を当て続けると倒せる量(強化なし)× 何体目か(+BOSS_HP_STEP ずつ)× √(弾の強化の倍率)。
+## 倒すと、経験値 BOSS_XP と、ごほうびの 3 択(4 つから選ぶ・レアが出やすい)が 1 回ぶん。倒せなければ、ボスは逃げる(ごほうびなし。ゲームオーバーではない)。
+##
 ## 回復は「主に曲の間」: 曲の中の自然回復は毎秒 0.25%(ふつうは 1.5%。強化を 3 段とると 1%)にして、曲の中で削られたぶんが次の曲まで残るようにし、
 ## そのかわり曲の間に 35% 回復する。被ダメージ半減は 30% 以下(ふつうは 20%。リトライできないぶんの安全網)。身代わりだけは、いまの体力に対する割合(40%)。
 
@@ -35,6 +40,11 @@ const XP_BASE := 20.0                   # レベル 0 → 1 に要る経験値
 const XP_STEP := 12.0                   # レベルが 1 上がるごとに、次に要る経験値が増える量
 const BET_XP_MUL := 2.0                 # 背水: 次の曲の経験値の倍率
 const ENEMY_HP_STEP := 0.12             # 雑魚の HP: 1 曲ごとに +12%
+const BOSS_EVERY := 5                   # この曲数ごとにボスの曲
+const BOSS_HP_SHARE := 0.6              # ボスの HP: 弾の飛んでいる時間のこの割合を、当て続けると倒せる量
+const BOSS_HP_STEP := 0.3               # 何体目かで、ボスの HP が増える割合
+const BOSS_XP := 25.0                   # ボスを倒したときの経験値
+const BOSS_RARE_BOOST := 3.0            # ごほうびの 3 択で、レアな強化の重みにかける倍率
 const LOW_LINE := 0.30                  # 被ダメージ半減の境目(初期の体力に対する割合。MOD「天国」の 35% のほうが高ければ、そちら)
 const GUARD_GAUGE := 0.4                # 身代わりで踏みとどまったときのゲージ
 ## 付けられない MOD(練習 = 倒れない / 撃破 = 曲が繰り返す)
@@ -53,6 +63,7 @@ var total := 0.0                 # 合計点
 var picks := 0                   # まだ選んでいない 3 択の回数
 var xp := 0.0                    # 経験値の通算
 var xp_level := 0                # レベル(経験値から決まる)
+var bonus_picks := 0             # picks のうち、ボスを倒したごほうび(4 つから選ぶ・レアが出やすい)の回数
 var over := false                # 終わった(倒れた・あきらめた)
 var used_keys := {}              # 出した曲のキー → 何回出したか
 var picked_upgrades: Array = []  # 選んだ強化の id(選んだ順)
@@ -74,6 +85,7 @@ func start(p_start_level: float, p_mods: Array, seed_n := 0) -> void:
 	picks = 0
 	xp = 0.0
 	xp_level = 0
+	bonus_picks = 0
 	over = false
 	used_keys = {}
 	picked_upgrades = []
@@ -128,7 +140,32 @@ func game_params() -> Dictionary:
 		"power": level_of("power"), "rate": level_of("rate"), "wide": level_of("wide"), "magnet": level_of("magnet"),
 		"xp_mul": BET_XP_MUL if bet_next else 1.0,
 		"hp_mul": 1.0 + ENEMY_HP_STEP * float(songs.size()),
+		"boss": next_is_boss(),
+		"boss_hp_share": BOSS_HP_SHARE,
+		"boss_hp_mul": boss_hp_mul(),
 	}
+
+
+## ボスの曲の間隔(開発用の確認で縮められる。ふつうは BOSS_EVERY)
+static var boss_every := BOSS_EVERY
+
+
+## n 曲目はボスの曲か。
+static func is_boss_song(n: int) -> bool:
+	return n > 0 and n % boss_every == 0
+
+
+## 次の曲はボスの曲か。
+func next_is_boss() -> bool:
+	return is_boss_song(next_no())
+
+
+## 次のボスの HP の倍率: 何体目か(+BOSS_HP_STEP ずつ)× √(弾の強化の倍率。強化が効きすぎないように)。
+func boss_hp_mul() -> float:
+	var k := floorf(float(next_no()) / float(boss_every))
+	var cols := [2.0, 4.0, 6.0][clampi(level_of("wide"), 0, 2)] as float
+	var dps := (1.0 + 0.25 * level_of("power")) * (1.0 + 0.25 * level_of("rate")) * (cols / 2.0)
+	return (1.0 + BOSS_HP_STEP * maxf(k - 1.0, 0.0)) * sqrt(dps)
 
 
 ## レベル lv から lv + 1 に要る経験値。
@@ -184,7 +221,15 @@ func song_done(st: Dictionary, info: Dictionary = {}) -> Dictionary:
 		"played_s": float(st.get("play_s", 0.0)), "extra_mods": info.get("extra_mods", []), "hp_end": float(st.get("hp_end", 0.0)),
 		"xp_got": float(st.get("xp_got", 0.0)), "kills": int(st.get("kills", 0)), "spawned": int(st.get("spawned", 0)),
 		"level_from": xp_level, "level_to": xp_level,
+		"boss": "",
 	}
+	var bs: Dictionary = st.get("boss", {})
+	var beat := false
+	if not bs.is_empty():   # ボスの曲
+		beat = bool(bs.get("defeated", false))
+		e.boss = "defeated" if beat else "fled"
+		if beat:
+			e.xp_got = float(e.xp_got) + BOSS_XP
 	xp += e.xp_got   # 倒れた曲で取った経験値も数える(記録に残すだけ。次の曲はない)
 	xp_level = level_for_xp(xp)
 	e.level_to = xp_level
@@ -199,12 +244,19 @@ func song_done(st: Dictionary, info: Dictionary = {}) -> Dictionary:
 		return e
 	gauge = clampf(float(st.get("hp_end", gauge_frac())) * max_gauge() + between_heal(), 0.0, max_gauge())   # hp_end は、いまの体力に対する割合
 	picks += int(e.level_to) - int(e.level_from)   # 上がったレベルの数だけ 3 択
+	if beat:   # ボスを倒したごほうび(4 つから選ぶ・レアが出やすい)
+		picks += 1
+		bonus_picks += 1
 	return e
 
 
 ## 3 択を引く(picks が残っているとき)。戻り値: id の配列。
-func roll_choices(n := 3) -> Array:
-	return Upgrades.roll(rng, levels, n, excluded_upgrades())
+## ボスを倒したごほうびの回が残っていれば、4 つ・レアが出やすい。n を指定すれば、その数。
+func roll_choices(n := -1) -> Array:
+	var big := bonus_picks > 0
+	if n < 0:
+		n = 4 if big else 3
+	return Upgrades.roll(rng, levels, n, excluded_upgrades(), BOSS_RARE_BOOST if big else 1.0)
 
 
 ## 強化を 1 つ選ぶ。
@@ -213,6 +265,8 @@ func choose(id: String) -> void:
 	if u.is_empty() or picks <= 0:
 		return
 	picks -= 1
+	if bonus_picks > 0:
+		bonus_picks -= 1
 	picked_upgrades.append(id)
 	match id:
 		"guard":
@@ -262,5 +316,5 @@ func to_record() -> Dictionary:
 		"start_level": start_level, "mods": mod_ids.duplicate(), "keyboard": keyboard, "seed": run_seed,
 		"app": str(ProjectSettings.get_setting("application/config/version", "")), "time": int(Time.get_unix_time_from_system()),
 		"upgrades": picked_upgrades.duplicate(), "xp_level": xp_level, "kills": total_kills(),
-		"songs": songs.map(func(e): return {"title": e.title, "version": e.version, "md5": e.md5, "level": e.level, "score": e.score, "f": e.f, "points": e.points, "failed": e.failed, "gave_up": e.gave_up, "hp_end": e.hp_end, "kills": e.kills, "spawned": e.spawned, "xp_got": e.xp_got}),   # hp_end: 曲を終えたときのゲージ(回復の量を見直すため)
+		"songs": songs.map(func(e): return {"title": e.title, "version": e.version, "md5": e.md5, "level": e.level, "score": e.score, "f": e.f, "points": e.points, "failed": e.failed, "gave_up": e.gave_up, "hp_end": e.hp_end, "kills": e.kills, "spawned": e.spawned, "xp_got": e.xp_got, "boss": e.boss}),   # hp_end: 曲を終えたときのゲージ(回復の量を見直すため)
 	}

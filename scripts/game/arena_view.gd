@@ -448,6 +448,9 @@ func _draw_boss_under() -> void:
 	if b.defeated:
 		return
 	var c: Vector2 = b.pos
+	if sim.boss_fled_t >= 0.0:   # サバイバルのボスの曲: 倒せなかった。ボスは上へ逃げる
+		var fk: float = maxf(now - sim.boss_fled_t, 0.0)
+		c += Vector2(0.0, -520.0 * fk * fk)
 	var R := Boss.BOSS_R
 	var base := Color(1.0, 0.5, 0.42).lerp(Color.WHITE, clampf(b.flash / Boss.FLASH_TIME, 0.0, 1.0) * 0.8)
 	var frac: float = b.hp / maxf(b.max_hp, 1.0)

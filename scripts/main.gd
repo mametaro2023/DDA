@@ -4076,6 +4076,7 @@ func _smoke_survival() -> void:
 		while not cond.call() and Time.get_ticks_msec() - t0 < int(sec * 1000.0):
 			await get_tree().process_frame
 		return cond.call()
+	SurvivalRun.boss_every = 2   # 2 曲目をボスの曲にして確かめる
 	show_survival()
 	await get_tree().create_timer(0.5).timeout
 	var s = _current
@@ -4130,8 +4131,9 @@ func _smoke_survival() -> void:
 	chk.call(_sv_run != null and _sv_run.picked_upgrades.size() == 1, "強化を選ぶと NEXT へ(%s)" % (str(_sv_run.picked_upgrades) if _sv_run != null else "?"))
 	await wait_for.call(func(): return _kind == "game", 20.0)
 	var g2 = _current
-	chk.call(_kind == "game" and int(g2.survival.get("no", 0)) == 2, "2 曲目が始まる(始めのゲージ %.2f)" % (g2.sim.gauge if _kind == "game" else -1.0))
-	await get_tree().create_timer(3.5).timeout
+	chk.call(_kind == "game" and int(g2.survival.get("no", 0)) == 2 and g2.sim.boss != null and g2.sim.boss_once and g2.sim.enemies == null, "2 曲目はボスの曲(1 周だけ・雑魚なし。HP %.0f)" % (g2.sim.boss.max_hp if _kind == "game" and g2.sim.boss != null else -1.0))
+	if _kind == "game" and g2.sim.boss != null:
+		await wait_for.call(func(): return _kind != "game" or g2._now > g2.sim.boss.appear_t + 3.0, 30.0)
 	shot.call("play2")
 	if _kind == "game":   # ポーズの「あきらめる」(リトライは隠れている)
 		g2._set_paused(true)

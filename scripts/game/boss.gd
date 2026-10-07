@@ -88,6 +88,7 @@ var defeat_pos := Vector2.ZERO
 var ref_hits := 0                # 追いかけ続ける自機が、1 周で当てる数(HP の計算に使ったもの)
 var ref_rate := 0.0              # 同じく、弾の飛んでいる 1 秒あたり
 var endless := true              # 最後の発射の後も撃ち続ける(曲が繰り返す)
+var drops := true                # 命中でアイテムを落とすか(サバイバルのボスの曲は落とさない。強化は曲の間の 3 択)
 var max_speed := MAX_SPEED       # 移動の最高速度(setup の前に変えると、その速さで動く。調整用)
 var flash := 0.0                 # 命中で FLASH_TIME に上がり、0 へ減る(描画用)
 var hits_total := 0              # 当てた弾の数の通算
@@ -339,7 +340,7 @@ func _on_hit(now: float) -> void:
 		shots.clear()
 		items.clear()
 		return
-	if _rng.randf() < DROP_CHANCE:
+	if drops and _rng.randf() < DROP_CHANCE:
 		var kind := _pick_kind()
 		if kind != "":
 			items.append({"kind": kind, "p": pos, "v": Vector2(_rng.randf_range(-40.0, 40.0), -ITEM_POP), "t": now})

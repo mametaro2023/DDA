@@ -147,6 +147,11 @@ func _build_right() -> void:
 	for i in range(songs.size()):
 		var e: Dictionary = songs[i]
 		var title_text := str(e.title)   # 「アーティスト - 曲名 [難易度]」
+		match str(e.get("boss", "")):
+			"defeated":
+				title_text += "(ボス撃破)"
+			"fled":
+				title_text += "(ボスが逃げた)"
 		if bool(e.failed):
 			title_text += "(あきらめた)" if bool(e.get("gave_up", false)) else "(倒れた)"
 		rows.add_child(_row([str(i + 1), title_text, "%.2f" % float(e.level), UiStyle.fmt(int(round(float(e.score)))), "×%.2f" % float(e.f), "+ " + UiStyle.fmt(int(round(float(e.points))))],

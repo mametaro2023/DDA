@@ -54,8 +54,8 @@ const HARD_XP := 4
 const FLASH_TIME := 0.06
 # 経験値の玉
 const ORB_POP := 140.0
-const ORB_GRAVITY := 380.0
-const ORB_FALL := 110.0
+const ORB_GRAVITY := 700.0
+const ORB_FALL := 240.0         # 落ちる速さの上限(px/s。110 では遅かった)
 const MAGNET_R := 70.0
 const MAGNET_SPEED := 620.0
 const PICK_R := 18.0
@@ -244,16 +244,15 @@ func update(now: float, dt: float, ppos: Vector2, resting: bool) -> void:
 	_update_orbs(now, dt, ppos)
 
 
-## 当たる雑魚(上へ抜けていないもの)の位置・半径・id を、数の並びにする。
+## 雑魚の位置・半径・id を、数の並びにする(上へ抜けている途中の雑魚も、消えるまでは当たる)。
 func _pack_alive(ep: PackedVector2Array, er: PackedFloat32Array, eid: PackedInt32Array) -> void:
 	ep.resize(0)
 	er.resize(0)
 	eid.resize(0)
 	for e in enemies:
-		if e.leaving_t < 0.0:
-			ep.append(e.p)
-			er.append(radius_of(e))
-			eid.append(int(e.id))
+		ep.append(e.p)
+		er.append(radius_of(e))
+		eid.append(int(e.id))
 
 
 ## 線分 p → p + d が、中心 c・半径 r の円に触れるか。
@@ -353,7 +352,7 @@ func _damage(k: int, dmg: float, now: float) -> bool:
 	if boom > 0.0:   # 誘爆: まわりの雑魚にダメージ(倒れた雑魚も、また爆発する)
 		var ids: Array = []
 		for o in enemies:
-			if o.leaving_t < 0.0 and (o.p as Vector2).distance_to(c) < boom + radius_of(o):
+			if (o.p as Vector2).distance_to(c) < boom + radius_of(o):
 				ids.append(int(o.id))
 		var bd := HP * hp_mul * float(CHAIN_DMG[chain_lv])
 		for id in ids:

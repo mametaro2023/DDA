@@ -570,6 +570,24 @@ func _draw_enemies_over() -> void:
 		draw_colored_polygon(rim, Color(0.02, 0.03, 0.02, 0.92))   # 黒い縁(明るい弾・背景の上でも形が分かる)
 		draw_colored_polygon(body, Color(0.96, 1.0, 0.86))
 		draw_circle(p, 2.6, oc)
+	# 画面の下の縁に、雑魚の横の位置の印(上向きの三角。自機のまわりを見たままでも、雑魚がどの列にいるか分かる)
+	var by := GameSim.ARENA.y - 7.0   # 下の縁の進み具合の線に重ならないよう、少し上
+	for e in en.enemies:
+		var x: float = (e.p as Vector2).x
+		var a := 1.0
+		if float(e.leaving_t) >= 0.0:
+			a = clampf(1.0 - (now - float(e.leaving_t)) / Enemies.LEAVE_T, 0.0, 1.0)
+		var kind: String = e.kind
+		var mc := Color(0.4, 0.95, 0.85)
+		if kind == "hard":
+			mc = Color(1.0, 0.78, 0.35)
+		elif kind == "slider":
+			mc = Color(0.78, 0.6, 1.0)
+		var hw := 12.0 if kind == "hard" else 10.0
+		var hh := 18.0 if kind == "hard" else 15.0
+		var tri := PackedVector2Array([Vector2(x - hw - 3.0, by + 2.0), Vector2(x + hw + 3.0, by + 2.0), Vector2(x, by - hh - 4.0)])
+		draw_colored_polygon(tri, Color(0.02, 0.02, 0.05, 0.85 * a))   # 暗い縁(弾や背景の上でも見える)
+		draw_colored_polygon(PackedVector2Array([Vector2(x - hw, by), Vector2(x + hw, by), Vector2(x, by - hh)]), Color(mc.r, mc.g, mc.b, 0.95 * a))
 	var n: int = en.kill_events.size()
 	for i in range(n - 1, maxi(n - 12, 0) - 1, -1):
 		var ke: Dictionary = en.kill_events[i]

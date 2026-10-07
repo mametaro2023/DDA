@@ -74,7 +74,7 @@ func _init() -> void:
 	_check(run.cleared() == 2 and is_equal_approx(run.best_level(), 6.0), "クリアした曲数・届いた Lv")
 
 	# --- 経験値とレベル ---
-	_check(SurvivalRun.level_for_xp(19.9) == 0 and SurvivalRun.level_for_xp(20.0) == 1 and SurvivalRun.level_for_xp(52.0) == 2 and SurvivalRun.level_for_xp(51.0) == 1, "レベル: 20 で 1、20 + 32 = 52 で 2")
+	_check(SurvivalRun.level_for_xp(15.9) == 0 and SurvivalRun.level_for_xp(16.0) == 1 and SurvivalRun.level_for_xp(42.0) == 2 and SurvivalRun.level_for_xp(41.0) == 1, "レベル: 16 で 1、16 + 26 = 42 で 2")
 	var r3 := SurvivalRun.new()
 	r3.start(4.0, [], 9)
 	r3.song_done({"failed": false, "score": 1.0, "level": 4.0, "hp_end": 1.0, "xp_got": 60.0})

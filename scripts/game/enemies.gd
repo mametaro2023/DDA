@@ -33,8 +33,8 @@ const WIDE_OFFSETS := [[-7.0, 7.0], [-20.0, -7.0, 7.0, 20.0], [-33.0, -20.0, -7.
 const POWER_STEP := 0.25
 const RATE_STEP := 0.25
 # 雑魚
-const SPAWN_GAP := 3.0          # ふつうの雑魚の間隔(秒。1 分に 20 体)
-const SPAWN_JITTER := 0.8
+const SPAWN_GAP := 1.5          # ふつうの雑魚の間隔(秒。1 分に 40 体。20 体では少なかった)
+const SPAWN_JITTER := 0.5
 const SLIDER_MIN := 0.6         # これより短いスライダーには乗せない
 const SLIDER_SHARE := 0.35      # スライダーに乗る雑魚の、全体に対する割合の上限
 const LIFE := 6.0               # ふつうの雑魚がいる秒(そのあと上へ抜ける)

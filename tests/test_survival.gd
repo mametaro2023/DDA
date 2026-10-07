@@ -87,7 +87,7 @@ func _init() -> void:
 		evs.append({"t": 1.0 + k * 1.0, "pos": Vector2(480, 200), "warn": false, "shots": [shot0], "sfx": ""})
 	var plan_a := Enemies.make_plan(evs, [], [], 1.0, 60.0)
 	var plan_b := Enemies.make_plan(evs, [], [], 1.0, 60.0)
-	_check(plan_a.size() >= 15 and plan_a.size() <= 22 and str(plan_a) == str(plan_b), "雑魚の予定: 1 分に 20 体くらい(%d 体)。同じ譜面なら同じ" % plan_a.size())
+	_check(plan_a.size() >= 34 and plan_a.size() <= 42 and str(plan_a) == str(plan_b), "雑魚の予定: 1 分に 40 体くらい(%d 体)。同じ譜面なら同じ" % plan_a.size())
 	_check(Enemies.make_plan(evs, [], [[10.0, 30.0]], 1.0, 60.0).all(func(s): return float(s.t) < 10.0 or float(s.t) > 30.0), "休憩地帯には出ない")
 	var en := Enemies.new()
 	en.setup(evs, [], [], Rect2(Vector2.ZERO, PatternGen.ARENA), 1.0, 60.0, {"xp_mul": 1.0})

@@ -552,18 +552,19 @@ func _draw_enemies_under() -> void:
 ## サバイバル(S2。弾の上の層): 経験値の玉と、雑魚を倒した演出(白い閃光と、広がる輪・火花。0.45 秒)。
 func _draw_enemies_over() -> void:
 	var en = sim.enemies
-	var oc := Color(0.6, 1.0, 0.55)
-	for o in en.orbs:   # 経験値の玉: 回るひし形の宝石(丸い弾と見分けやすく)
+	var oc := Color(0.62, 1.0, 0.35)
+	for o in en.orbs:   # 経験値の玉: 黒い縁どりの、白く光る 4 つの角の星(丸い弾と、形と明るさで見分けられるように。弾の上に描く)。まわりに黄緑の光の輪
 		var p: Vector2 = o.p
 		var age := now - float(o.t)
-		var pulse := 0.5 + 0.5 * sin(age * 7.0)
-		draw_circle(p, 10.0 + 2.0 * pulse, Color(oc.r, oc.g, oc.b, 0.15))
-		var gem := PackedVector2Array()
-		for k in range(4):
-			gem.append(p + Vector2.from_angle(age * 3.0 + PI * 0.5 * k) * (6.5 if k % 2 == 0 else 4.5))
-		draw_colored_polygon(gem, Color(oc.r, oc.g, oc.b, 0.95))
-		gem.append(gem[0])
-		draw_polyline(gem, Color(1, 1, 1, 0.9), 1.2, true)
+		var pulse := 0.5 + 0.5 * sin(age * 6.0)
+		draw_circle(p, 16.0 + 3.0 * pulse, Color(oc.r, oc.g, oc.b, 0.14))
+		draw_arc(p, 13.0 + 2.0 * pulse, 0.0, TAU, 28, Color(oc.r, oc.g, oc.b, 0.7), 2.0, true)
+		var rot := age * 1.6
+		var rim := _star(p, rot, 15.0, 6.5)
+		var body := _star(p, rot, 11.5, 4.0)
+		draw_colored_polygon(rim, Color(0.02, 0.03, 0.02, 0.92))   # 黒い縁(明るい弾・背景の上でも形が分かる)
+		draw_colored_polygon(body, Color(0.96, 1.0, 0.86))
+		draw_circle(p, 2.6, oc)
 	var n: int = en.kill_events.size()
 	for i in range(n - 1, maxi(n - 12, 0) - 1, -1):
 		var ke: Dictionary = en.kill_events[i]
@@ -583,6 +584,14 @@ func _draw_enemies_over() -> void:
 			var p0 := c + d * 70.0 * (1.0 - exp(-6.0 * maxf(t - 0.03, 0.0))) / 6.0 * 6.0 * 0.5
 			var p1 := c + d * 70.0 * (1.0 - exp(-6.0 * t)) / 6.0 * 6.0 * 0.5
 			draw_line(p0, p1, Color(col.r, col.g, col.b, 1.0 - k), 2.0, true)
+
+
+## 4 つの角の星(中心 c・回転 rot・角の長さ r_out・くびれ r_in)。
+static func _star(c: Vector2, rot: float, r_out: float, r_in: float) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for k in range(8):
+		pts.append(c + Vector2.from_angle(rot + PI * 0.25 * k) * (r_out if k % 2 == 0 else r_in))
+	return pts
 
 
 ## ボスの撃破の演出(1.6 秒): 白い閃光 → 3 重の輪が広がる → 破片と火花が散る。

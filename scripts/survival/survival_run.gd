@@ -11,7 +11,8 @@ extends RefCounted
 ## ## 体力(サバイバルだけの決まり)
 ## 体力の量は「初期の体力」(強化なし。MOD 込みの、ゲージ満タンぶんの被弾時間)を 1 とした絶対量で数える。「最大ゲージ」の強化は、この上限だけを増やす。
 ## 回復(自然回復・曲の間の回復・癒しのエリア)と、被ダメージ半減の境目は、初期の体力に対する量で決める(体力を増やしても、回復の絶対量は増えない)。
-## 自然回復は毎秒 1%(ふつうは 1.5%)、被ダメージ半減は 30% 以下(ふつうは 20%)。身代わりだけは、いまの体力に対する割合(40%)。
+## 回復は「主に曲の間」: 曲の中の自然回復は毎秒 0.25%(ふつうは 1.5%。強化を 3 段とると 1%)にして、曲の中で削られたぶんが次の曲まで残るようにし、
+## そのかわり曲の間に 35% 回復する。被ダメージ半減は 30% 以下(ふつうは 20%。リトライできないぶんの安全網)。身代わりだけは、いまの体力に対する割合(40%)。
 
 const Upgrades = preload("res://scripts/survival/upgrades.gd")
 const GameSim = preload("res://scripts/game/game_sim.gd")
@@ -21,10 +22,10 @@ const START_LEVELS := [2.0, 4.0, 6.0]   # 準備画面で選べる、開始の L
 const LV_STEP := 0.3                    # 1 曲ごとに上がる目標の Lv
 const BET_LV := 0.5                     # 背水: 次の曲の目標の Lv の上乗せ
 const F_REF := 4.0                      # f(Lv) = (Lv / F_REF)^2
-const BETWEEN_HEAL := 0.25              # 曲の間の回復(初期の体力に対する割合)
+const BETWEEN_HEAL := 0.35              # 曲の間の回復(初期の体力に対する割合。回復の主な機会)
 const BETWEEN_HEAL_STEP := 0.05         # 強化「曲の間の回復」の 1 段(同)
 const MAX_GAUGE_STEP := 0.15            # 強化「最大ゲージ」の 1 段(初期の体力に対する割合。上限が増えるだけで、いまの体力は増えない)
-const REGEN := 0.01                     # 自然回復(初期の体力に対する割合 / 秒)
+const REGEN := 0.0025                   # 曲の中の自然回復(初期の体力に対する割合 / 秒。60 秒で 15%)
 const REGEN_STEP := 0.0025              # 強化「自然回復」の 1 段(同)
 const LOW_LINE := 0.30                  # 被ダメージ半減の境目(初期の体力に対する割合。MOD「天国」の 35% のほうが高ければ、そちら)
 const GUARD_GAUGE := 0.4                # 身代わりで踏みとどまったときのゲージ
@@ -207,5 +208,5 @@ func to_record() -> Dictionary:
 		"start_level": start_level, "mods": mod_ids.duplicate(), "keyboard": keyboard, "seed": run_seed,
 		"app": str(ProjectSettings.get_setting("application/config/version", "")), "time": int(Time.get_unix_time_from_system()),
 		"upgrades": picked_upgrades.duplicate(),
-		"songs": songs.map(func(e): return {"title": e.title, "version": e.version, "md5": e.md5, "level": e.level, "score": e.score, "f": e.f, "points": e.points, "failed": e.failed, "gave_up": e.gave_up}),
+		"songs": songs.map(func(e): return {"title": e.title, "version": e.version, "md5": e.md5, "level": e.level, "score": e.score, "f": e.f, "points": e.points, "failed": e.failed, "gave_up": e.gave_up, "hp_end": e.hp_end}),   # hp_end: 曲を終えたときのゲージ(回復の量を見直すため)
 	}

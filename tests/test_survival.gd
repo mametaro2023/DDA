@@ -53,10 +53,10 @@ func _init() -> void:
 	_check(is_equal_approx(run.target_level(), 4.0), "1 曲目の目標は開始の Lv")
 	var e1 := run.song_done({"failed": false, "score": 900000.0, "level": 4.0, "hp_end": 0.5, "title": "A"})
 	_check(is_equal_approx(e1.points, 900000.0) and is_equal_approx(run.total, 900000.0), "Lv 4 の曲は f = 1(点はそのまま)")
-	_check(is_equal_approx(run.gauge, 0.75) and run.picks == 1, "ゲージは持ち越して、曲の間に 25%% 回復(%.2f)。3 択が 1 回" % run.gauge)
+	_check(is_equal_approx(run.gauge, 0.85) and run.picks == 1, "ゲージは持ち越して、曲の間に 35%% 回復(%.2f)。3 択が 1 回" % run.gauge)
 	run.levels["max_gauge"] = 2   # 体力の上限 1.3: 上限が増えても、いまの体力(絶対量)は増えない
 	var gp := run.game_params()
-	_check(is_equal_approx(float(gp.drain_mul), 1.3) and is_equal_approx(float(gp.gauge), 0.75 / 1.3) and is_equal_approx(float(gp.regen), 0.01), "最大ゲージ: 上限だけ増え、いまの体力・自然回復(毎秒 1%%)は絶対量のまま")
+	_check(is_equal_approx(float(gp.drain_mul), 1.3) and is_equal_approx(float(gp.gauge), 0.85 / 1.3) and is_equal_approx(float(gp.regen), 0.0025), "最大ゲージ: 上限だけ増え、いまの体力・自然回復(毎秒 0.25%%)は絶対量のまま")
 	run.levels.erase("max_gauge")
 	_check(is_equal_approx(run.target_level(), 4.3), "2 曲目の目標は +0.3")
 	run.choose("bet")

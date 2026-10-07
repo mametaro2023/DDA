@@ -103,7 +103,7 @@ func _build_panel() -> void:
 	for line in [
 		"・曲は自動で選ばれます。1 曲ごとに目標の Lv が %.1f 上がります" % SurvivalRun.LV_STEP,
 		"・ゲージは次の曲へ持ち越し、曲の間に %d%% 回復します" % int(round(SurvivalRun.BETWEEN_HEAL * 100.0)),
-		"・サバイバルだけの決まり: 自然回復は毎秒 %d%%、被ダメージ半減は体力 %d%% 以下(どちらも初期の体力に対する量)" % [int(round(SurvivalRun.REGEN * 100.0)), int(round(SurvivalRun.LOW_LINE * 100.0))],
+		"・回復は主に曲の間。曲の中の自然回復は毎秒 %s%%、被ダメージ半減は %d%% 以下(初期の体力に対する量)" % [String.num(SurvivalRun.REGEN * 100.0, 2), int(round(SurvivalRun.LOW_LINE * 100.0))],
 		"・曲を終えるごとに、3 つの強化から 1 つを選びます",
 		"・スコア = Σ(曲の点 × (Lv / %d)²)。倒れた曲も、そこまでの点が入ります" % int(SurvivalRun.F_REF),
 	]:

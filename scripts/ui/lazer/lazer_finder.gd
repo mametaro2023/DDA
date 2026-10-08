@@ -31,7 +31,8 @@ const DEBOUNCE := 0.45        # 入力が止まってから検索するまでの
 const MORE_AHEAD := 400.0     # 下端までこれだけ近づいたら、続きを読む(px)
 const PREVIEW_DB := -6.0       # 試聴の音量(音楽の音量とは別に、音楽バスの音量が効く)
 const PREVIEW_FADE := 0.14    # 試聴の入り・切れのフェード(秒)
-const SKEL_ROWS := 6          # 読み込み中の仮カードの行数
+const RANDOM_MAX := 10000     # 「ランダム」で取り始める位置の上限(osu.direct は 20000 件目あたりまで返す)
+const SKEL_ROWS := 6         # 読み込み中の仮カードの行数
 
 ## 曲の ID → ダウンロードの状態(main の fetch_states と同じ辞書)
 var states: Dictionary = {}
@@ -52,6 +53,7 @@ var _cards := {}              # set_id → カード
 var _items: Array = []
 var _req := -1
 var _more := false
+var _rand_base := 0           # 「ランダム」の、取り始める位置
 var _loading := false
 var _debounce := -1.0
 var _skel: Control             # 読み込み中の仮カード(光の帯が流れる)
@@ -151,7 +153,7 @@ func _build_bar() -> void:
 		_run(false))
 	add_child(_query)
 	var x := MARGIN + 440.0 + 22.0
-	for s in [["plays", "人気"], ["new", "新着"], ["favs", "お気に入り"]]:
+	for s in [["plays", "人気"], ["new", "新着"], ["favs", "お気に入り"], ["random", "ランダム"]]:
 		x = _chip(x, str(s[1]), _sort_btns, str(s[0]), func(id: String): _sort = id) + 6.0
 	x += 16.0
 	for s in [["ranked", "ランク済み"], ["loved", "Loved"], ["all", "すべて"]]:
@@ -203,21 +205,28 @@ func _run(more: bool) -> void:
 		_cards.clear()
 		_items.clear()
 		_scroll.scroll_vertical = 0
+		_rand_base = randi_range(0, RANDOM_MAX) if _sort == "random" else 0   # 押すたびに、違う位置から
 	_loading = true
 	_more = false
 	_set_note("")
 	_retry.visible = false
 	if not more:
 		_show_skeleton(true)
-	_req = search.search(_query.text, _sort, _status, _items.size())
+	_req = search.search(_query.text, _sort, _status, _rand_base + _items.size())
 
 
 func _on_results(req: int, items: Array, more: bool) -> void:
 	if req != _req:
 		return
+	if items.is_empty() and _items.is_empty() and _rand_base > 0:   # ランダムの位置が深すぎた(結果が少ない絞り込み): 浅くして取り直す
+		_rand_base = _rand_base / 4 if _rand_base >= 120 else 0
+		_req = search.search(_query.text, _sort, _status, _rand_base)
+		return
 	_loading = false
 	_more = more
 	_show_skeleton(false)
+	if _sort == "random" and _items.is_empty():
+		items.shuffle()   # 人気順のままでなく、ばらばらに並べる
 	var k := 0
 	for it in items:
 		if _cards.has(int(it.id)):

@@ -21,7 +21,8 @@ const COVER_MEM := 240   # 覚えておくジャケットの数(超えたら古�
 const USER_AGENT := "User-Agent: Danmaku (+https://github.com/mametaro2023/DDA)"
 
 ## 並び順: id → osu.direct の sort の値
-const SORTS := {"plays": "play_count:desc", "new": "ranked_date:desc", "favs": "favourite_count:desc"}
+## random は、人気順のランダムな位置から取る(位置は lazer_finder が決める)
+const SORTS := {"plays": "play_count:desc", "new": "ranked_date:desc", "favs": "favourite_count:desc", "random": "play_count:desc"}
 ## 絞り込み: id → status の値(空 = すべて)
 const STATUSES := {"ranked": "1", "loved": "4", "all": ""}
 

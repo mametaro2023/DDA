@@ -178,3 +178,11 @@ static func use_dev_file() -> void:
 		DirAccess.copy_absolute(ProjectSettings.globalize_path(PATH), ProjectSettings.globalize_path(DEV_PATH))
 	else:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(DEV_PATH))
+
+
+## 開発用の写し(dev_settings.cfg)の全体音量を 0 にする(確認の起動で、音を出さない)。使う人の settings.cfg は触らない。
+static func mute_dev_file() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(path)
+	cfg.set_value("game", "volume", 0)
+	cfg.save(path)

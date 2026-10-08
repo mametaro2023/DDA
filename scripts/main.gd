@@ -94,6 +94,8 @@ func _ready() -> void:
 		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
 			Settings.use_dev_file()
 			_move_to_sub_screen()
+			if not OS.get_cmdline_user_args().has("--sound"):   # 確認の起動は、音を出さない(音を確かめるときは --sound)
+				Settings.mute_dev_file()
 			break
 	var first_settings := Settings.load_all()
 	Volume.init_from(first_settings)

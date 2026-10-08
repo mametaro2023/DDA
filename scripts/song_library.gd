@@ -28,6 +28,10 @@ static func search_dirs() -> Array:
 		var base := OS.get_user_data_dir().get_base_dir()
 		for nm in UserDirMigrate.OLD_NAMES:
 			cands.append(base.path_join(nm).path_join("songs"))
+		var main_root := main_checkout_root(proj)   # git のワークツリーで動かしたとき: 元のリポジトリの直下の曲(.osz は git に入れないので、ワークツリーには無い)も読む
+		if main_root != "":
+			cands.append(main_root)
+			cands.append(main_root.path_join("songs"))
 	for d in cands:
 		d = str(d).replace("\\", "/")
 		var key := norm(d)
@@ -35,6 +39,21 @@ static func search_dirs() -> Array:
 			seen[key] = true
 			dirs.append(d)
 	return dirs
+
+
+## proj が git のワークツリーなら、元のリポジトリの直下(なければ空)。ワークツリーの .git はファイルで、中身は「gitdir: <元>/.git/worktrees/<名前>」。
+static func main_checkout_root(proj: String) -> String:
+	var f := proj.path_join(".git")
+	if not FileAccess.file_exists(f):
+		return ""
+	var line := FileAccess.get_file_as_string(f).strip_edges()
+	if not line.begins_with("gitdir:"):
+		return ""
+	var gd := line.substr(7).strip_edges().replace("\\", "/").simplify_path()
+	if gd.get_base_dir().get_file() != "worktrees":
+		return ""
+	var root := gd.get_base_dir().get_base_dir().get_base_dir()   # <元>/.git/worktrees/<名前> の 3 つ上
+	return root if norm(root) != norm(proj) and DirAccess.dir_exists_absolute(root) else ""
 
 
 ## 見つかった曲のパス(.osz と、osu! の Songs の中の曲のフォルダ)。.osz は find_osz、osu! の曲は索引ができたぶんだけ(待たない)。

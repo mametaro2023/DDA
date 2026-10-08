@@ -30,6 +30,7 @@ osu! の譜面データ(`.osz`)を、弾幕よけゲームに変換して遊ぶ�
 | [docs/architecture.md](docs/architecture.md) | コードの構成・処理と描画の分離(判定は 1000 Hz) |
 | [docs/testing.md](docs/testing.md) | テスト・確認用の起動(`--smoke*` など)の一覧 |
 | [docs/ui_plan.md](docs/ui_plan.md) | lazer 風 UI の計画(当時のメモ) |
+| [docs/survival_plan.md](docs/survival_plan.md) | サバイバルモードの計画(実験的。遊び方・数字は変わる) |
 
 ## ライセンス
 ソースコードは MIT ライセンス(`LICENSE`)。ゲームは Godot Engine(MIT)で作られています(`dist_files/LICENSE-Godot.txt`)。**曲・譜面(.osz)は同梱しておらず、権利はそれぞれの制作者にあります。**

@@ -19,7 +19,7 @@ const DEFAULTS := {
 	"music_volume": 100, # 音楽の音量 0..100(%)
 	"ui_sound": true,     # メニューなどの UI の効果音(ホバー・クリックなど)
 	"vsync": true,         # 垂直同期(画面のちらつき・ずれを抑える。切ると遅延が減る)
-	"window_size": "",    # ウィンドウの大きさ("1600x900" の形、または "fullscreen")。空なら変えない(標準は 1280x720。枠のドラッグで変えた大きさは保存しない)
+	"window_size": "",    # ウィンドウの大きさ("1600x900" の形、または "fullscreen")。空なら変えない(標準は 1600x900。project.godot の window_width_override / window_height_override。画面の中身は 1280x720 のまま拡大する。枠のドラッグで変えた大きさは保存しない)
 	"show_fps": false,      # 画面右下に FPS(描画・処理)を出す
 	"eye_comfort": true,  # アリーナの表示を目に優しくする(弾の色・白い芯・キアイの拍の光・予兆の点滅を抑える。当たり判定・難易度は変わらない)
 	"check_update": true, # 起動時に、新しいバージョンがないか確認する
@@ -110,8 +110,8 @@ static func apply_window_size(size: Vector2i) -> void:
 	DisplayServer.window_set_position(area.position + (area.size - (size + deco)) / 2)
 
 
-## 全画面にする前のウィンドウの大きさ(F11 で戻すとき用。まだ分からなければ標準の 1280x720)
-static var windowed_size := Vector2i(1280, 720)
+## 全画面にする前のウィンドウの大きさ(F11 で戻すとき用。まだ分からなければ標準の 1600x900)
+static var windowed_size := Vector2i(1600, 900)
 
 
 static func is_fullscreen() -> bool:

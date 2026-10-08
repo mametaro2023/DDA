@@ -207,16 +207,19 @@ func add_song(path: String) -> int:
 	if not info.ok:
 		last_error = str(info.error)
 		return -1
-	return _append(path, info, false)
+	return _append(path, info, false, size)
 
 
 ## 索引の要約(info)から、一覧に足して番号を返す(重複は既存の番号)。folder = osu! の Songs の曲(ファイルの大きさは見ない)。
-func _append(path: String, info: Dictionary, folder: bool) -> int:
+## size: 呼び出し側がもう知っているファイルの大きさ(省略したら、ここで調べる)。
+func _append(path: String, info: Dictionary, folder: bool, size := -2) -> int:
 	path = path.replace("\\", "/")
 	var key := SongLibrary.norm(path)
 	if _song_keys.has(key):
 		return _song_keys[key]
-	var key2 := "%s|%d" % [path.get_file().to_lower(), -1 if folder else SongLibrary.file_size(path)]
+	if not folder and size == -2:
+		size = SongLibrary.file_size(path)
+	var key2 := "%s|%d" % [path.get_file().to_lower(), -1 if folder else size]
 	if not folder and _song_key2s.has(key2):
 		return _song_key2s[key2]
 	if _song_md5s.has(info.md5):   # 別の名前で同じ曲が入っている(譜面の中身が同じ)ときも、1 つにする

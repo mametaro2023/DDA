@@ -3068,19 +3068,25 @@ func _prof_ui() -> void:
 	add_child(Juice.new())
 	_setup_fade()
 	var rows: Array = []
+	var marks := {"pre": 0, "post": 0}
+	RenderingServer.frame_pre_draw.connect(func(): marks.pre = Time.get_ticks_usec())
+	RenderingServer.frame_post_draw.connect(func(): marks.post = Time.get_ticks_usec())
 	var measure := func(label: String, act: Callable) -> void:
 		var t0 := Time.get_ticks_usec()
 		await act.call()
 		var call_ms := (Time.get_ticks_usec() - t0) / 1000.0
 		var worst := 0.0
+		var worst_b := ""
 		var last := Time.get_ticks_usec()
 		var end := last + 700000
 		while Time.get_ticks_usec() < end:
 			await get_tree().process_frame
 			var now := Time.get_ticks_usec()
-			worst = maxf(worst, (now - last) / 1000.0)
+			if (now - last) / 1000.0 > worst:
+				worst = (now - last) / 1000.0
+				worst_b = "proc=%.1f draw=%.1f after=%.1f" % [(marks.pre - last) / 1000.0, (marks.post - marks.pre) / 1000.0, (now - marks.post) / 1000.0]
 			last = now
-		rows.append("%-28s call %7.1f ms   worst frame %7.1f ms" % [label, call_ms, worst])
+		rows.append("%-28s call %7.1f ms   worst frame %7.1f ms   [%s]" % [label, call_ms, worst, worst_b])
 	await get_tree().create_timer(0.5).timeout
 	await measure.call("show_title", func(): show_title())
 	await get_tree().create_timer(1.0).timeout

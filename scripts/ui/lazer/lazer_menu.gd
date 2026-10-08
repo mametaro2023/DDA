@@ -240,13 +240,6 @@ func _ready() -> void:
 	_audio.finished.connect(_on_preview_end)
 	add_child(_audio)
 	NowPlaying.set_play_cb(self, _play_playlist_path)   # プレイリストの曲を流すのも、この画面の仕事(一覧の中のその曲を選ぶ)
-	_dialog = FileDialog.new()
-	_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	_dialog.access = FileDialog.ACCESS_FILESYSTEM
-	_dialog.filters = PackedStringArray(["*.osz ; osu! beatmap"])
-	_dialog.use_native_dialog = true
-	_dialog.file_selected.connect(_import_and_select)
-	add_child(_dialog)
 	_refresh_mod_bar()
 	_intro()
 	_scan()
@@ -1145,7 +1138,7 @@ func _build_empty() -> void:
 	var add := LazerButton.new(".osz を開く", LazerStyle.PANEL if osu_dir != "" else LazerStyle.PINK, "plus", LazerStyle.TEXT if osu_dir != "" else Color(0.16, 0.05, 0.10))
 	add.custom_minimum_size = Vector2(170, 46)
 	add.font_size = 16
-	add.pressed.connect(func(): _dialog.popup_centered_ratio(0.7))
+	add.pressed.connect(func(): _open_dialog().popup_centered_ratio(0.7))
 	row.add_child(add)
 	var url := LazerButton.new("URL から取り込む", LazerStyle.PANEL, "download", LazerStyle.TEXT)   # コピーした osu! の譜面ページの URL の曲を、ダウンロードする
 	url.custom_minimum_size = Vector2(200, 46)
@@ -1306,6 +1299,19 @@ func _add_song_and_select(path: String) -> void:
 		return
 	_rebuild_song_cards()
 	_select_song(i)
+
+
+## 「.osz を開く」のファイル選択。押されたときに初めて作る(画面を開くたびに作ると、約 10 ms かかる)。
+func _open_dialog() -> FileDialog:
+	if _dialog == null:
+		_dialog = FileDialog.new()
+		_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+		_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_dialog.filters = PackedStringArray(["*.osz ; osu! beatmap"])
+		_dialog.use_native_dialog = true
+		_dialog.file_selected.connect(_import_and_select)
+		add_child(_dialog)
+	return _dialog
 
 
 ## 「.osz を開く」で選んだファイル: songs に取り込んで(次の起動でも残る)、一覧に加えて選ぶ。ドロップは main が受け取り、select_path で届く。

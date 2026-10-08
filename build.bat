@@ -1,7 +1,7 @@
 @echo off
 rem Build the Danmaku beta (game only, no songs) and zip it.
 rem Requires the Godot 4.7.2 stable export templates (Godot editor: Editor > Manage Export Templates).
-rem See README.md ("Haifu") for details.
+rem See docs/distribution.md ("Haifu") for details.
 cd /d "%~dp0"
 set "G=%LOCALAPPDATA%\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Microsoft.Winget.Source_8wekyb3d8bbwe\Godot_v4.7.2-stable_win64_console.exe"
 if not exist "%G%" set "G=godot"

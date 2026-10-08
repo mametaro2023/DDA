@@ -269,6 +269,11 @@ func _build_cards() -> void:
 		b.pressed.connect(func(): _activate(i))
 		if i == items.size() - 1:
 			b.set_meta("juice_sound", "back")
+		if it.size() > 4 and str(it[4]) == "survival":   # 実験的なモード: ボタンの上の縁に小さな札
+			var tag := LazerStyle.pill("EXPERIMENTAL", LazerStyle.YELLOW, 10)
+			tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			b.add_child(tag)
+			tag.position = Vector2((BTN_W - tag.get_combined_minimum_size().x) * 0.5, 6.0)
 		add_child(b)
 		_cards.append(b)
 

@@ -95,8 +95,15 @@ func _build_panel() -> void:
 	v.add_theme_constant_override("separation", 10)
 	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	p.add_child(v)
-	v.add_child(LazerStyle.label("SURVIVAL", 40, LazerStyle.GREEN, true))
-	v.add_child(LazerStyle.label("曲をつないで、倒れるまで遊ぶ", 18, LazerStyle.TEXT_DIM))
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 14)
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	head.add_child(LazerStyle.label("SURVIVAL", 40, LazerStyle.GREEN, true))
+	var tag := LazerStyle.pill("EXPERIMENTAL", LazerStyle.YELLOW, 13)
+	tag.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	head.add_child(tag)
+	v.add_child(head)
+	v.add_child(LazerStyle.label("曲をつないで、倒れるまで遊ぶ(実験的なモードです。遊び方や数字は、これから大きく変わることがあります)", 16, LazerStyle.TEXT_DIM))
 	var rules := VBoxContainer.new()
 	rules.add_theme_constant_override("separation", 3)
 	rules.mouse_filter = Control.MOUSE_FILTER_IGNORE

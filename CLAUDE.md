@@ -5,7 +5,7 @@ osu! の譜面(`.osz`)を弾幕よけゲームにする Godot 4.7.2(GDScript)の
 ## コンテキストを節約する決まり
 - **ドキュメントは全部読まない**。下の表で話題のファイルを選び、`grep -n '^#'` で見出しを見てから、必要な節だけ読む。
 - **大きなスクリプトは丸ごと読まない**。`grep -n '^func '` で関数の位置を出してから、`offset` / `limit` で読む。
-  - `scripts/main.gd`(約 5,200 行): 本体は前半の約 1,200 行。**後ろの約 4,000 行は確認用の起動(`_smoke_*` / `_shot*` / `_prof*`)**。触る確認の関数だけ読む。
+  - `scripts/main.gd`(約 1,200 行): 画面遷移の本体。**確認用の起動(`_smoke_*` / `_shot*` / `_prof*`、約 4,300 行)は `scripts/main_dev.gd`**(`main.gd` を継承。`main.tscn` が付けるのは、こちら)。確認の関数は `_dev_start` の引数の分岐から呼ばれる。触る確認の関数だけ読む。新しい確認は `main_dev.gd` に足し、`_dev_start` に分岐を足す。
   - `scripts/ui/lazer/lazer_menu.gd`(約 3,000 行)、`scripts/game/game_screen.gd`(約 2,700 行)も同じ。
 - **テストの出力は絞る**。失敗は `FAIL: …`(stderr)、最後に `RESULT: OK` / `RESULT: <n> FAILURES`、終了コードも 0 / 1。
   例: `godot --headless --path . --script tests/test_gauge.gd 2>&1 | grep -E 'FAIL|RESULT|ERROR' | tail -n 30`

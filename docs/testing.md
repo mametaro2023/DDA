@@ -66,3 +66,5 @@ godot --headless --path . --script tests/test_result.gd                # 結果�
 godot --headless --path . --script tests/prof_close.gd                 # 部屋を立てた状態で閉じるのにかかる時間(開発用。`-- quit` で、探索中にアプリを終える場合)
 node tests/fake_release_server.js 8765 <zip> [bad]                    # アプリ内アップデートの確認用の、手元のリリースサーバー(--smoke-update と組み合わせる)
 ```
+
+`--smoke*` / `--shot*` / `--prof*` の実装は `scripts/main_dev.gd`(`main.gd` を継承。`main.tscn` が付ける)。`_dev_start` が起動の引数を見て、該当の `_smoke_*` / `_shot` / `_prof_*` を始める。新しい確認は、そこに関数と分岐を足す(本体の `main.gd` には足さない)。

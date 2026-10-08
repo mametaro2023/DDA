@@ -1,7 +1,11 @@
 extends RefCounted
-## user://settings.cfg の読み書き。
+## user://settings.cfg の読み書き。開発用の確認・テストは use_dev_file() で別のファイル(user://dev_settings.cfg)に向け、使う人の設定を書き換えない。
 
 const PATH := "user://settings.cfg"
+const DEV_PATH := "user://dev_settings.cfg"
+
+## いま読み書きするファイル
+static var path := PATH
 const Volume = preload("res://scripts/volume.gd")
 const FpsOverlay = preload("res://scripts/ui/fps_overlay.gd")
 
@@ -41,7 +45,7 @@ const DEFAULTS := {
 static func load_all() -> Dictionary:
 	var out := DEFAULTS.duplicate()
 	var cfg := ConfigFile.new()
-	if cfg.load(PATH) == OK:
+	if cfg.load(path) == OK:
 		for k in DEFAULTS:
 			out[k] = cfg.get_value("game", k, DEFAULTS[k])
 		# 弾幕 v2 は初期状態になった(旧版の MOD「弾幕 v2」は、もう無い)
@@ -65,10 +69,10 @@ static func save_all(d: Dictionary) -> void:
 	d = d.duplicate()
 	Volume.write_into(d)
 	var cfg := ConfigFile.new()
-	cfg.load(PATH)   # いまの内容を土台にする(この版が知らない項目を、別の版が書いていても消さない)
+	cfg.load(path)   # いまの内容を土台にする(この版が知らない項目を、別の版が書いていても消さない)
 	for k in DEFAULTS:
 		cfg.set_value("game", k, d.get(k, DEFAULTS[k]))
-	cfg.save(PATH)
+	cfg.save(path)
 
 
 ## ウィンドウの大きさの候補(16:9)。画面に入らない大きさは選べない。
@@ -164,3 +168,13 @@ static func apply_volume(percent: float) -> void:
 static func restore(original: Dictionary) -> void:
 	Volume.init_from(original)
 	save_all(original)
+
+
+## 開発用の確認・テストのとき、設定の読み書きを別のファイルに向ける。いまの設定を写してから始めるので、osu! の Songs の指定などはそのまま使える。
+## 途中で止まっても、使う人の設定(settings.cfg)は書き換わらない。
+static func use_dev_file() -> void:
+	path = DEV_PATH
+	if FileAccess.file_exists(PATH):
+		DirAccess.copy_absolute(ProjectSettings.globalize_path(PATH), ProjectSettings.globalize_path(DEV_PATH))
+	else:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(DEV_PATH))

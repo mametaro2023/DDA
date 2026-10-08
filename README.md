@@ -402,7 +402,7 @@ UI の音(ホバー・クリック・選択・決定・開閉・スタンプな�
 - ファイルは「標準の WAV で、拡張子だけ `.sfx`」(`assets/sfx/<音>_<番号>.sfx`、合計約 2.1 MB)。Godot のインポートを通さず `AudioStreamWAV.load_from_buffer` で読むので、書き出した exe でも `export_presets.cfg` の `include_filter` だけで読めます。
 - 確認: `tests/test_sfx.gd` が、全ファイルについて、そろっている・ピークが範囲内・先頭と末尾がゼロ(プチッと鳴らない)・直流成分がない・大きさが目標にそろっている・変種が違う波形・立ち上がり(発射音は 3 ms 以内)・音の役割どうしの関係(明るさ: tick > whistle > pop、tick ははっきりした音程を持たない、被弾と爆発は低く重い、UI の音は高すぎない)・ファイルがレシピどおり、を確かめます(`-- wav` で、読み込んだ音を WAV に書き出して聴けます)。`--smoke-sfx` は、(書き出した exe の中でも)ファイルが読めて鳴ること・発射音を左右に振れることを確かめます。
 
-## 設定(`user://settings.cfg` に自動保存)
+## 設定(`user://settings.cfg` に自動保存。開発用の確認 `--smoke*` `--shot*` `--prof*` とテストは、写しの `user://dev_settings.cfg` を読み書きするので、途中で止まっても使う人の設定は壊れない)
 全体音量、音楽・効果音の音量、UI の音(オン / オフ)、操作方式(標準はマウス)、マウス感度、オフセット(音と弾のズレの校正)、MOD(練習を含む)、UI の見た目(`ui_style`)、選曲の並び順(`song_sort`)。
 
 ## UI の見た目(クラシック / lazer 風)
@@ -532,7 +532,7 @@ UI の音(ホバー・クリック・選択・決定・開閉・スタンプな�
 ## テスト(ヘッドレス)
 ```
 godot --headless --path . --script tests/test_ui_contract.gd            # どの UI セットの画面・パネルも、決まりの signal・メソッド・kind を持つ
-godot --headless --path . --script tests/test_ui_default.gd              # 既定の UI が lazer: 設定が無い人は lazer・旧版の既定のままの人は一度だけ lazer に引き継ぐ・自分で選んだ classic は残る(user://settings.cfg を一時的に書き換えて戻す)
+godot --headless --path . --script tests/test_ui_default.gd              # 既定の UI が lazer: 設定が無い人は lazer・旧版の既定のままの人は一度だけ lazer に引き継ぐ・自分で選んだ classic は残る(設定は開発用の別ファイル user://dev_settings.cfg に書くので、使う人の settings.cfg は触らない)
 godot --headless --path . --script tests/test_records.gd                # プレイ記録(残す条件・スコア順・上位 10 件・新記録・保存)
 godot --headless --path . --script tests/test_song_view.gd              # 選曲の検索・並び替え
 godot --headless --path . --script tests/test_howto.gd                  # 遊び方パネル(10 ページと 13 枚の挿絵が、classic・lazer 風の両方で作れる)

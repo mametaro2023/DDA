@@ -1,6 +1,6 @@
 extends SceneTree
 ## 既定の UI が lazer になったときの、設定の引き継ぎの確認(settings.gd の load_all)。
-## user://settings.cfg を一時的に書き換えるので、最初に控えて、最後に戻す。
+## 設定は user://dev_settings.cfg(開発用の別ファイル)に書くので、使う人の settings.cfg は触らない。
 ## godot --headless --path . --script tests/test_ui_default.gd
 
 const Settings = preload("res://scripts/settings.gd")
@@ -21,15 +21,13 @@ func _style_of(values: Dictionary) -> String:
 	var cfg := ConfigFile.new()
 	for k in values:
 		cfg.set_value("game", k, values[k])
-	cfg.save(Settings.PATH)
+	cfg.save(Settings.path)
 	return str(Settings.load_all().ui_style)
 
 
 func _init() -> void:
-	var backup := FileAccess.get_file_as_bytes(Settings.PATH)
-	var had := FileAccess.file_exists(Settings.PATH)
-
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(Settings.PATH))
+	Settings.use_dev_file()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(Settings.path))
 	_check(str(Settings.load_all().ui_style) == "lazer", "設定が無い(新しい人): lazer")
 
 	_check(_style_of({"ui_style": "classic"}) == "lazer", "旧版の既定のまま(classic・宣伝カードは未操作): lazer に引き継ぐ")
@@ -46,11 +44,5 @@ func _init() -> void:
 	Settings.save_all(d)
 	_check(str(Settings.load_all().ui_style) == "classic", "引き継ぎ後に classic へ戻して保存: 次の読み込みでも classic")
 
-	if had:
-		var f := FileAccess.open(Settings.PATH, FileAccess.WRITE)
-		f.store_buffer(backup)
-		f.close()
-	else:
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(Settings.PATH))
 	print("test_ui_default: ", "OK" if _fail == 0 else "%d FAIL" % _fail)
 	quit(1 if _fail > 0 else 0)

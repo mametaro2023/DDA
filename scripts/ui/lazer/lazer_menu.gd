@@ -628,6 +628,8 @@ func _apply_view(sorted := false, keep_scroll := false) -> void:
 	var shown := {}
 	var at := 1   # 0 番目は、一番上の余白
 	for k in range(v.size()):
+		if v[k] >= _rows.size():   # osu! の曲を少しずつ足している途中: まだ行がない曲は、行ができてから並べる
+			continue
 		shown[v[k]] = true
 		_box.move_child(_rows[v[k]], at)
 		at += 1

@@ -89,6 +89,11 @@ func _ready() -> void:
 		FileAssoc.migrate_legacy(OS.get_executable_path())
 	NowPlaying.on_open_playlist = open_playlist   # 上のツールバーのプレイヤー・名前から開くパネル
 	Profile.open_cb = open_profile
+	for a in OS.get_cmdline_user_args():   # 開発用の確認・スクリーンショットは、使う人の設定(settings.cfg)でなく、写しの dev_settings.cfg を読み書きする(途中で止まっても、設定が壊れない)
+		var a_s := str(a)
+		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
+			Settings.use_dev_file()
+			break
 	var first_settings := Settings.load_all()
 	Volume.init_from(first_settings)
 	SongLibrary.apply_osu_settings(first_settings)   # osu! の Songs フォルダを使う設定のとき、その場所(スクリーンショット・動作確認の起動でも同じ)
@@ -5154,14 +5159,14 @@ func _smoke_volume() -> void:
 	# 保存される
 	await get_tree().create_timer(2.4).timeout
 	var saved := ConfigFile.new()
-	saved.load(Settings.PATH)
+	saved.load(Settings.path)
 	chk.call(int(saved.get_value("game", "volume", -1)) == 60 and int(saved.get_value("game", "sfx_volume", -1)) == 65 and int(saved.get_value("game", "music_volume", -1)) == 65, "消えたときに保存される(全体 %s / 音楽 %s / 効果音 %s)" % [str(saved.get_value("game", "volume")), str(saved.get_value("game", "music_volume")), str(saved.get_value("game", "sfx_volume"))])
 	# 古い設定を持った画面が保存しても、変えた音量を戻さない
 	var stale := Settings.load_all()
 	stale.volume = 1
 	Settings.save_all(stale)
 	var saved2 := ConfigFile.new()
-	saved2.load(Settings.PATH)
+	saved2.load(Settings.path)
 	chk.call(int(saved2.get_value("game", "volume", -1)) == 60, "古い値を持った画面が保存しても、音量は戻らない")
 	# 選曲画面の曲の一覧の上では、ホイールは音量を変えない(曲が少なくてスクロールしないときも)
 	await get_tree().create_timer(2.4).timeout

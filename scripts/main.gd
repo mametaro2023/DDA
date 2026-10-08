@@ -93,6 +93,7 @@ func _ready() -> void:
 		var a_s := str(a)
 		if a_s.begins_with("--smoke") or a_s.begins_with("--shot") or a_s.begins_with("--prof"):
 			Settings.use_dev_file()
+			_move_to_sub_screen()
 			break
 	var first_settings := Settings.load_all()
 	Volume.init_from(first_settings)
@@ -187,6 +188,27 @@ func _warm_up() -> void:
 	await get_tree().create_timer(0.5).timeout   # タイトルの最初の動きが始まってから
 	for path in WARM_UP_SCRIPTS:
 		ResourceLoader.load_threaded_request(path)
+
+
+## 開発用の確認の起動は、サブモニターに出す(メインモニターで作業の邪魔をしない)。モニターが 1 つなら、そのまま。--screen <番号> で、画面を指定できる(-- の後ろ)。
+func _move_to_sub_screen() -> void:
+	if DisplayServer.get_name() == "headless" or DisplayServer.get_screen_count() < 2:
+		return
+	var args := OS.get_cmdline_user_args()
+	var si := args.find("--screen")
+	var target := -1
+	if si >= 0 and args.size() > si + 1 and str(args[si + 1]).is_valid_int():
+		target = clampi(int(args[si + 1]), 0, DisplayServer.get_screen_count() - 1)
+	else:
+		for s in range(DisplayServer.get_screen_count()):
+			if s != DisplayServer.get_primary_screen():
+				target = s
+				break
+	if target < 0:
+		return
+	var area := DisplayServer.screen_get_usable_rect(target)
+	DisplayServer.window_set_current_screen(target)
+	DisplayServer.window_set_position(area.position + (area.size - DisplayServer.window_get_size_with_decorations()) / 2)
 
 
 ## 開発用の確認(--smoke* / --shot* / --prof*)を始める。始めたら true。本体では何もしない(scripts/main_dev.gd が、これを書き換えて引き受ける)。

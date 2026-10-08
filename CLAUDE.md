@@ -48,6 +48,7 @@ G="$LOCALAPPDATA/Microsoft/WinGet/Packages/GodotEngine.GodotEngine_Microsoft.Win
 - 起動: `godot --path .`(`--ui lazer` / `--ui classic` で UI を指定)
 - ヘッドレスのテスト: `godot --headless --path . --script tests/<name>.gd`
 - 実際の画面での確認: `godot --path . -- [--ui lazer] --smoke-<name>`(ウィンドウが開く。一覧は `docs/testing.md`)
+- **確認用の起動(`--smoke*` / `--shot*` / `--prof*`)は、サブモニターに出る**(モニターが 1 つならそのまま。`-- --screen <番号>` で指定)。
 - 画面写真: `godot --path . -- --ui lazer --shot menu out.png [finder]`。**`--` を忘れない**(忘れると、確認ではなく普通のアプリが起動し、写真は撮れず、設定も触る)。
 - `python` は使えない(Windows のストアの空の入口で、終了コード 49 になる)。補助の処理は bash か GDScript で書く。
 
